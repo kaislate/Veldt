@@ -60,6 +60,21 @@ fun LibraryScreen(vm: LibraryViewModel = hiltViewModel()) {
         if (granted) vm.scan()
     }
 
+    // Android 13+ silently suppresses the media notification until POST_NOTIFICATIONS
+    // is granted, so Veldt's own now-playing notification (with transport controls)
+    // never shows. Request it once on open. Playback works regardless of the result.
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* result ignored — this only un-suppresses the media notification */ }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        ) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     Column(
         Modifier
             .fillMaxSize()
