@@ -3,8 +3,10 @@ package com.kaislate.veldtplayer.ui.dev
 import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -41,12 +43,26 @@ class DevPlayerViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun playUri(uri: Uri) {
+        // Dev proof: files often have no embedded title tag, so seed the MediaItem
+        // title with the picked file's display name — the seam then shows *something*
+        // in the bus readout. Real title/tag resolution is a P1.2 library concern.
+        val item = MediaItem.Builder()
+            .setUri(uri)
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(displayName(uri)).build())
+            .build()
         controller?.apply {
-            setMediaItem(MediaItem.fromUri(uri))
+            setMediaItem(item)
             prepare()
             play()
         }
     }
+
+    private fun displayName(uri: Uri): String =
+        runCatching {
+            getApplication<Application>().contentResolver
+                .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull() ?: uri.lastPathSegment ?: "Unknown"
 
     fun togglePlayPause() {
         controller?.let { if (it.isPlaying) it.pause() else it.play() }
