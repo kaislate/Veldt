@@ -53,6 +53,9 @@ object MediaSessionBus {
     /** Set the source app's status-bar small icon (from its media notification). */
     fun setSmallIcon(bmp: Bitmap?) { _smallIcon.value = bmp }
 
+    /** Producer feed: the built-in player owns the active package (no external controller). */
+    fun activePackageForProducer(pkg: String) { _activePackage.value = pkg }
+
     /**
      * Emit album art only when the PIXELS actually change. Some apps (VLC) parcel
      * a brand-new Bitmap instance of the same art on every play/pause — emitting
