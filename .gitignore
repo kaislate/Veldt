@@ -9,3 +9,6 @@
 key.properties
 *.apk
 /docs
+
+# SDD review artifacts (also self-ignored under .superpowers/sdd/)
+/.superpowers/
