@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.Veldt" parent="Theme.Material3.DynamicColors.DayNight">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>
