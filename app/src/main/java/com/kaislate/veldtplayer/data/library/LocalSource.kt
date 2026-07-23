@@ -3,6 +3,7 @@ package com.kaislate.veldtplayer.data.library
 import android.content.ContentUris
 import android.content.Context
 import android.provider.MediaStore
+import android.util.Log
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
@@ -57,13 +58,14 @@ class LocalSource @Inject constructor(
             MediaStore.Audio.Media.DATA, // file path for the tag reader; nullable on API 29+
         )
         val out = ArrayList<Song>()
-        context.contentResolver.query(
-            base,
-            cols,
-            "${MediaStore.Audio.Media.IS_MUSIC} != 0",
-            null,
-            "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC",
-        )?.use { c ->
+        runCatching {
+            context.contentResolver.query(
+                base,
+                cols,
+                "${MediaStore.Audio.Media.IS_MUSIC} != 0",
+                null,
+                "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC",
+            )?.use { c ->
             val idIx = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
             val titleIx = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
             val artistIx = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
@@ -98,6 +100,12 @@ class LocalSource @Inject constructor(
                 )
             }
         }
-        out
+            out
+        }.getOrElse {
+            // Query itself threw (e.g. SecurityException on revoked audio-read, or an
+            // OEM/provider that raises instead of returning null). Degrade to "no library".
+            Log.w("LocalSource", "audio enumeration failed; returning empty list", it)
+            emptyList()
+        }
     }
 }
