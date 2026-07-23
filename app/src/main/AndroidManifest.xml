@@ -6,6 +6,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Read on-device audio for the local library (spec §6.2).
+         Android 13+ uses the scoped READ_MEDIA_AUDIO; pre-13 falls back to
+         READ_EXTERNAL_STORAGE. Runtime request lives in the UI (Task 7). -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
     <application
         android:name=".VeldtApp"
         android:allowBackup="true"
