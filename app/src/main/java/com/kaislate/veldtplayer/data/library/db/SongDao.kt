@@ -29,6 +29,12 @@ interface SongDao {
     )
     suspend fun search(pattern: String): List<SongEntity>
 
+    @Query(
+        "SELECT * FROM songs WHERE title LIKE :pattern OR artist LIKE :pattern " +
+            "OR album LIKE :pattern ORDER BY title COLLATE NOCASE"
+    )
+    fun observeSearch(pattern: String): Flow<List<SongEntity>>
+
     @Query("SELECT id, dateModifiedSec FROM songs")
     suspend fun getIndex(): List<IndexEntry>
 
