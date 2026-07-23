@@ -8,6 +8,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.kaislate.veldtplayer.playback.PlaybackService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +16,8 @@ import kotlinx.coroutines.flow.StateFlow
 
 class DevPlayerViewModel(app: Application) : AndroidViewModel(app) {
     private var controller: MediaController? = null
+    private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var released = false
 
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -26,8 +29,14 @@ class DevPlayerViewModel(app: Application) : AndroidViewModel(app) {
     init {
         val token = SessionToken(app, ComponentName(app, PlaybackService::class.java))
         val future = MediaController.Builder(app, token).buildAsync()
+        controllerFuture = future
         future.addListener({
-            controller = future.get().also { it.addListener(listener) }
+            val built = future.get()
+            if (released) {
+                built.release()
+            } else {
+                controller = built.also { it.addListener(listener) }
+            }
         }, MoreExecutors.directExecutor())
     }
 
@@ -43,9 +52,12 @@ class DevPlayerViewModel(app: Application) : AndroidViewModel(app) {
         controller?.let { if (it.isPlaying) it.pause() else it.play() }
     }
 
-    fun seekForward() { controller?.seekTo((controller?.currentPosition ?: 0L) + 10_000) }
+    fun seekForward() { controller?.let { it.seekTo(it.currentPosition + 10_000) } }
 
     override fun onCleared() {
+        released = true
+        controllerFuture?.cancel(false)
+        controllerFuture = null
         controller?.removeListener(listener)
         controller?.release()
         controller = null
