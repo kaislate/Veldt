@@ -33,8 +33,24 @@ class BrowseViewModel @Inject constructor(
     val artists: StateFlow<List<Artist>> = repo.artists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** Playback failures (unreadable/deleted files) surfaced for the snackbar. */
-    val errors = connection.errors
+    /**
+     * True while a library scan is pending or running.
+     *
+     * Seeded TRUE, not false. The nav host enqueues a scan the instant audio access is
+     * granted, but WorkManager reports back asynchronously — so a false seed would render
+     * "No songs yet" for the frames before the first emission lands, which is precisely
+     * the lie this flow exists to stop telling. Assuming a scan is coming is right in
+     * every reachable case, because the only screen that reads this is only reached with
+     * access granted, and access granted always enqueues a scan.
+     */
+    val scanning: StateFlow<Boolean> = repo.scanning()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    /**
+     * Playback failures (unreadable/deleted files) surfaced for the snackbar, with a
+     * skip-through of a dead queue collapsed into one message — see [batchPlaybackErrors].
+     */
+    val errors: Flow<String> = connection.errors.batchPlaybackErrors()
 
     fun songsForAlbum(key: String): Flow<List<Song>> = repo.songsForAlbum(key)
 

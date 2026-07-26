@@ -6,9 +6,11 @@ import com.kaislate.veldtplayer.data.library.db.toDomain
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
+import androidx.work.WorkManager
 import com.kaislate.veldtplayer.data.library.scan.LibraryScanWorker
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -64,6 +66,24 @@ class MusicRepository @Inject constructor(
 
     /** Trigger a background rescan (unique WorkManager job). Non-suspend: just enqueues. */
     fun requestScan() = LibraryScanWorker.enqueue(context)
+
+    /**
+     * True while a library scan is pending or running.
+     *
+     * Read from WorkManager's own record of the unique scan work rather than from a flag
+     * this class sets in [requestScan], so it stays honest about scans this process did
+     * not start — a scan surviving process death, or one enqueued by another entry point.
+     *
+     * `!state.isFinished` covers ENQUEUED, RUNNING and BLOCKED. Bundling BLOCKED in with
+     * the other two is deliberate: to a caller asking "is there a scan coming?" a blocked
+     * scan is still coming, and treating it as finished would show an empty library as
+     * settled when it is not.
+     */
+    fun scanning(): Flow<Boolean> =
+        WorkManager.getInstance(context)
+            .getWorkInfosForUniqueWorkFlow(LibraryScanWorker.UNIQUE_NAME)
+            .map { infos -> infos.any { !it.state.isFinished } }
+            .distinctUntilChanged()
 
     /** The string a MediaItem should play for [song] (local: its content:// uri). */
     fun playableUri(song: Song): String = librarySource.resolvePlayableUri(song)

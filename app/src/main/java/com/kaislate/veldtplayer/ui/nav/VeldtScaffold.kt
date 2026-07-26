@@ -7,6 +7,7 @@ import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -16,6 +17,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.vector.ImageVector
+
+/**
+ * Bottom-bar opacity. High enough that the labels never fight the artwork scrolling
+ * under them, low enough that something is visibly passing behind — at full opacity the
+ * bar reads as a wall rather than as a layer.
+ */
+private const val BAR_ALPHA = 0.94f
 
 /** A bottom-bar destination. [enabled] is false for slots not yet implemented. */
 data class NavItem(
@@ -50,13 +58,22 @@ fun VeldtScaffold(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar {
+            // Translucent, because screens hand their window insets to a scrollable's
+            // contentPadding rather than clipping themselves above the bar. Content
+            // passing beneath the tint is what gives the bar somewhere to sit.
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    .copy(alpha = BAR_ALPHA)
+            ) {
                 items.forEach { item ->
                     NavigationBarItem(
                         selected = currentRoute == item.route,
                         enabled = item.enabled,
                         onClick = { onSelect(item.route) },
-                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        // null, not the label: the visible Text below is already the
+                        // item's accessible name, and naming the icon too makes
+                        // TalkBack announce "Songs, Songs".
+                        icon = { Icon(item.icon, contentDescription = null) },
                         label = { Text(item.label) },
                     )
                 }

@@ -2,13 +2,11 @@ package com.kaislate.veldtplayer.ui.nav
 
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -62,16 +60,20 @@ fun VeldtNavHost() {
             },
         ) { padding ->
             SharedTransitionLayout {
+                // The scaffold's insets are PASSED DOWN rather than applied here. A
+                // Modifier.padding at this level would clip every screen above the
+                // navigation bar; handing each screen its own insets lets a list scroll
+                // beneath the translucent bar instead.
                 NavHost(
                     navController = navController,
                     startDestination = Destinations.SONGS,
-                    modifier = Modifier.padding(padding),
                 ) {
                     composable(Destinations.SONGS) {
                         SongsScreen(
                             vm = vm,
                             audioGranted = audioGranted,
                             onRequestAudio = requestAudio,
+                            contentPadding = padding,
                         )
                     }
                 }

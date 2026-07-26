@@ -104,9 +104,19 @@ private fun ArtWash(palette: DominantColors, modifier: Modifier = Modifier) {
     Box(modifier.background(paletteWash(palette)))
 }
 
-private fun paletteWash(palette: DominantColors): Brush = Brush.linearGradient(
-    listOf(
-        palette.accent.copy(alpha = 0.55f),
-        palette.bg,
+/**
+ * The palette wash — the ground under both placeholder states, and the same gradient the
+ * browse empty/scanning surfaces tint themselves with.
+ *
+ * [alpha] scales the whole wash toward transparent so one gradient can serve both jobs:
+ * at 1f it is the opaque thumbnail ground, and at a low value it is a veil laid over the
+ * theme's own surface. Full-screen the opaque form would paint a near-black panel across
+ * a light-themed app; scaling it keeps the palette's presence without fighting the theme.
+ */
+internal fun paletteWash(palette: DominantColors, alpha: Float = 1f): Brush =
+    Brush.linearGradient(
+        listOf(
+            palette.accent.copy(alpha = 0.55f * alpha),
+            palette.bg.copy(alpha = alpha),
+        )
     )
-)
