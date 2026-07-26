@@ -45,4 +45,43 @@ class LibraryDerivationsTest {
         val songs = listOf(song(2, "b", "X", "Alb"), song(1, "a", "X", "Alb"))
         assertEquals(listOf("Alb"), LibraryDerivations.deriveAlbums(songs).map { it.name })
     }
+
+    @Test fun `albums group case-insensitively`() {
+        val songs = listOf(
+            song(id = 1, title = "A", album = "Abbey Road", artist = "Beatles"),
+            song(id = 2, title = "B", album = "abbey road", artist = "beatles"),
+            song(id = 3, title = "C", album = "ABBEY ROAD ", artist = "Beatles"),
+        )
+        val albums = LibraryDerivations.deriveAlbums(songs)
+        assertEquals(1, albums.size)
+        assertEquals(3, albums[0].songCount)
+        assertEquals("abbey road", albums[0].key)
+    }
+
+    @Test fun `album display name is the first seen spelling`() {
+        val songs = listOf(
+            song(id = 1, title = "A", album = "Abbey Road", artist = "Beatles"),
+            song(id = 2, title = "B", album = "ABBEY ROAD", artist = "Beatles"),
+        )
+        assertEquals("Abbey Road", LibraryDerivations.deriveAlbums(songs)[0].name)
+    }
+
+    @Test fun `artists group case-insensitively and count distinct albums by key`() {
+        val songs = listOf(
+            song(id = 1, title = "A", album = "One", artist = "Boards of Canada"),
+            song(id = 2, title = "B", album = "ONE", artist = "boards of canada"),
+            song(id = 3, title = "C", album = "Two", artist = "Boards Of Canada"),
+        )
+        val artists = LibraryDerivations.deriveArtists(songs)
+        assertEquals(1, artists.size)
+        assertEquals("Boards of Canada", artists[0].name)
+        assertEquals(2, artists[0].albumCount)
+        assertEquals(3, artists[0].songCount)
+    }
+
+    @Test fun `normalize trims and case folds`() {
+        assertEquals("abbey road", LibraryKeys.normalize("  Abbey Road "))
+        assertEquals("abbey road", LibraryKeys.normalize("ABBEY ROAD"))
+        assertEquals("", LibraryKeys.normalize("   "))
+    }
 }

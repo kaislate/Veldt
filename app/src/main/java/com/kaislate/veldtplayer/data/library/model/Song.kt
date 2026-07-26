@@ -18,6 +18,18 @@ data class Song(
     val hasEmbeddedArt: Boolean,
 )
 
-data class Album(val name: String, val albumArtist: String?, val songCount: Int)
+/** [key] is the normalized grouping identity; [name] is the first-seen spelling. */
+data class Album(
+    val key: String,
+    val name: String,
+    val albumArtist: String?,
+    val songCount: Int,
+)
 
-data class Artist(val name: String, val albumCount: Int, val songCount: Int)
+/** [key] is the normalized grouping identity; [name] is the first-seen spelling. */
+data class Artist(
+    val key: String,
+    val name: String,
+    val albumCount: Int,
+    val songCount: Int,
+)
