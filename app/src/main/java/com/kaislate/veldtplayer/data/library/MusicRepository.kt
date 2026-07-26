@@ -42,29 +42,24 @@ class MusicRepository @Inject constructor(
 
     fun artists(): Flow<List<Artist>> = songs().map { LibraryDerivations.deriveArtists(it) }
 
-    /** Album tracks in disc-then-track order, falling back to title for untagged files. */
-    fun songsForAlbum(key: String): Flow<List<Song>> = songs().map { all ->
-        all.filter { LibraryKeys.normalize(it.album) == key }
-            .sortedWith(
-                compareBy(
-                    { it.discNumber ?: 1 },
-                    { it.trackNumber ?: Int.MAX_VALUE },
-                    { it.title.lowercase() },
-                )
-            )
+    /**
+     * One album's tracks, in disc-then-track order. [key] is an [Album.key]; it is
+     * re-normalized because normalize is idempotent on a well-formed key, so accepting a
+     * stray raw display name costs nothing and saves a silent empty result.
+     */
+    fun songsForAlbum(key: String): Flow<List<Song>> {
+        val wanted = LibraryKeys.normalize(key)
+        return songs().map { all ->
+            LibraryDerivations.sortAlbumTracks(all.filter { LibraryKeys.albumKey(it) == wanted })
+        }
     }
 
-    /** An artist's songs grouped by album, albums alphabetical, tracks in disc/track order. */
-    fun songsForArtist(key: String): Flow<List<Song>> = songs().map { all ->
-        all.filter { LibraryKeys.normalize(it.artist) == key }
-            .sortedWith(
-                compareBy(
-                    { LibraryKeys.normalize(it.album) },
-                    { it.discNumber ?: 1 },
-                    { it.trackNumber ?: Int.MAX_VALUE },
-                    { it.title.lowercase() },
-                )
-            )
+    /** One artist's songs, grouped by album, tracks in disc/track order. [key] is an [Artist.key]. */
+    fun songsForArtist(key: String): Flow<List<Song>> {
+        val wanted = LibraryKeys.normalize(key)
+        return songs().map { all ->
+            LibraryDerivations.sortArtistTracks(all.filter { LibraryKeys.artistKey(it) == wanted })
+        }
     }
 
     /** Trigger a background rescan (unique WorkManager job). Non-suspend: just enqueues. */

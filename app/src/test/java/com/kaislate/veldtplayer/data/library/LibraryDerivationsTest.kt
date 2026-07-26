@@ -55,7 +55,7 @@ class LibraryDerivationsTest {
         val albums = LibraryDerivations.deriveAlbums(songs)
         assertEquals(1, albums.size)
         assertEquals(3, albums[0].songCount)
-        assertEquals("abbey road", albums[0].key)
+        assertEquals("beatles abbey road", albums[0].key)
     }
 
     @Test fun `album display name is the first seen spelling`() {
@@ -83,5 +83,112 @@ class LibraryDerivationsTest {
         assertEquals("abbey road", LibraryKeys.normalize("  Abbey Road "))
         assertEquals("abbey road", LibraryKeys.normalize("ABBEY ROAD"))
         assertEquals("", LibraryKeys.normalize("   "))
+    }
+
+    // --- album identity is artist + title, not title alone ------------------------------
+
+    @Test fun `albums sharing a title but not an artist stay separate`() {
+        val songs = listOf(
+            song(id = 1, title = "A", album = "Greatest Hits", artist = "Queen"),
+            song(id = 2, title = "B", album = "Greatest Hits", artist = "ABBA"),
+        )
+        val albums = LibraryDerivations.deriveAlbums(songs)
+        assertEquals(2, albums.size)
+        assertEquals(listOf("abba greatest hits", "queen greatest hits"), albums.map { it.key })
+        // Both keep the untouched display title; only the key disambiguates them.
+        assertEquals(listOf("Greatest Hits", "Greatest Hits"), albums.map { it.name })
+        assertEquals(listOf(1, 1), albums.map { it.songCount })
+    }
+
+    @Test fun `album key prefers albumArtist so a multi-artist album stays whole`() {
+        val songs = listOf(
+            song(id = 1, title = "A", artist = "Freddie Mercury", album = "Greatest Hits",
+                albumArtist = "Queen"),
+            song(id = 2, title = "B", artist = "Brian May", album = "Greatest Hits",
+                albumArtist = "Queen"),
+        )
+        val album = LibraryDerivations.deriveAlbums(songs).single()
+        assertEquals("queen greatest hits", album.key)
+        assertEquals(2, album.songCount)
+    }
+
+    @Test fun `album stays merged when only the artist casing differs`() {
+        val songs = listOf(
+            song(id = 1, title = "A", album = "Kid A", artist = "Radiohead"),
+            song(id = 2, title = "B", album = "Kid A", artist = "radiohead"),
+            song(id = 3, title = "C", album = "Kid A", artist = " RADIOHEAD "),
+        )
+        val album = LibraryDerivations.deriveAlbums(songs).single()
+        assertEquals("radiohead kid a", album.key)
+        assertEquals(3, album.songCount)
+    }
+
+    @Test fun `artists counting distinct albums uses the compound album key`() {
+        // Same album title, different artists on an artist's own page must count as two.
+        val songs = listOf(
+            song(id = 1, title = "A", album = "Split", artist = "X", albumArtist = "X"),
+            song(id = 2, title = "B", album = "Split", artist = "X", albumArtist = "Various"),
+        )
+        assertEquals(2, LibraryDerivations.deriveArtists(songs).single().albumCount)
+    }
+
+    // --- keys must always be usable as a route segment ----------------------------------
+
+    @Test fun `blank tags fall back to addressable sentinel keys`() {
+        val songs = listOf(song(id = 1, title = "T", album = "   ", artist = "  "))
+        // An empty key would build the route "album/", which matches no "album/{key}".
+        assertEquals("unknown-album", LibraryDerivations.deriveAlbums(songs).single().key)
+        assertEquals("unknown-artist", LibraryDerivations.deriveArtists(songs).single().key)
+    }
+
+    @Test fun `keys are fixed points of normalize so callers may re-normalize safely`() {
+        // A blank album makes the compound key end in a space; if normalize() were not
+        // applied when building it, a caller normalizing the key back would never match.
+        val s = song(id = 1, title = "T", album = "  ", artist = "Queen")
+        assertEquals(LibraryKeys.albumKey(s), LibraryKeys.normalize(LibraryKeys.albumKey(s)))
+        assertEquals(LibraryKeys.artistKey(s), LibraryKeys.normalize(LibraryKeys.artistKey(s)))
+    }
+
+    // --- track ordering -----------------------------------------------------------------
+
+    @Test fun `sortAlbumTracks orders by disc then track, untagged tracks last`() {
+        val songs = listOf(
+            song(id = 1, title = "zeta", artist = "X", album = "Alb")
+                .copy(discNumber = 2, trackNumber = 1),
+            song(id = 2, title = "alpha", artist = "X", album = "Alb"), // no disc, no track
+            song(id = 3, title = "beta", artist = "X", album = "Alb")
+                .copy(discNumber = 1, trackNumber = 2),
+            song(id = 4, title = "gamma", artist = "X", album = "Alb")
+                .copy(trackNumber = 1), // null disc must read as disc 1
+        )
+        assertEquals(
+            listOf("gamma", "beta", "alpha", "zeta"),
+            LibraryDerivations.sortAlbumTracks(songs).map { it.title },
+        )
+    }
+
+    @Test fun `sortAlbumTracks falls back to a case-insensitive title`() {
+        val songs = listOf(
+            song(id = 1, title = "Beta", artist = "X", album = "Alb"),
+            song(id = 2, title = "alpha", artist = "X", album = "Alb"),
+        )
+        // Raw ASCII would order "Beta" before "alpha"; the fold is what makes this pass.
+        assertEquals(
+            listOf("alpha", "Beta"),
+            LibraryDerivations.sortAlbumTracks(songs).map { it.title },
+        )
+    }
+
+    @Test fun `sortArtistTracks keeps each album contiguous and in track order`() {
+        val songs = listOf(
+            song(id = 1, title = "z2", artist = "X", album = "Zebra").copy(trackNumber = 2),
+            song(id = 2, title = "a1", artist = "X", album = "Apple").copy(trackNumber = 1),
+            song(id = 3, title = "z1", artist = "X", album = "Zebra").copy(trackNumber = 1),
+            song(id = 4, title = "a2", artist = "X", album = "Apple").copy(trackNumber = 2),
+        )
+        assertEquals(
+            listOf("a1", "a2", "z1", "z2"),
+            LibraryDerivations.sortArtistTracks(songs).map { it.title },
+        )
     }
 }
