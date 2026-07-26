@@ -70,7 +70,50 @@ class NowPlayingStateTest {
         assertEquals(7L, s.songId)
         assertEquals("Blue Monday", s.title)
         assertEquals("New Order", s.artist)
+        // Asserted against a non-blank album that differs from the title: sourcing album
+        // from the wrong field is invisible when every tag under test is blank.
+        assertEquals("Power, Corruption & Lies", s.album)
         assertEquals(7L, s.art?.songId)
+    }
+
+    /**
+     * The populated branch is a second, independent literal construction — it shares no
+     * code with the null branch, so nothing the null-song test proves transfers here.
+     * Hardcoding any of these would let the player and the UI disagree silently: repeat
+     * would cycle and actually take effect while the button rendered stuck on OFF.
+     *
+     * Asserted twice with every flag inverted, so no hardcoded constant survives.
+     */
+    @Test fun `song still carries transport state through`() {
+        val s = NowPlayingState.from(
+            song = song(),
+            playState = PlayState.PAUSED,
+            playerDurationMs = 0L,
+            shuffle = true,
+            repeat = RepeatMode.ALL,
+            hasNext = true,
+            hasPrevious = false,
+        )
+        assertEquals(PlayState.PAUSED, s.playState)
+        assertTrue(s.shuffle)
+        assertEquals(RepeatMode.ALL, s.repeat)
+        assertTrue(s.hasNext)
+        assertFalse(s.hasPrevious)
+
+        val inverted = NowPlayingState.from(
+            song = song(),
+            playState = PlayState.PLAYING,
+            playerDurationMs = 0L,
+            shuffle = false,
+            repeat = RepeatMode.ONE,
+            hasNext = false,
+            hasPrevious = true,
+        )
+        assertEquals(PlayState.PLAYING, inverted.playState)
+        assertFalse(inverted.shuffle)
+        assertEquals(RepeatMode.ONE, inverted.repeat)
+        assertFalse(inverted.hasNext)
+        assertTrue(inverted.hasPrevious)
     }
 
     @Test fun `blank tags degrade to readable labels`() {
