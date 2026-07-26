@@ -177,6 +177,59 @@ class LibraryDerivationsTest {
         )
     }
 
+    // --- grid ordering ------------------------------------------------------------------
+
+    @Test fun `albums sort by title, not by the artist-led key`() {
+        val songs = listOf(
+            song(id = 1, title = "a", artist = "Zappa", album = "Apostrophe"),
+            song(id = 2, title = "b", artist = "ABBA", album = "Waterloo"),
+        )
+        // Key order would put ABBA's record first; the grid is scanned by title, so the
+        // titles are what must be in order.
+        assertEquals(
+            listOf("Apostrophe", "Waterloo"),
+            LibraryDerivations.deriveAlbums(songs).map { it.name },
+        )
+    }
+
+    @Test fun `album title order is case-insensitive and ties break on the key`() {
+        val songs = listOf(
+            song(id = 1, title = "a", artist = "Queen", album = "greatest hits"),
+            song(id = 2, title = "b", artist = "ABBA", album = "Greatest Hits"),
+            song(id = 3, title = "c", artist = "X", album = "Bends"),
+        )
+        val albums = LibraryDerivations.deriveAlbums(songs)
+        assertEquals(listOf("Bends", "Greatest Hits", "greatest hits"), albums.map { it.name })
+        // The two same-titled records land adjacent, ordered by their differing owners.
+        assertEquals(
+            listOf("abba${sep}greatest hits", "queen${sep}greatest hits"),
+            albums.drop(1).map { it.key },
+        )
+    }
+
+    @Test fun `untitled albums sort last, like untagged tracks`() {
+        val songs = listOf(
+            song(id = 1, title = "a", artist = "X", album = "  "),
+            song(id = 2, title = "b", artist = "X", album = "Zoo"),
+            song(id = 3, title = "c", artist = "X", album = "Apple"),
+        )
+        assertEquals(
+            listOf("Apple", "Zoo", ""),
+            LibraryDerivations.deriveAlbums(songs).map { it.name },
+        )
+    }
+
+    @Test fun `artists come out alphabetical`() {
+        val songs = listOf(
+            song(id = 1, title = "a", artist = "Zappa", album = "One"),
+            song(id = 2, title = "b", artist = "aphex twin", album = "Two"),
+        )
+        assertEquals(
+            listOf("aphex twin", "Zappa"),
+            LibraryDerivations.deriveArtists(songs).map { it.name },
+        )
+    }
+
     // --- track ordering -----------------------------------------------------------------
 
     @Test fun `sortAlbumTracks orders by disc then track, untagged tracks last`() {

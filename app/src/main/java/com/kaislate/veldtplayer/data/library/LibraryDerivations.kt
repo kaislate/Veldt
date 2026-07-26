@@ -13,6 +13,20 @@ import com.kaislate.veldtplayer.data.library.model.Song
  */
 object LibraryDerivations {
 
+    /**
+     * Albums come out ALPHABETICAL BY TITLE, deliberately — not in key order.
+     *
+     * The compound key leads with the album artist, so sorting by it silently produced an
+     * artist-major grid. That is wrong for this surface: an album tile's dominant label is
+     * the TITLE, and a list ordered by a field the eye is not scanning reads as unsorted.
+     * Artist-major browsing already has a home — the Artists tab — and duplicating it here
+     * would cost the Albums tab its own reason to exist.
+     *
+     * Ties (two records genuinely called "Greatest Hits") break on the key, so the order is
+     * total and stable and the pair lands adjacent under their differing captions. Untitled
+     * albums sort last, matching [sortAlbumTracks]'s treatment of untagged tracks: a stray
+     * unlabelled record belongs at the end of the shelf, not at the front of it.
+     */
     fun deriveAlbums(songs: List<Song>): List<Album> =
         songs.groupBy { LibraryKeys.albumKey(it) }
             .map { (key, rows) ->
@@ -23,8 +37,18 @@ object LibraryDerivations {
                     songCount = rows.size,
                 )
             }
-            .sortedBy { it.key }
+            .sortedWith(
+                compareBy(
+                    { it.name.isBlank() },
+                    { it.name.lowercase() },
+                    { it.key },
+                )
+            )
 
+    /**
+     * Artists sort by key, which for an artist IS the folded display name — so unlike
+     * [deriveAlbums] this needs no separate comparator to come out alphabetical.
+     */
     fun deriveArtists(songs: List<Song>): List<Artist> =
         songs.groupBy { LibraryKeys.artistKey(it) }
             .map { (key, rows) ->

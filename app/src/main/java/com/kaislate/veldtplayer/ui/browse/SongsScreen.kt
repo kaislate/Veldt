@@ -34,8 +34,11 @@ import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
-/** Breathing room above the first row and below the last, on top of the window insets. */
-private val LIST_AIR = 8.dp
+/**
+ * Breathing room above the first row and below the last, on top of the window insets.
+ * Shared by every browse surface so the three tabs start at the same height.
+ */
+internal val LIST_AIR = 8.dp
 
 /** The art-sized emblem every browse message surface is built around. */
 private val EMBLEM_SIZE = 120.dp
