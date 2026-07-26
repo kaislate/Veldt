@@ -41,6 +41,29 @@ class NowPlayingStateTest {
         assertEquals(null, s.art)
     }
 
+    /**
+     * The null-song branch runs on every track transition, so transport state has to
+     * survive it — returning a bare EMPTY here would render the controls dead mid-skip.
+     */
+    @Test fun `no song still carries transport state through`() {
+        val s = NowPlayingState.from(
+            song = null,
+            playState = PlayState.PLAYING,
+            playerDurationMs = 0L,
+            shuffle = true,
+            repeat = RepeatMode.ONE,
+            hasNext = true,
+            hasPrevious = false,
+        )
+        assertFalse(s.isActive)
+        assertEquals(PlayState.PLAYING, s.playState)
+        assertTrue(s.isPlaying)
+        assertTrue(s.shuffle)
+        assertEquals(RepeatMode.ONE, s.repeat)
+        assertTrue(s.hasNext)
+        assertFalse(s.hasPrevious)
+    }
+
     @Test fun `song fields are carried through`() {
         val s = state(song())
         assertTrue(s.isActive)
@@ -53,6 +76,13 @@ class NowPlayingStateTest {
     @Test fun `blank tags degrade to readable labels`() {
         val s = state(song(title = "   "))
         assertEquals("Unknown title", s.title)
+
+        val untagged = state(
+            song(title = "   ").copy(artist = "", album = "\t"),
+        )
+        assertEquals("Unknown title", untagged.title)
+        assertEquals("Unknown artist", untagged.artist)
+        assertEquals("Unknown album", untagged.album)
     }
 
     @Test fun `player duration wins when known, library duration is the fallback`() {
