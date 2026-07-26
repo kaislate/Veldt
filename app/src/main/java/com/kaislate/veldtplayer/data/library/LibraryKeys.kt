@@ -21,6 +21,18 @@ import com.kaislate.veldtplayer.data.library.model.Song
  */
 object LibraryKeys {
 
+    /**
+     * Delimiter between the fields of a compound key (ASCII UNIT SEPARATOR). It has to be a
+     * character that cannot occur in a normalized tag: with a space, `"Bob"` + `"Dylan Live"`
+     * and `"Bob Dylan"` + `"Live"` both key to `bob dylan live`, merging two unrelated albums
+     * into one tile and one detail screen.
+     *
+     * Note U+001F *is* whitespace to the JVM (`Character.isWhitespace` covers U+001C..U+001F),
+     * so [String.trim] strips it from a key's EDGES — which is exactly what should happen when
+     * a field is blank — while interior separators survive.
+     */
+    const val FIELD_SEPARATOR = "\u001F"
+
     /** Key for songs whose album tag is blank; a route segment must never be empty. */
     const val UNKNOWN_ALBUM = "unknown-album"
 
@@ -41,9 +53,9 @@ object LibraryKeys {
 
     fun albumKey(album: String, albumArtist: String?, artist: String): String {
         val owner = normalize(albumArtist ?: artist)
-        // Re-normalized so the compound is itself a fixed point of normalize(): when a part
-        // is blank the join leaves a stray edge space that re-normalizing would strip.
-        return normalize("$owner ${normalize(album)}").ifBlank { UNKNOWN_ALBUM }
+        // Re-normalized so the compound is itself a fixed point of normalize(): a blank field
+        // leaves the separator on an edge, where trim() drops it. Interior ones survive.
+        return normalize("$owner$FIELD_SEPARATOR${normalize(album)}").ifBlank { UNKNOWN_ALBUM }
     }
 
     fun artistKey(song: Song): String = artistKey(song.artist)

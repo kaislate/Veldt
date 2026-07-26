@@ -5,6 +5,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class LibraryDerivationsTest {
+    /** Built into expectations rather than pasted as a raw control char, which is invisible. */
+    private val sep = LibraryKeys.FIELD_SEPARATOR
+
     private fun song(
         id: Long, title: String, artist: String, album: String, albumArtist: String? = null,
     ) = Song(
@@ -55,7 +58,7 @@ class LibraryDerivationsTest {
         val albums = LibraryDerivations.deriveAlbums(songs)
         assertEquals(1, albums.size)
         assertEquals(3, albums[0].songCount)
-        assertEquals("beatles abbey road", albums[0].key)
+        assertEquals("beatles${sep}abbey road", albums[0].key)
     }
 
     @Test fun `album display name is the first seen spelling`() {
@@ -94,7 +97,7 @@ class LibraryDerivationsTest {
         )
         val albums = LibraryDerivations.deriveAlbums(songs)
         assertEquals(2, albums.size)
-        assertEquals(listOf("abba greatest hits", "queen greatest hits"), albums.map { it.key })
+        assertEquals(listOf("abba${sep}greatest hits", "queen${sep}greatest hits"), albums.map { it.key })
         // Both keep the untouched display title; only the key disambiguates them.
         assertEquals(listOf("Greatest Hits", "Greatest Hits"), albums.map { it.name })
         assertEquals(listOf(1, 1), albums.map { it.songCount })
@@ -108,7 +111,7 @@ class LibraryDerivationsTest {
                 albumArtist = "Queen"),
         )
         val album = LibraryDerivations.deriveAlbums(songs).single()
-        assertEquals("queen greatest hits", album.key)
+        assertEquals("queen${sep}greatest hits", album.key)
         assertEquals(2, album.songCount)
     }
 
@@ -119,7 +122,7 @@ class LibraryDerivationsTest {
             song(id = 3, title = "C", album = "Kid A", artist = " RADIOHEAD "),
         )
         val album = LibraryDerivations.deriveAlbums(songs).single()
-        assertEquals("radiohead kid a", album.key)
+        assertEquals("radiohead${sep}kid a", album.key)
         assertEquals(3, album.songCount)
     }
 
@@ -142,11 +145,36 @@ class LibraryDerivationsTest {
     }
 
     @Test fun `keys are fixed points of normalize so callers may re-normalize safely`() {
-        // A blank album makes the compound key end in a space; if normalize() were not
-        // applied when building it, a caller normalizing the key back would never match.
+        // A blank album leaves the separator on the key's edge, where trim() removes it
+        // (U+001F IS whitespace to the JVM). Building the key through normalize() means a
+        // caller who defensively re-normalizes still matches.
         val s = song(id = 1, title = "T", album = "  ", artist = "Queen")
+        assertEquals("queen", LibraryKeys.albumKey(s))
         assertEquals(LibraryKeys.albumKey(s), LibraryKeys.normalize(LibraryKeys.albumKey(s)))
         assertEquals(LibraryKeys.artistKey(s), LibraryKeys.normalize(LibraryKeys.artistKey(s)))
+    }
+
+    @Test fun `the separator survives inside a key`() {
+        // If trim() ate an interior separator, every key would silently become a plain
+        // concatenation and the collision class below would come back.
+        val key = LibraryKeys.albumKey(song(id = 1, title = "T", album = "Live", artist = "Bob"))
+        assertEquals("bob${sep}live", key)
+        assertEquals(key, LibraryKeys.normalize(key))
+    }
+
+    @Test fun `differently split artist and title do not collide`() {
+        // With a space separator both of these keyed to "bob dylan live" — two unrelated
+        // albums merging into one tile and one detail screen.
+        val songs = listOf(
+            song(id = 1, title = "A", artist = "Bob", album = "Dylan Live"),
+            song(id = 2, title = "B", artist = "Bob Dylan", album = "Live"),
+        )
+        val albums = LibraryDerivations.deriveAlbums(songs)
+        assertEquals(2, albums.size)
+        assertEquals(
+            setOf("bob${sep}dylan live", "bob dylan${sep}live"),
+            albums.map { it.key }.toSet(),
+        )
     }
 
     // --- track ordering -----------------------------------------------------------------
