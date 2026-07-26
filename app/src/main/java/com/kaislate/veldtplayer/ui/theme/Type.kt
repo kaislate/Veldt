@@ -7,43 +7,76 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.sp
 import com.kaislate.veldtplayer.R
 
 /**
- * Bricolage Grotesque (OFL 1.1) is a VARIABLE font: one file serves every weight.
- * [FontVariation.Settings] selects the axis values per weight; on API < 26 the
- * settings are ignored and the default instance renders, which is acceptable
- * (minSdk is 29, so this only matters if the floor ever drops).
+ * Bricolage Grotesque (OFL 1.1) is a VARIABLE font: one file serves every weight
+ * and every optical size.
+ *
+ * Its `fvar` defaults sit at the axis extremes — `opsz` 96, `wght` 800, `wdth` 100
+ * (the default instance is literally named "Bricolage Grotesque 96pt ExtraBold").
+ * Every axis we care about must therefore be set EXPLICITLY; anything left alone
+ * renders from the 96-point ExtraBold display master, which at list-row sizes reads
+ * cramped and spindly. On API < 26 variation settings are ignored entirely and that
+ * 96pt ExtraBold default is what renders — moot at minSdk 29, but the reason this
+ * must not be relied on if the floor ever drops.
+ *
+ * [opticalSize] should track the size the text is actually rendered at.
  */
 @OptIn(ExperimentalTextApi::class)
-private fun bricolage(weight: FontWeight) = Font(
+private fun bricolage(weight: FontWeight, opticalSize: TextUnit) = Font(
     resId = R.font.bricolage_grotesque,
     weight = weight,
     variationSettings = FontVariation.Settings(
         FontVariation.weight(weight.weight),
         FontVariation.width(100f),
+        FontVariation.opticalSizing(opticalSize),
     ),
 )
 
-/** Display face — screen titles, track titles, section headers. Never body text. */
-val DisplayFamily = FontFamily(
-    bricolage(FontWeight.Normal),
-    bricolage(FontWeight.Medium),
-    bricolage(FontWeight.SemiBold),
-    bricolage(FontWeight.Bold),
+/** All four weights we use, cut at a single optical size. */
+private fun bricolageFamily(opticalSize: TextUnit) = FontFamily(
+    bricolage(FontWeight.Normal, opticalSize),
+    bricolage(FontWeight.Medium, opticalSize),
+    bricolage(FontWeight.SemiBold, opticalSize),
+    bricolage(FontWeight.Bold, opticalSize),
 )
+
+/**
+ * Large-format face — screen titles and section headers, bound to the `display*`
+ * and `headline*` slots. Never body text. Cut at `opsz` 48 for the ~24–57sp range
+ * those slots occupy.
+ */
+val DisplayFamily = bricolageFamily(48.sp)
+
+/**
+ * Text-range face — list-row titles, track and album names, bound to `titleLarge`
+ * and `titleMedium`. Cut at `opsz` 18: those slots render at 16–22sp, where the
+ * display master's tight tracking and fine joints would read cramped.
+ */
+val TitleFamily = bricolageFamily(18.sp)
 
 object VeldtText {
     /**
      * Tabular figures. Any digit that changes while on screen (playback position,
      * duration, counts) MUST use this, or the text width jitters every second.
+     *
+     * The 14sp size is DELIBERATE, not inherited. This style is normally passed
+     * standalone (`style = VeldtText.numeric`), which REPLACES the surrounding
+     * slot's style rather than merging with it, so an unset size would silently
+     * resolve to Compose's default instead of the slot's. Callers that need a
+     * larger readout should copy it with an explicit size.
+     *
      * Verified on-device in Task 14; if Bricolage lacks `tnum`, switch this style's
      * fontFamily to FontFamily.Monospace rather than shipping jittering digits.
      */
     val numeric = TextStyle(
-        fontFamily = DisplayFamily,
+        fontFamily = TitleFamily,
         fontFeatureSettings = "tnum",
         fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
     )
 }
 
@@ -59,7 +92,7 @@ val VeldtTypography = Typography().let { base ->
         headlineLarge = base.headlineLarge.copy(fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold),
         headlineMedium = base.headlineMedium.copy(fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold),
         headlineSmall = base.headlineSmall.copy(fontFamily = DisplayFamily, fontWeight = FontWeight.Medium),
-        titleLarge = base.titleLarge.copy(fontFamily = DisplayFamily, fontWeight = FontWeight.SemiBold),
-        titleMedium = base.titleMedium.copy(fontFamily = DisplayFamily, fontWeight = FontWeight.Medium),
+        titleLarge = base.titleLarge.copy(fontFamily = TitleFamily, fontWeight = FontWeight.SemiBold),
+        titleMedium = base.titleMedium.copy(fontFamily = TitleFamily, fontWeight = FontWeight.Medium),
     )
 }
