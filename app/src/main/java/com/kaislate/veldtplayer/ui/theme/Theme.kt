@@ -9,5 +9,5 @@ import androidx.compose.runtime.Composable
 @Composable
 fun VeldtTheme(content: @Composable () -> Unit) {
     val colors = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
-    MaterialTheme(colorScheme = colors, content = content)
+    MaterialTheme(colorScheme = colors, typography = VeldtTypography, content = content)
 }
