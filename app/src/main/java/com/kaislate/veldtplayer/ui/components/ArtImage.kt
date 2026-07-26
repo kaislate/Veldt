@@ -2,6 +2,7 @@ package com.kaislate.veldtplayer.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -9,15 +10,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
 import com.kaislate.veldtplayer.data.art.SongArt
 import com.kaislate.veldtplayer.ui.theme.DisplayFamily
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+
+/** Glyph height as a fraction of the placeholder's shorter side. */
+private const val GLYPH_FRACTION = 0.36f
+
+/**
+ * Cap on the box side the glyph is derived from. [BoxWithConstraints] reports
+ * `Dp.Infinity` under an unbounded parent, which would otherwise yield an infinite
+ * font size; the cap also keeps the glyph sane on tablet-sized full-screen art.
+ */
+private val GLYPH_MAX_BOX = 512.dp
 
 /**
  * THE album-art composable. Every surface uses it so art loading, placeholders and
@@ -43,6 +56,11 @@ fun ArtImage(
     ) {
         when (painter.state) {
             is AsyncImagePainter.State.Success -> SubcomposeAsyncImageContent()
+            // Loading draws the wash ALONE. The glyph means "there is no art", not
+            // "art is one frame away" — with crossfade off, drawing it during a load
+            // makes a re-decoded row hard-cut from letter to cover, a visible pop.
+            is AsyncImagePainter.State.Loading -> ArtWash(palette, Modifier.fillMaxSize())
+            // Error / Empty: resolution finished and there is no art. Wash plus glyph.
             else -> ArtPlaceholder(initial, palette, Modifier.fillMaxSize())
         }
     }
@@ -59,24 +77,36 @@ fun ArtPlaceholder(
     palette: DominantColors,
     modifier: Modifier = Modifier,
 ) {
-    Box(
-        modifier = modifier.background(
-            Brush.linearGradient(
-                listOf(
-                    palette.accent.copy(alpha = 0.55f),
-                    palette.bg,
-                )
-            )
-        ),
+    BoxWithConstraints(
+        modifier = modifier.background(paletteWash(palette)),
         contentAlignment = Alignment.Center,
     ) {
+        // Box-relative, never a fixed sp. A fixed size reads as an accident on the
+        // full-screen art, and because sp tracks the user's font scale it overflows a
+        // 48dp row thumbnail at large scales (Box does not clip). Converting Dp -> Sp
+        // divides that scale back out, so the glyph stays this fraction of the box.
+        val side: Dp = minOf(maxWidth, maxHeight, GLYPH_MAX_BOX)
+        val glyphSize = with(LocalDensity.current) { (side * GLYPH_FRACTION).toSp() }
         Text(
             text = initial.uppercaseChar().toString(),
             color = palette.onBg.copy(alpha = 0.75f),
             fontFamily = DisplayFamily,
             fontWeight = FontWeight.Bold,
-            fontSize = 28.sp,
+            fontSize = glyphSize,
             textAlign = TextAlign.Center,
         )
     }
 }
+
+/** The palette wash alone — the shared ground under both placeholder states. */
+@Composable
+private fun ArtWash(palette: DominantColors, modifier: Modifier = Modifier) {
+    Box(modifier.background(paletteWash(palette)))
+}
+
+private fun paletteWash(palette: DominantColors): Brush = Brush.linearGradient(
+    listOf(
+        palette.accent.copy(alpha = 0.55f),
+        palette.bg,
+    )
+)

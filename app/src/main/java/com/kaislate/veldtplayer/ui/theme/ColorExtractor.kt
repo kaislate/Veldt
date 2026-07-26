@@ -32,9 +32,13 @@ data class DominantColors(
  *
  * [extract] walks every pixel of the bitmap via [Palette]; it must never be called on
  * the main thread. Use `PaletteCache.paletteFor`, which dispatches it and memoises the
- * result. The bitmap must also be a readable software bitmap — [Palette] cannot sample
- * a `Config.HARDWARE` or recycled bitmap, so image loading must request
- * `allowHardware(false)` and keep the bitmap alive across the call.
+ * result. Callers must keep the bitmap alive and unrecycled across the call.
+ *
+ * [Palette] cannot sample a `Config.HARDWARE` bitmap, so [extract] converts one itself
+ * before generating. It does NOT rely on callers passing `allowHardware(false)`: that
+ * flag governs only Coil's own decoder, and `AlbumArtFetcher` returns a fully-formed
+ * `DrawableResult` that bypasses the decoder entirely — so the flag would be a no-op on
+ * the app's main art path. Guarding here covers every caller.
  */
 object ColorExtractor {
 
@@ -83,9 +87,12 @@ object ColorExtractor {
     fun extract(bitmap: Bitmap?): DominantColors {
         if (bitmap == null) return NEUTRAL
 
+        // copy() returns null if the allocation fails — degrade rather than crash.
+        val readable = toReadable(bitmap) ?: return NEUTRAL
+
         // Filters cleared: Palette's defaults reject near-black and near-white swatches,
         // which leaves moody or monochrome artwork with no swatches at all.
-        val palette = Palette.from(bitmap).clearFilters().generate()
+        val palette = Palette.from(readable).clearFilters().generate()
 
         // A dark ground first, because the whole app sits on it. Every lookup carries a
         // default, so artwork with no swatch of a given kind degrades instead of failing.
@@ -106,6 +113,21 @@ object ColorExtractor {
 
         return DominantColors(bg = bg, onBg = onBg, accent = accent, waveColors = waveColors)
     }
+
+    /**
+     * A bitmap [Palette] can actually sample. A `Config.HARDWARE` bitmap's pixels live
+     * in graphics memory and cannot be read back — `getPixels` throws — so it is copied
+     * to a software config. Any other config is returned as-is, with no copy: artwork is
+     * multi-megabyte and the common case must not allocate a second one.
+     *
+     * Returns null only when the copy allocation fails.
+     */
+    internal fun toReadable(bitmap: Bitmap): Bitmap? =
+        if (bitmap.config == Bitmap.Config.HARDWARE) {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            bitmap
+        }
 
     /**
      * Returns [fg] lightened toward white just far enough to read against [bg], or [fg]
