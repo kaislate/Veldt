@@ -197,13 +197,21 @@ class LibraryDerivationsTest {
             song(id = 1, title = "a", artist = "Queen", album = "greatest hits"),
             song(id = 2, title = "b", artist = "ABBA", album = "Greatest Hits"),
             song(id = 3, title = "c", artist = "X", album = "Bends"),
+            // "apple" vs "Bends" is the pair that PINS the fold: raw ASCII puts every
+            // capital ahead of every lowercase letter, so an unfolded comparator orders
+            // these Bends-then-apple. Without this pair the assertion below stays green
+            // with the fold deleted, and the fold could be refactored away unnoticed.
+            song(id = 4, title = "d", artist = "Y", album = "apple"),
         )
         val albums = LibraryDerivations.deriveAlbums(songs)
-        assertEquals(listOf("Bends", "Greatest Hits", "greatest hits"), albums.map { it.name })
+        assertEquals(
+            listOf("apple", "Bends", "Greatest Hits", "greatest hits"),
+            albums.map { it.name },
+        )
         // The two same-titled records land adjacent, ordered by their differing owners.
         assertEquals(
             listOf("abba${sep}greatest hits", "queen${sep}greatest hits"),
-            albums.drop(1).map { it.key },
+            albums.drop(2).map { it.key },
         )
     }
 

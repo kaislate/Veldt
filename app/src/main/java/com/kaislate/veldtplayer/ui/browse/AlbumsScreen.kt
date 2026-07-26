@@ -154,8 +154,12 @@ private fun AlbumTile(
     // The album artist when the tags carry one, otherwise the representative track's
     // artist — which is exactly the field LibraryKeys.albumKey grouped on, so the caption
     // always names the same owner the tile was keyed by.
-    val artist = (album.albumArtist ?: cover?.artist).orEmpty().trim()
-        .ifBlank { "Unknown artist" }
+    //
+    // takeIf, not a plain elvis: MediaStore hands back an EMPTY album-artist column rather
+    // than a null one when the tag exists but is blank, so `?:` alone would caption a
+    // correctly-tagged Radiohead record "Unknown artist" while the Artists tab named it.
+    val artist = (album.albumArtist?.takeIf { it.isNotBlank() } ?: cover?.artist)
+        .orEmpty().trim().ifBlank { "Unknown artist" }
 
     Column(
         modifier = modifier

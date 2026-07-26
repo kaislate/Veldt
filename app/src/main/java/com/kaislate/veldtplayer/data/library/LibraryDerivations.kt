@@ -14,6 +14,19 @@ import com.kaislate.veldtplayer.data.library.model.Song
 object LibraryDerivations {
 
     /**
+     * See [deriveAlbums] for why this order and not key order.
+     *
+     * Hoisted to a single instance, and folded with [String.CASE_INSENSITIVE_ORDER] rather
+     * than by lowercasing inside the selector: a selector-based fold re-runs per COMPARISON,
+     * so it would allocate ~2·N·log N throwaway strings every time the albums flow re-derives
+     * — which is on `Dispatchers.Main.immediate`, once per upsert batch, throughout a scan.
+     */
+    private val ALBUM_ORDER: Comparator<Album> =
+        compareBy<Album> { it.name.isBlank() }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+            .thenBy { it.key }
+
+    /**
      * Albums come out ALPHABETICAL BY TITLE, deliberately — not in key order.
      *
      * The compound key leads with the album artist, so sorting by it silently produced an
@@ -37,13 +50,7 @@ object LibraryDerivations {
                     songCount = rows.size,
                 )
             }
-            .sortedWith(
-                compareBy(
-                    { it.name.isBlank() },
-                    { it.name.lowercase() },
-                    { it.key },
-                )
-            )
+            .sortedWith(ALBUM_ORDER)
 
     /**
      * Artists sort by key, which for an artist IS the folded display name — so unlike
