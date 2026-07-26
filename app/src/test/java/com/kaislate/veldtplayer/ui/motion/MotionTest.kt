@@ -20,6 +20,14 @@ class MotionTest {
         assertEquals(3 * Motion.STAGGER_MS, Motion.staggerDelayMs(3, reduced = false))
     }
 
+    /**
+     * Pinned to a literal on purpose: every other assertion here is written in terms of
+     * STAGGER_MS, so zeroing it would delete the stagger and leave the suite green.
+     */
+    @Test fun `stagger step is a real, non-zero delay`() {
+        assertEquals(28, Motion.staggerDelayMs(1, reduced = false))
+    }
+
     @Test fun `stagger delay is capped so long lists do not crawl`() {
         val capped = Motion.STAGGER_CAP * Motion.STAGGER_MS
         assertEquals(capped, Motion.staggerDelayMs(Motion.STAGGER_CAP, reduced = false))

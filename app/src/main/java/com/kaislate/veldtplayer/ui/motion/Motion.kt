@@ -39,8 +39,15 @@ object Motion {
     /** Per-item delay in a staggered list entrance. */
     const val STAGGER_MS = 28
 
-    /** Beyond this index every item shares the same delay, so long lists don't crawl. */
+    /**
+     * Beyond this index every item shares the same delay, so long lists don't crawl —
+     * and, since those rows gain nothing from animating, it doubles as the cutoff for
+     * which rows animate at all. See [staggeredEntrance].
+     */
     const val STAGGER_CAP = 10
+
+    /** Vertical distance a list item rises through as it enters, in dp. */
+    const val RISE_DP = 8
 
     /**
      * The system "remove animations" accessibility setting reports as an animator
