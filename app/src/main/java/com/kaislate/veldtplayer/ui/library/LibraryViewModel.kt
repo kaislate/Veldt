@@ -30,6 +30,11 @@ class LibraryViewModel @Inject constructor(
     /** Play-in-context: the tapped song queues the whole list it was tapped in (spec §5). */
     fun onSongTap(song: Song) {
         val list = songs.value
-        playback.playFrom(list, list.indexOfFirst { it.id == song.id })
+        val index = list.indexOfFirst { it.id == song.id }
+        // A rescan landing between render and tap can drop the song from the list.
+        // QueueBuilder would coerce -1 to 0 and play track 1 instead of track 400, so
+        // treat not-found as a no-op: doing nothing beats confidently doing the wrong thing.
+        if (index < 0) return
+        playback.playFrom(list, index)
     }
 }
