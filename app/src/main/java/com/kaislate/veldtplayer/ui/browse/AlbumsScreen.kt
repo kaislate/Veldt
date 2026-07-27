@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
+import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.LibraryKeys
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Song
@@ -153,16 +154,12 @@ private fun AlbumTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val title = album.name.ifBlank { "Unknown album" }
+    val title = DisplayNames.album(album.name)
     // The album artist when the tags carry one, otherwise the representative track's
     // artist — which is exactly the field LibraryKeys.albumKey grouped on, so the caption
-    // always names the same owner the tile was keyed by.
-    //
-    // takeIf, not a plain elvis: MediaStore hands back an EMPTY album-artist column rather
-    // than a null one when the tag exists but is blank, so `?:` alone would caption a
-    // correctly-tagged Radiohead record "Unknown artist" while the Artists tab named it.
-    val artist = (album.albumArtist?.takeIf { it.isNotBlank() } ?: cover?.artist)
-        .orEmpty().trim().ifBlank { "Unknown artist" }
+    // always names the same owner the tile was keyed by. DisplayNames owns that fallback
+    // (and the "<unknown>" sentinel behind it) for every screen at once.
+    val artist = DisplayNames.albumArtist(album.albumArtist, cover?.artist)
 
     Column(
         modifier = modifier
@@ -177,7 +174,12 @@ private fun AlbumTile(
         //
         // sharedArt makes this cover the SOURCE of the morph into the album page: tapping
         // the tile sends this artwork to the detail header instead of cross-fading two
-        // copies of it. It sits before clip() so the corner radius interpolates too.
+        // copies of it.
+        //
+        // It sits BEFORE clip() so the clip is part of what travels — the radius itself is
+        // a constant and does not interpolate, but a clip applied outside the shared node
+        // would be left behind when the element renders into the transition overlay, and
+        // the cover would square off for the length of the morph.
         ArtImage(
             art = cover?.toSongArt(),
             palette = palette,

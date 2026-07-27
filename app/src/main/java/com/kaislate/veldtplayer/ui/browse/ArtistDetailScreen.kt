@@ -36,7 +36,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
+import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.LibraryKeys
+import com.kaislate.veldtplayer.data.library.displayArtist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.SongRow
@@ -74,6 +76,8 @@ fun ArtistDetailScreen(
     // remember(artistKey): songsForArtist builds a NEW cold flow per call.
     val songsFlow = remember(artistKey) { vm.songsForArtist(artistKey) }
     val songs by songsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    // The whole library, for the album strip's covers ONLY — see coverByAlbum below.
+    val allSongs by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
     val palette = ColorExtractor.extract(null)
 
@@ -96,21 +100,30 @@ fun ArtistDetailScreen(
         return
     }
 
-    val name = songs.first().artist.trim().ifBlank { "Unknown artist" }
+    val name = songs.first().displayArtist()
     // The portrait the Artists row drew, reached by the same order-independent rule, so the
     // two are one image and the morph is continuous rather than a swap.
     val portrait = remember(songs) { songs.coverTrack() }
 
+    // Covers are chosen over each album's FULL track list, not over this artist's share of
+    // it. On a compilation — or any record with guest features, which is what albumArtist
+    // exists for — the two sets differ, so picking from the artist's subset would hand this
+    // strip a different track than the album page picks, and the morph between them would
+    // degrade into the cover swap coverTrack was written to prevent.
+    val coverByAlbum: Map<String, Song?> = remember(allSongs) {
+        allSongs.groupBy { LibraryKeys.albumKey(it) }.mapValues { (_, rows) -> rows.coverTrack() }
+    }
+
     // Keyed on the COMPOUND album key, never the title: it is what the route expects, and a
     // title-only key would merge two same-titled records into one card. songsForArtist is
     // already album-major, so first-per-key preserves that order.
-    val albums: List<ArtistAlbum> = remember(songs) {
+    val albums: List<ArtistAlbum> = remember(songs, coverByAlbum) {
         songs.groupBy { LibraryKeys.albumKey(it) }
             .map { (key, rows) ->
                 ArtistAlbum(
                     key = key,
-                    name = rows.first().album.trim().ifBlank { "Unknown album" },
-                    cover = rows.coverTrack(),
+                    name = DisplayNames.album(rows.first().album),
+                    cover = coverByAlbum[key],
                 )
             }
     }

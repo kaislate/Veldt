@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
+import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.LibraryKeys
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
@@ -129,7 +130,7 @@ private fun ArtistRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val name = artist.name.ifBlank { "Unknown artist" }
+    val name = DisplayNames.artist(artist.name)
     Row(
         modifier = modifier
             .fillMaxWidth()

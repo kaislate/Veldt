@@ -17,6 +17,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.data.art.toSongArt
+import com.kaislate.veldtplayer.data.library.displayAlbum
+import com.kaislate.veldtplayer.data.library.displayArtist
+import com.kaislate.veldtplayer.data.library.displayTitle
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
@@ -81,13 +84,13 @@ fun SongRow(
                 .padding(start = 12.dp)
         ) {
             Text(
-                text = song.title,
+                text = song.displayTitle(),
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                text = "${song.artist} · ${song.album}",
+                text = "${song.displayArtist()} · ${song.displayAlbum()}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

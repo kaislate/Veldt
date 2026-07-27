@@ -39,7 +39,18 @@ object LibraryKeys {
     /** Key for songs whose artist tag is blank. */
     const val UNKNOWN_ARTIST = "unknown-artist"
 
-    fun normalize(value: String): String = value.trim().lowercase()
+    /**
+     * Folds a tag to its grouping form. A tag that says nothing folds to the EMPTY string,
+     * which the key builders then turn into [UNKNOWN_ALBUM] / [UNKNOWN_ARTIST].
+     *
+     * "Says nothing" is [DisplayNames.isMissing], not `isBlank()`, so MediaStore's literal
+     * `<unknown>` sentinel folds away here rather than becoming a real artist that every
+     * untagged file in the library is grouped under. Doing it in the key rather than only
+     * at the scan boundary means a library scanned before that bug was found regroups on
+     * read, without waiting for files to change and be re-scanned.
+     */
+    fun normalize(value: String): String =
+        if (DisplayNames.isMissing(value)) "" else value.trim().lowercase()
 
     /**
      * An album is identified by its artist AND its title, never the title alone: a library
@@ -52,7 +63,10 @@ object LibraryKeys {
     fun albumKey(song: Song): String = albumKey(song.album, song.albumArtist, song.artist)
 
     fun albumKey(album: String, albumArtist: String?, artist: String): String {
-        val owner = normalize(albumArtist ?: artist)
+        // tagOrNull, not `?:` — an ALBUM_ARTIST column holding "" or "<unknown>" is not a
+        // tag, and letting it win would file a correctly-tagged record under nobody while
+        // the track artist sat right there.
+        val owner = normalize(DisplayNames.tagOrNull(albumArtist) ?: artist)
         // Re-normalized so the compound is itself a fixed point of normalize(): a blank field
         // leaves the separator on an edge, where trim() drops it. Interior ones survive.
         return normalize("$owner$FIELD_SEPARATOR${normalize(album)}").ifBlank { UNKNOWN_ALBUM }

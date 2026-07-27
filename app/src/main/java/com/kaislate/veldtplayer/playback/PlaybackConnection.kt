@@ -14,6 +14,9 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.library.displayAlbum
+import com.kaislate.veldtplayer.data.library.displayArtist
+import com.kaislate.veldtplayer.data.library.displayTitle
 import com.kaislate.veldtplayer.data.library.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -252,11 +255,15 @@ class PlaybackConnection @Inject constructor(
     private fun toMediaItem(song: Song): MediaItem = MediaItem.Builder()
         .setMediaId(song.id.toString())
         .setUri(Uri.parse(repo.playableUri(song)))
+        // Through DisplayNames, like every other surface. This metadata is what the
+        // notification, the lock screen and Android Auto render, so a raw tag here means
+        // the one place the user cannot correct is also the one place still showing
+        // "<unknown>" — or, once that is cleaned to blank, showing nothing at all.
         .setMediaMetadata(
             MediaMetadata.Builder()
-                .setTitle(song.title)
-                .setArtist(song.artist)
-                .setAlbumTitle(song.album)
+                .setTitle(song.displayTitle())
+                .setArtist(song.displayArtist())
+                .setAlbumTitle(song.displayAlbum())
                 .build()
         )
         .build()

@@ -20,6 +20,11 @@ import com.kaislate.veldtplayer.data.library.model.Song
  * Embedded art wins because it gives `AlbumArtFetcher` a second source when MediaStore has
  * no thumbnail for the track; the lowest song id breaks the tie because a MediaStore `_ID`
  * is stable and does not move when the library is re-sorted.
+ *
+ * **Order-independent is not set-independent.** Both ends of a morph must call this over
+ * the SAME songs, not merely over the same songs in a different order. An artist page holds
+ * only that artist's share of a compilation, so it asks this over the album's full track
+ * list rather than over its own rows — see `ArtistDetailScreen.coverByAlbum`.
  */
 internal fun List<Song>.coverTrack(): Song? =
     minWithOrNull(compareBy({ !it.hasEmbeddedArt }, { it.id }))

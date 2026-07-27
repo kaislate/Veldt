@@ -5,11 +5,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -29,13 +30,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
+import com.kaislate.veldtplayer.data.library.DisplayNames
+import com.kaislate.veldtplayer.data.library.displayAlbumArtist
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.SongRow
 import com.kaislate.veldtplayer.ui.motion.albumArtKey
+import com.kaislate.veldtplayer.ui.motion.rememberArtMorphActive
 import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 
@@ -50,9 +55,6 @@ private val SCRIM_HEIGHT = 140.dp
  * is what reads as depth; at 1 it would simply scroll away like any other row.
  */
 private const val PARALLAX = 0.5f
-
-/** The back button's tap target, and the diameter of the scrim disc behind it. */
-private val BACK_SIZE = 44.dp
 
 /**
  * One album: a full-bleed cover that the track list rises over.
@@ -104,38 +106,59 @@ fun AlbumDetailScreen(
     // The SAME representative track the grid tile drew, so both ends of the morph resolve
     // to one Coil cache entry and the art is already decoded when it lands. See coverTrack.
     val cover = remember(songs) { songs.coverTrack() }
-    val title = songs.first().album.trim().ifBlank { "Unknown album" }
-    val owner = (songs.first().albumArtist?.takeIf { it.isNotBlank() } ?: songs.first().artist)
-        .trim().ifBlank { "Unknown artist" }
+    val title = DisplayNames.album(songs.first().album)
+    val owner = songs.first().displayAlbumArtist()
 
     // Distance the list has travelled, in pixels, saturating once the header is off-screen.
-    // Reading firstVisibleItem* inside a graphicsLayer block keeps the whole parallax on
-    // the draw phase — no recomposition per scrolled pixel.
-    val scrolledPx: () -> Float = {
-        if (listState.firstVisibleItemIndex == 0) {
-            listState.firstVisibleItemScrollOffset.toFloat()
+    // Read inside a graphicsLayer block, so the whole parallax stays on the draw phase —
+    // no recomposition per scrolled pixel.
+    val morphing = rememberArtMorphActive()
+    val travelledPx: () -> Float = {
+        // Held at rest for the length of a morph. The art is not in this header then, it
+        // is in the air between two screens, and a header scrolled out of sight must not
+        // drag the travelling copy down with it. See rememberArtMorphActive.
+        if (morphing() || listState.firstVisibleItemIndex > 0) {
+            if (morphing()) 0f else Float.MAX_VALUE
         } else {
-            Float.MAX_VALUE
+            listState.firstVisibleItemScrollOffset.toFloat()
         }
     }
 
-    Box(modifier.fillMaxSize()) {
-        // Deliberately NOT inset at the top: the artwork bleeds under the status bar. The
-        // back button below takes the inset instead, so nothing collides with the clock.
-        ArtImage(
-            art = cover?.toSongArt(),
-            palette = palette,
-            initial = title.firstOrNull { it.isLetterOrDigit() } ?: '♪',
-            modifier = Modifier
+    // Window insets: the artwork bleeds under the status bar on purpose, so the TOP inset
+    // is spent on the back button rather than on the layout. The sides are applied,
+    // because a landscape cutout would otherwise eat the back button and the track rows.
+    val direction = LocalLayoutDirection.current
+    Box(
+        modifier
+            .fillMaxSize()
+            .padding(
+                start = contentPadding.calculateStartPadding(direction),
+                end = contentPadding.calculateEndPadding(direction),
+            )
+    ) {
+        // The parallax lives on a WRAPPER, deliberately outside the shared element.
+        // A graphicsLayer inside the shared node travels into the transition overlay with
+        // it, so a header faded to alpha 0 by scrolling made the art fly back to the grid
+        // INVISIBLE and the tile popped in at the end of the morph.
+        Box(
+            Modifier
                 .fillMaxWidth()
                 .height(HEADER_HEIGHT)
-                .sharedArt(albumArtKey(albumKey))
                 .graphicsLayer {
-                    val travelled = scrolledPx().coerceAtMost(size.height)
+                    val travelled = travelledPx().coerceAtMost(size.height)
                     translationY = -travelled * PARALLAX
                     alpha = 1f - travelled / size.height.coerceAtLeast(1f)
-                },
-        )
+                }
+        ) {
+            ArtImage(
+                art = cover?.toSongArt(),
+                palette = palette,
+                initial = title.firstOrNull { it.isLetterOrDigit() } ?: '♪',
+                modifier = Modifier
+                    .fillMaxSize()
+                    .sharedArt(albumArtKey(albumKey)),
+            )
+        }
 
         LazyColumn(
             state = listState,
@@ -201,25 +224,25 @@ fun AlbumDetailScreen(
             }
         }
 
-        // A scrim disc, because the arrow sits on artwork whose brightness is unknowable —
-        // a bare icon disappears against a pale cover.
-        Box(
+        // The scrim disc is drawn ON the button rather than behind a smaller one: nesting
+        // IconButton inside a 44dp box squeezed its own 48dp minimum touch target below
+        // the interactive minimum, and this is the screen's only navigation affordance.
+        // The disc exists at all because the arrow sits on artwork of unknowable
+        // brightness — a bare icon vanishes against a pale cover.
+        IconButton(
+            onClick = onBack,
             modifier = Modifier
                 .padding(top = contentPadding.calculateTopPadding())
                 .padding(8.dp)
                 .align(Alignment.TopStart)
-                .size(BACK_SIZE)
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.32f)),
-            contentAlignment = Alignment.Center,
         ) {
-            IconButton(onClick = onBack) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White,
-                )
-            }
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Back",
+                tint = Color.White,
+            )
         }
     }
 }

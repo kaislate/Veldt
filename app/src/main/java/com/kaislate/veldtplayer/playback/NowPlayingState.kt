@@ -2,6 +2,7 @@ package com.kaislate.veldtplayer.playback
 
 import com.kaislate.veldtplayer.data.art.SongArt
 import com.kaislate.veldtplayer.data.art.toSongArt
+import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.model.Song
 
 enum class RepeatMode { OFF, ALL, ONE }
@@ -86,9 +87,11 @@ data class NowPlayingState(
             }
             return NowPlayingState(
                 songId = song.id,
-                title = song.title.ifBlank { "Unknown title" },
-                artist = song.artist.ifBlank { "Unknown artist" },
-                album = song.album.ifBlank { "Unknown album" },
+                // DisplayNames, not ifBlank: a missing tag can also arrive as MediaStore's
+                // literal "<unknown>", which is not blank. One definition for the whole app.
+                title = DisplayNames.title(song.title),
+                artist = DisplayNames.artist(song.artist),
+                album = DisplayNames.album(song.album),
                 art = song.toSongArt(),
                 playState = playState,
                 durationMs = if (playerDurationMs > 0L) playerDurationMs else song.durationMs,

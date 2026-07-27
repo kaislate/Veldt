@@ -31,23 +31,19 @@ object Motion {
     val settle: SpringSpec<Float> =
         spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium)
 
-    /** How long a piece of album art takes to travel between two destinations. */
-    private const val SHARED_MS = 420
-
-    /** Shared-element art morph. Duration-based so both ends stay in lockstep. */
-    val shared: FiniteAnimationSpec<Float> = tween(durationMillis = SHARED_MS, easing = FastOutSlowInEasing)
-
     /**
-     * The same morph, Rect-typed.
+     * Shared-element art morph: the spec a cover travels between two destinations on.
+     * Duration-based rather than a spring so both ends stay in lockstep.
      *
-     * `BoundsTransform` animates a [Rect] and will not accept [shared], which is
-     * `FiniteAnimationSpec<Float>` — the two are not interchangeable. This exists so the
-     * call site selects a spec rather than declaring one; a `tween` written next to a
-     * `sharedElement` is the exact scattering this file prevents. Both forms read one
-     * duration constant so they cannot drift apart.
+     * Rect-typed because that is what `BoundsTransform` animates. The float-typed `shared`
+     * that used to sit here was written for a fallback cross-fade the Task 8 spike proved
+     * unnecessary, and it is deleted rather than kept "for later" — an unused spec in the
+     * motion vocabulary is a suggestion that something moves that way when nothing does.
+     * This exists so a call site SELECTS a spec instead of declaring one; a `tween` written
+     * next to a `sharedElement` is the exact scattering this file prevents.
      */
     val sharedBounds: FiniteAnimationSpec<Rect> =
-        tween(durationMillis = SHARED_MS, easing = FastOutSlowInEasing)
+        tween(durationMillis = 420, easing = FastOutSlowInEasing)
 
     /** Album-art palette drift on track change (spec §6) — competitors hard-cut here. */
     val palette: AnimationSpec<Color> = tween(durationMillis = 600, easing = LinearOutSlowInEasing)

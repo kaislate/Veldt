@@ -5,6 +5,7 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 
 /**
@@ -33,6 +34,24 @@ fun albumArtKey(albumKey: String): String = "album-art:$albumKey"
 
 /** As [albumArtKey], for the borrowed cover an artist is represented by. */
 fun artistArtKey(artistKey: String): String = "artist-art:$artistKey"
+
+/**
+ * Whether a shared-element morph is in flight right now, as a lambda so callers read it in
+ * the draw phase instead of recomposing on it.
+ *
+ * A screen needs this to stop applying its own scroll effects to art that is mid-morph. A
+ * shared element is drawn into the transition overlay, which BYPASSES the draw modifiers
+ * wrapping it in the normal tree — but any modifier inside the shared node travels with it.
+ * So a fade meant to hide a scrolled-away header also hid the artwork all the way back to
+ * the grid. Holding the effect at rest for the length of the morph is the honest fix: the
+ * art is not in the header during a transition, it is in the air.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+fun rememberArtMorphActive(): () -> Boolean {
+    val transition = LocalSharedTransitionScope.current ?: return { false }
+    return remember(transition) { { transition.isTransitionActive } }
+}
 
 /**
  * Marks this art as one end of the morph named [key].
