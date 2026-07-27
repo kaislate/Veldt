@@ -29,16 +29,30 @@ import com.kaislate.veldtplayer.ui.theme.DominantColors
 /** Blur radius for the tiers that have `RenderEffect`. Wide enough to erase all detail. */
 private val BLUR_RADIUS = 48.dp
 
-/**
- * How far past the surface [BackdropTier.Upscale] magnifies the art, so resampling softens it.
- *
- * Honest about what this buys: Coil sizes its bitmap to the surface it is drawn into, so a
- * full-screen backdrop gets a full-screen bitmap and magnifying it only blurs by the
- * resample. At the original 1.6x, forcing this tier on device left large album typography
- * plainly readable. 2.2x plus [BackdropTier.Upscale]'s heavier scrim is what finally broke
- * that up — more aggressive upsampling is the only blur mechanism a pre-31 device has.
- */
+/** How far past the surface [BackdropTier.Upscale] magnifies the art. */
 private const val UPSCALE = 2.2f
+
+/**
+ * [BackdropTier.Upscale] decodes the cover a fraction of the usual size and magnifies it,
+ * which is the only genuine low-pass a device without `RenderEffect` has.
+ *
+ * This replaced a mechanism that did not work. The tier used to rely on magnifying a
+ * full-size bitmap, on the premise that Coil hands back something smaller than the surface
+ * — it does not; it sizes the decode to the surface it draws into. Measured on device, the
+ * magnify-and-scrim approach left album typography plainly readable across the top of the
+ * frame, and no combination of the two could fix it: both magnification and scrim attenuate
+ * fine detail and broad colour by the same factor, so neither can hide the lettering while
+ * keeping the cover recognisable. Decoding small genuinely discards the detail instead.
+ *
+ * The divisor was picked against a target rather than by feel: the goal was for residual
+ * cover detail to reach the `Modifier.blur` tier's level, which measures 0.62 as the
+ * standard deviation of a high-passed band of backdrop. An eighth reached 1.04 — the
+ * lettering was gone but the tier was still measurably sharper than a real blur. A
+ * sixteenth reaches 0.71, and costs nothing: the cover's surviving colour spread is 15.7
+ * against an eighth's 14.4, i.e. marginally BETTER, because the residue an eighth leaves is
+ * mostly interpolation blocking rather than anything belonging to the artwork.
+ */
+private const val BACKDROP_DECODE_SAMPLE = 16
 
 /**
  * Opacity of the AGSL field where it sits over the artwork.
@@ -109,8 +123,8 @@ private fun currentTier(): BackdropTier = when {
  *  - 33+   the blurred cover **with a domain-warped AGSL field composited over it**, so the
  *          backdrop is the artwork *and* a treatment nothing else ships
  *  - 31-32 the blurred cover alone, via `Modifier.blur`
- *  - 29-30 the cover magnified past the surface so resampling softens it (see [UPSCALE]),
- *          under a heavier scrim
+ *  - 29-30 the cover decoded small and magnified, which is a real low-pass rather than a
+ *          dimming (see [BACKDROP_DECODE_SAMPLE]), under a heavier scrim
  *
  * Tier selection never leaks to callers: [BackdropTier] is private, there is no tier
  * parameter, and nothing tier-shaped appears in the signature.
@@ -188,7 +202,10 @@ private fun BlurredArt(
     )
 }
 
-/** The cover, drifting, magnified until resampling softens it. No `RenderEffect` anywhere. */
+/**
+ * The cover, drifting, decoded small and magnified so the resample is a real low-pass.
+ * No `RenderEffect` anywhere, so this works all the way down to API 29.
+ */
 @Composable
 private fun UpscaledArt(
     art: SongArt?,
@@ -201,6 +218,7 @@ private fun UpscaledArt(
         palette = palette,
         initial = NO_GLYPH,
         contentScale = ContentScale.Crop,
+        decodeSample = BACKDROP_DECODE_SAMPLE,
         modifier = modifier.graphicsLayer {
             applyDrift(drift.value)
             scaleX *= UPSCALE

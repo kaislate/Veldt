@@ -6,10 +6,12 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -18,7 +20,10 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImagePainter
 import coil.compose.SubcomposeAsyncImage
 import coil.compose.SubcomposeAsyncImageContent
+import coil.request.ImageRequest
+import com.kaislate.veldtplayer.data.art.ArtDecode
 import com.kaislate.veldtplayer.data.art.SongArt
+import com.kaislate.veldtplayer.data.art.artDecodeSample
 import com.kaislate.veldtplayer.ui.theme.DisplayFamily
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
@@ -35,6 +40,13 @@ private val GLYPH_MAX_BOX = 512.dp
 /**
  * THE album-art composable. Every surface uses it so art loading, placeholders and
  * cache behaviour are identical everywhere.
+ *
+ * [decodeSample] is the one knob, and it is opt-in: at [ArtDecode.FULL] this passes the
+ * bare [SongArt] exactly as it always has, so every existing caller keeps the same request,
+ * the same cache entry and the same bitmap. Only a caller that explicitly wants a smaller
+ * decode — today just the now-playing backdrop, which needs a genuine low-pass on devices
+ * with no `RenderEffect` — builds a request, and that request lands in its own cache entry.
+ * See [ArtDecode] for why the separation matters to the art morph.
  */
 @Composable
 fun ArtImage(
@@ -43,13 +55,22 @@ fun ArtImage(
     initial: Char,
     modifier: Modifier = Modifier,
     contentScale: ContentScale = ContentScale.Crop,
+    decodeSample: Int = ArtDecode.FULL,
 ) {
     if (art == null) {
         ArtPlaceholder(initial, palette, modifier)
         return
     }
+    val context = LocalContext.current
+    val model = remember(art, decodeSample, context) {
+        if (decodeSample == ArtDecode.FULL) {
+            art
+        } else {
+            ImageRequest.Builder(context).data(art).artDecodeSample(decodeSample).build()
+        }
+    }
     SubcomposeAsyncImage(
-        model = art,
+        model = model,
         contentDescription = null,
         modifier = modifier,
         contentScale = contentScale,

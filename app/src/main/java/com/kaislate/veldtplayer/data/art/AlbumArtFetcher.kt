@@ -29,6 +29,7 @@ import java.io.File
 class AlbumArtFetcher(
     private val data: SongArt,
     private val context: Context,
+    private val sample: Int = ArtDecode.FULL,
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
@@ -40,7 +41,11 @@ class AlbumArtFetcher(
             if (bitmap != null) {
                 return@withContext DrawableResult(
                     drawable = BitmapDrawable(context.resources, bitmap),
-                    isSampled = false,
+                    // Truthful, and load-bearing: Coil rejects a cached bitmap that is
+                    // flagged sampled when a later request needs a larger one. Claiming
+                    // a downsampled decode was the original is how a small backdrop
+                    // bitmap would end up on a full-screen surface.
+                    isSampled = sample != ArtDecode.FULL,
                     dataSource = DataSource.DISK,
                 )
             }
@@ -48,8 +53,14 @@ class AlbumArtFetcher(
         null // -> Coil reports error state -> ArtImage renders the themed placeholder
     }
 
+    /**
+     * [ArtDecode.FULL] reproduces the previous fixed request exactly; a larger divisor asks
+     * MediaStore for a proportionally smaller thumbnail, floored so a pathological divisor
+     * cannot ask for a zero-sized image.
+     */
     private fun loadThumbnail(uri: String): Bitmap? = runCatching {
-        context.contentResolver.loadThumbnail(Uri.parse(uri), THUMB_SIZE, null)
+        val side = (THUMB_PX / sample).coerceAtLeast(MIN_PX)
+        context.contentResolver.loadThumbnail(Uri.parse(uri), Size(side, side), null)
     }.getOrNull()
 
     private fun loadEmbedded(filePath: String): Bitmap? = runCatching {
@@ -60,16 +71,21 @@ class AlbumArtFetcher(
         // getTag() returns Guava Optional<Tag>; orNull() -> Tag?.
         val tag = AudioFileIO.read(file).tag.orNull() ?: return@runCatching null
         val bytes = tag.artworkList.firstOrNull()?.binaryData ?: return@runCatching null
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        // inSampleSize 1 is BitmapFactory's default, so FULL decodes exactly as before.
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
     }.getOrNull()
 
     class Factory(private val context: Context) : Fetcher.Factory<SongArt> {
         override fun create(data: SongArt, options: Options, imageLoader: ImageLoader): Fetcher =
-            AlbumArtFetcher(data, context)
+            AlbumArtFetcher(data, context, options.artDecodeSample())
     }
 
     private companion object {
         /** Large enough for the full-screen now-playing art on a 1080p phone. */
-        val THUMB_SIZE = Size(1024, 1024)
+        const val THUMB_PX = 1024
+
+        /** Floor for a sampled request, so a huge divisor still yields a usable bitmap. */
+        const val MIN_PX = 16
     }
 }
