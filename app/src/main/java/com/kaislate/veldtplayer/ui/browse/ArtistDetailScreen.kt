@@ -1,24 +1,20 @@
 package com.kaislate.veldtplayer.ui.browse
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -40,22 +36,15 @@ import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.LibraryKeys
 import com.kaislate.veldtplayer.data.library.displayArtist
 import com.kaislate.veldtplayer.data.library.model.Song
+import com.kaislate.veldtplayer.ui.components.AlbumCard
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.SongRow
-import com.kaislate.veldtplayer.ui.motion.albumArtKey
 import com.kaislate.veldtplayer.ui.motion.artistArtKey
 import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
-import com.kaislate.veldtplayer.ui.theme.DominantColors
 
 /** The header portrait — big enough to anchor the name, not so big it becomes the screen. */
 private val PORTRAIT_SIZE = 96.dp
-
-/** One album card in the strip. */
-private val CARD_WIDTH = 148.dp
-
-/** Side margin shared with the album strip's first card, so the two align. */
-private val SIDE_MARGIN = 16.dp
 
 /**
  * One artist: their records as a strip of covers, then every track they appear on.
@@ -192,8 +181,12 @@ fun ArtistDetailScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 items(albums, key = { it.key }) { album ->
+                    // caption null: every card on this shelf belongs to the artist named in
+                    // the header, so repeating them under each cover would say nothing.
                     AlbumCard(
-                        album = album,
+                        albumKey = album.key,
+                        title = album.name,
+                        cover = album.cover,
                         palette = palette,
                         onClick = { onOpenAlbum(album.key) },
                     )
@@ -212,50 +205,3 @@ fun ArtistDetailScreen(
 
 /** One record on an artist's shelf. */
 private data class ArtistAlbum(val key: String, val name: String, val cover: Song?)
-
-@Composable
-private fun AlbumCard(
-    album: ArtistAlbum,
-    palette: DominantColors,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .width(CARD_WIDTH)
-            // Clip before clickable, so the ripple stops at the card's corners rather than
-            // painting a rectangle across the artwork.
-            .clip(RoundedCornerShape(18.dp))
-            .clickable(onClick = onClick)
-            .padding(bottom = 8.dp),
-    ) {
-        ArtImage(
-            art = album.cover?.toSongArt(),
-            palette = palette,
-            initial = album.name.firstOrNull { it.isLetterOrDigit() } ?: '♪',
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .sharedArt(albumArtKey(album.key))
-                .clip(RoundedCornerShape(14.dp)),
-        )
-        Text(
-            text = album.name,
-            style = MaterialTheme.typography.bodyMedium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 8.dp),
-        )
-    }
-}
-
-/** Quiet divider-by-typography: two sections in one scroll need naming, not a rule line. */
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = SIDE_MARGIN, top = 20.dp, bottom = 10.dp),
-    )
-}

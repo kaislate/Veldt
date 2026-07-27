@@ -47,15 +47,24 @@ fun rememberNavItems(): List<NavItem> = remember {
     )
 }
 
+/**
+ * [topBar] is a slot rather than a fixed bar because it is EMPTY on most destinations: the
+ * detail screens and search draw their own headers with a back affordance in them, and a
+ * second bar above those would be one row of chrome doing nothing. The caller decides per
+ * route; an empty slot costs the Scaffold zero top padding, which is exactly what the
+ * screens that pass content under the status bar already assume.
+ */
 @Composable
 fun VeldtScaffold(
     currentRoute: String?,
     items: List<NavItem>,
     snackbarHostState: SnackbarHostState,
     onSelect: (String) -> Unit,
+    topBar: @Composable () -> Unit,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
+        topBar = topBar,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             // Translucent, because screens hand their window insets to a scrollable's

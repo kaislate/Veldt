@@ -43,6 +43,29 @@ internal fun countOf(count: Int, noun: String): String =
  */
 internal val LIST_AIR = 8.dp
 
+/**
+ * The side margin a browse surface's content starts at — the same 16dp [SongRow] and the
+ * artist portrait row already inset themselves by, so labels, rows and shelves all line up
+ * on one edge.
+ */
+internal val SIDE_MARGIN = 16.dp
+
+/**
+ * Quiet divider-by-typography. A scroll that holds two or three kinds of thing (an artist's
+ * records then their tracks; search's artists, albums and songs) needs those runs NAMED,
+ * not separated by rule lines — a hairline across an art-forward list is one more thing
+ * competing with the artwork.
+ */
+@Composable
+internal fun SectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.padding(start = SIDE_MARGIN, top = 20.dp, bottom = 10.dp),
+    )
+}
+
 /** The art-sized emblem every browse message surface is built around. */
 private val EMBLEM_SIZE = 120.dp
 
@@ -128,9 +151,15 @@ fun EmptyState(
     )
 }
 
-/** The one full-screen message layout, so every such surface reads identically. */
+/**
+ * The one full-screen message layout, so every such surface reads identically.
+ *
+ * Internal rather than private because not every message carries an action: search's
+ * "start typing" and "no matches" surfaces have nothing to offer a button, and giving them
+ * a dead one purely to reach [EmptyState] would be worse than reaching this directly.
+ */
 @Composable
-private fun BrowseMessage(
+internal fun BrowseMessage(
     palette: DominantColors,
     title: String,
     body: String,

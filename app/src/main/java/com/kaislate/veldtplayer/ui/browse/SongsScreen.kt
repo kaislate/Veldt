@@ -68,10 +68,10 @@ fun SongsScreen(
     // beside it. Padding the container instead would buy the same air and none of the
     // depth.
     //
-    // The top one stays a padding modifier. Nothing is drawn over the status bar to
-    // scrim it — no app bar, no scrim — so letting rows pass under it just collides
-    // title text with the clock. Depth is worth having only where something is there to
-    // provide it.
+    // The top one stays a padding modifier. The tabs' app bar is transparent and holds
+    // the wordmark, so nothing up there scrims anything — letting rows pass under it
+    // would just collide title text with the wordmark and the clock. Depth is worth
+    // having only where something is there to provide it.
     val direction = LocalLayoutDirection.current
     LazyColumn(
         modifier = modifier

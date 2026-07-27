@@ -3,12 +3,21 @@ package com.kaislate.veldtplayer.ui.nav
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.graphics.Color
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavGraphBuilder
@@ -22,9 +31,16 @@ import com.kaislate.veldtplayer.ui.browse.ArtistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.ArtistsScreen
 import com.kaislate.veldtplayer.ui.browse.AudioAccessRequired
 import com.kaislate.veldtplayer.ui.browse.BrowseViewModel
+import com.kaislate.veldtplayer.ui.browse.SearchScreen
 import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.motion.LocalNavAnimatedVisibilityScope
 import com.kaislate.veldtplayer.ui.motion.LocalSharedTransitionScope
+
+/**
+ * The destinations that carry the app bar — the tabs, and only the tabs. Every other
+ * destination draws its own header with a back affordance in it.
+ */
+private val TAB_ROUTES = setOf(Destinations.SONGS, Destinations.ALBUMS, Destinations.ARTISTS)
 
 /**
  * SharedTransitionLayout wraps the NavHost so album art can morph continuously between
@@ -36,7 +52,7 @@ import com.kaislate.veldtplayer.ui.motion.LocalSharedTransitionScope
  * itself (`this@composable`), and the element genuinely interpolates its bounds rather
  * than cross-fading. No fallback is needed.
  */
-@OptIn(ExperimentalSharedTransitionApi::class)
+@OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun VeldtNavHost() {
     val navController = rememberNavController()
@@ -69,6 +85,34 @@ fun VeldtNavHost() {
                     }
                 }
             },
+            topBar = {
+                if (currentRoute in TAB_ROUTES) {
+                    TopAppBar(
+                        // titleLarge is already the display face (see Type.kt), so the
+                        // wordmark needs no styling of its own.
+                        title = { Text("Veldt") },
+                        actions = {
+                            IconButton(
+                                // launchSingleTop: a double tap must not stack two search
+                                // screens for the user to back out of twice.
+                                onClick = {
+                                    navController.navigate(Destinations.SEARCH) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                            ) {
+                                Icon(Icons.Filled.Search, contentDescription = "Search")
+                            }
+                        },
+                        // Transparent, because nothing scrolls under this bar — the screens
+                        // are padded below it. An opaque container would only draw a seam
+                        // between two surfaces of the same colour.
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = Color.Transparent,
+                        ),
+                    )
+                }
+            },
         ) { padding ->
             SharedTransitionLayout {
                 // Published once, for every destination below. See ui/motion/SharedArt.kt
@@ -97,6 +141,19 @@ fun VeldtNavHost() {
                         veldtDestination(Destinations.ARTISTS, audioGranted, requestAudio, padding) {
                             ArtistsScreen(
                                 vm = vm,
+                                onOpenArtist = { key ->
+                                    navController.navigate(Destinations.artistDetail(key))
+                                },
+                                contentPadding = padding,
+                            )
+                        }
+                        veldtDestination(Destinations.SEARCH, audioGranted, requestAudio, padding) {
+                            SearchScreen(
+                                vm = vm,
+                                onBack = { navController.popBackStack() },
+                                onOpenAlbum = { key ->
+                                    navController.navigate(Destinations.albumDetail(key))
+                                },
                                 onOpenArtist = { key ->
                                     navController.navigate(Destinations.artistDetail(key))
                                 },
