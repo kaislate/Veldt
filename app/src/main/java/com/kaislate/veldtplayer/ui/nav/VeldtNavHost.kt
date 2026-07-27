@@ -102,34 +102,43 @@ fun VeldtNavHost() {
                     currentRoute = currentRoute,
                     items = items,
                     snackbarHostState = snackbarHostState,
-                    bottomChromeVisible = !onNowPlaying,
+                    navigationBarVisible = !onNowPlaying,
                     miniPlayer = {
                         // Every read is INSIDE this slot on purpose. Read at nav-host level they
                         // would invalidate the whole scaffold — including the NavHost — on each
                         // track change and, for the palette drift, on every frame of it.
                         val npState by npVm.nowPlaying.collectAsStateWithLifecycle()
-                        val npPalette by npVm.palette.collectAsStateWithLifecycle()
-                        // Held as State and never unwrapped here: the 250ms position tick is read
-                        // in the mini-player's DRAW phase. See MiniPlayer's `progress` parameter.
-                        val npPosition = npVm.positionMs.collectAsStateWithLifecycle()
+                        // The remaining two are collected only once something is playing. The
+                        // position ticker is WhileSubscribed and polls for as long as anything
+                        // is attached, so collecting it unconditionally would have it running
+                        // for the app's whole foreground life against an empty queue.
+                        if (npState.isActive) {
+                            val npPalette by npVm.palette.collectAsStateWithLifecycle()
+                            // Held as State and never unwrapped here: the 250ms position tick is
+                            // read in the mini-player's DRAW phase. See MiniPlayer's `progress`.
+                            val npPosition = npVm.positionMs.collectAsStateWithLifecycle()
 
-                        MiniPlayer(
-                            state = npState,
-                            palette = rememberAnimatedPalette(npPalette),
-                            progress = {
-                                val duration = npState.durationMs
-                                if (duration > 0L) npPosition.value.toFloat() / duration else 0f
-                            },
-                            onToggle = npVm::toggle,
-                            onNext = npVm::next,
-                            onOpen = {
-                                // launchSingleTop: a second tap while the screen is opening must not
-                                // stack a second copy for the user to dismiss twice.
-                                navController.navigate(Destinations.NOW_PLAYING) {
-                                    launchSingleTop = true
-                                }
-                            },
-                        )
+                            MiniPlayer(
+                                state = npState,
+                                palette = rememberAnimatedPalette(npPalette),
+                                progress = {
+                                    val duration = npState.durationMs
+                                    if (duration > 0L) npPosition.value.toFloat() / duration else 0f
+                                },
+                                // Composed on EVERY route, including the one it hides on, because
+                                // it is one end of the art morph. See MiniPlayer's `visible`.
+                                visible = !onNowPlaying,
+                                onToggle = npVm::toggle,
+                                onNext = npVm::next,
+                                onOpen = {
+                                    // launchSingleTop: a second tap while the screen is opening
+                                    // must not stack a second copy to dismiss twice.
+                                    navController.navigate(Destinations.NOW_PLAYING) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                        }
                     },
                     onSelect = { route ->
                         if (route != currentRoute) {
@@ -242,6 +251,9 @@ fun VeldtNavHost() {
                         ) {
                             NowPlayingScreen(
                                 vm = npVm,
+                                // The other end of the same boolean the mini-player reads, so
+                                // exactly one end of the morph is ever the live one.
+                                artVisible = onNowPlaying,
                                 onCollapse = { navController.popBackStack() },
                             )
                         }

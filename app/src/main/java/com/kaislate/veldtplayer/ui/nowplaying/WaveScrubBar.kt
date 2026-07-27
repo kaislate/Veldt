@@ -120,14 +120,20 @@ fun WaveScrubBar(
     // written for this, and it is the ONLY transition that animates: everything else snaps,
     // so the playhead never trails the transport during ordinary playback and a track change
     // does not sweep it back across the whole bar.
-    val playhead = remember(durationMs) { Animatable(0f) }
-    val target = rememberUpdatedState(
-        when {
-            isDragging -> dragFraction
-            isLatched -> latchFraction
-            else -> liveFraction
-        }
-    )
+    //
+    // Seeded from liveFraction, NOT 0f. This is re-created whenever durationMs changes, and
+    // NowPlayingState swaps the MediaStore duration for the player-reported one a second or
+    // two into every track — the same ordinary event documented above. Seeding at zero would
+    // park the playhead at the far left for the frame before the driver below catches up.
+    val playhead = remember(durationMs) { Animatable(liveFraction) }
+
+    /** Where the playhead is HEADING — the transport's truth, unsmoothed. */
+    val targetFraction = when {
+        isDragging -> dragFraction
+        isLatched -> latchFraction
+        else -> liveFraction
+    }
+    val target = rememberUpdatedState(targetFraction)
     val held = rememberUpdatedState(isDragging || isLatched)
     LaunchedEffect(playhead) {
         var wasHeld = false
@@ -137,10 +143,11 @@ fun WaveScrubBar(
         }
     }
 
-    // Read directly while dragging rather than through the Animatable, so the playhead
-    // tracks the finger with no coroutine hop in between — including if a drag begins during
-    // the settle above, which the sequential collector would otherwise not see until it ends.
-    val fraction = if (isDragging) dragFraction else playhead.value
+    // As State, never unwrapped here. Reading an Animatable in COMPOSITION recomposes this
+    // whole function on every frame of the settle, re-running formatTime twice a frame — the
+    // exact cost rememberWavePhase's KDoc exists to prevent, reintroduced one animation over.
+    // The Canvas reads it in the draw phase instead.
+    val playheadFraction = playhead.asState()
 
     /** What the readout says and what TalkBack reports — the HELD time, never the animation. */
     val readoutMs = when {
@@ -177,7 +184,9 @@ fun WaveScrubBar(
                 .semantics {
                     contentDescription = SCRUB_LABEL
                     stateDescription = "${formatTime(readoutMs)} of ${formatTime(durationMs)}"
-                    progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f)
+                    // targetFraction, not the animated one: the two would disagree for the
+                    // length of a settle, and stateDescription right above is the target.
+                    progressBarRangeInfo = ProgressBarRangeInfo(targetFraction, 0f..1f)
                     if (seekable) {
                         setProgress { value ->
                             val f = value.coerceIn(0f, 1f)
@@ -225,6 +234,12 @@ fun WaveScrubBar(
                 )
         ) {
             val baseY = size.height - BASELINE_FROM_BOTTOM_DP.dp.toPx()
+            // Read directly while dragging rather than through the Animatable, so the
+            // playhead tracks the finger with no coroutine hop in between — including if a
+            // drag begins during a settle, which the sequential collector above would
+            // otherwise not see until the settle ends.
+            val fraction =
+                if (dragFraction >= 0f) dragFraction else playheadFraction.value
             val playheadX = size.width * fraction
 
             // Unplayed remainder: a quiet track line the wave grows along.

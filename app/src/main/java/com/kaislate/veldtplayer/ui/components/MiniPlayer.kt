@@ -18,18 +18,22 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.playback.NowPlayingState
+import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
-import com.kaislate.veldtplayer.ui.nav.CHROME_ALPHA
+import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 
@@ -55,12 +59,20 @@ private val THUMB_CORNER = 8.dp
  * `Float` it would recompose this row — art, both labels, both buttons — four times a second
  * for the life of the app. Read inside [drawBehind] it costs one draw invalidation of a 2dp
  * strip and no recomposition at all.
+ *
+ * [visible] is a parameter rather than the caller simply not composing this, and that is the
+ * whole reason the morph works in BOTH directions. A shared element matches on registration:
+ * an end that only exists while it is on screen cannot be an end of the transition that puts
+ * it back on screen. So this stays composed on the now-playing route and hides ITSELF —
+ * fading out, dropping its click targets, and leaving the accessibility tree, so an invisible
+ * row cannot swallow taps aimed at the screen behind it.
  */
 @Composable
 fun MiniPlayer(
     state: NowPlayingState,
     palette: DominantColors,
     progress: () -> Float,
+    visible: Boolean,
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onOpen: () -> Unit,
@@ -68,7 +80,23 @@ fun MiniPlayer(
 ) {
     if (!state.isActive) return
 
-    Column(modifier.fillMaxWidth()) {
+    // Read in the LAYER phase, never unwrapped here: unwrapping would recompose the whole
+    // row on every frame of the fade.
+    val alpha = animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = Motion.gentle,
+        label = "miniPlayerAlpha",
+    )
+
+    Column(
+        modifier
+            .fillMaxWidth()
+            .graphicsLayer { this.alpha = alpha.value }
+            // Hidden means gone, for a screen reader too. The alpha above is a draw effect
+            // and semantics do not care about it, so without this TalkBack would still find
+            // a whole mini-player sitting on top of the now-playing screen.
+            .then(if (visible) Modifier else Modifier.clearAndSetSemantics { })
+    ) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -87,10 +115,15 @@ fun MiniPlayer(
                 // Same translucency as the navigation bar below it, so the two read as one
                 // pane of chrome with the library passing behind rather than as two slabs.
                 .background(palette.bg.copy(alpha = CHROME_ALPHA))
-                .clickable(
-                    onClickLabel = "Open now playing",
-                    role = Role.Button,
-                    onClick = onOpen,
+                // Not attached at all when hidden, rather than disabled: the Scaffold draws
+                // its bottom bar OVER the content, so an invisible-but-clickable row would
+                // pause playback for anyone tapping the lower part of the now-playing screen.
+                .then(
+                    if (!visible) Modifier else Modifier.clickable(
+                        onClickLabel = "Open now playing",
+                        role = Role.Button,
+                        onClick = onOpen,
+                    )
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -104,7 +137,7 @@ fun MiniPlayer(
                 // shared node, matching AlbumCard.
                 modifier = Modifier
                     .size(THUMB_SIZE)
-                    .sharedSongArt(state.songId)
+                    .sharedSongArt(state.songId, visible = visible)
                     .clip(RoundedCornerShape(THUMB_CORNER)),
             )
             // weight(1f) so both labels ellipsize against the row rather than against
@@ -134,7 +167,7 @@ fun MiniPlayer(
             //
             // The tint is dimmed EXPLICITLY, via onBgFor: IconButton signals "disabled" by
             // lowering LocalContentColor, which the explicit palette `tint` overrides.
-            val canToggle = !state.isStalled
+            val canToggle = visible && !state.isStalled
             IconButton(onClick = onToggle, enabled = canToggle) {
                 Icon(
                     imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -142,7 +175,7 @@ fun MiniPlayer(
                     tint = palette.onBgFor(canToggle),
                 )
             }
-            val canSkip = state.hasNext && !state.isStalled
+            val canSkip = visible && state.hasNext && !state.isStalled
             IconButton(onClick = onNext, enabled = canSkip) {
                 Icon(
                     Icons.Filled.SkipNext,

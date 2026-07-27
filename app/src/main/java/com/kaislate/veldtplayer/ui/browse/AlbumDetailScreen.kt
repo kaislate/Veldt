@@ -40,6 +40,7 @@ import com.kaislate.veldtplayer.data.library.displayAlbumArtist
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.SongRow
 import com.kaislate.veldtplayer.ui.motion.albumArtKey
+import com.kaislate.veldtplayer.ui.motion.rememberArtMorph
 import com.kaislate.veldtplayer.ui.motion.rememberArtMorphActive
 import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
@@ -109,12 +110,15 @@ fun AlbumDetailScreen(
     val title = DisplayNames.album(songs.first().album)
     val owner = songs.first().displayAlbumArtist()
 
+    // ONE state, used both to mark the header's art below and to ask whether it is moving.
+    // Two calls would be two objects, and only the one a modifier attached ever reports a
+    // match — so the guard would be a constant false. See rememberArtMorph.
+    val artMorph = rememberArtMorph(albumArtKey(albumKey))
+    val morphing = rememberArtMorphActive(artMorph)
+
     // Distance the list has travelled, in pixels, saturating once the header is off-screen.
     // Read inside a graphicsLayer block, so the whole parallax stays on the draw phase —
     // no recomposition per scrolled pixel.
-    // Keyed on THIS header's own art. A global "is anything morphing" would also freeze the
-    // parallax while the mini-player's cover flies to the now-playing screen.
-    val morphing = rememberArtMorphActive(albumArtKey(albumKey))
     val travelledPx: () -> Float = {
         // Held at rest for the length of a morph. The art is not in this header then, it
         // is in the air between two screens, and a header scrolled out of sight must not
@@ -158,7 +162,7 @@ fun AlbumDetailScreen(
                 initial = title.firstOrNull { it.isLetterOrDigit() } ?: '♪',
                 modifier = Modifier
                     .fillMaxSize()
-                    .sharedArt(albumArtKey(albumKey)),
+                    .sharedArt(artMorph),
             )
         }
 

@@ -22,10 +22,16 @@ object PaletteSlots {
 
 /**
  * Animates every channel of [target] toward its new value over ~600ms (spec §6).
- * Every consumer — backdrop, accent, wave colours, mini-player hairline, nav tint —
- * reads the SAME returned instance, so the whole app drifts as one object instead
- * of each surface snapping independently. This is the single cheapest thing that
- * separates Veldt from every player that hard-cuts its colours on track change.
+ *
+ * Everything on ONE surface — backdrop, accent, wave colours, art placeholder — reads the
+ * same returned instance, so a screen drifts as a single object instead of each element
+ * snapping independently. This is the single cheapest thing that separates Veldt from every
+ * player that hard-cuts its colours on track change.
+ *
+ * The now-playing screen and the mini-player call this separately rather than sharing one
+ * instance, because hoisting it to the nav host would recompose the entire scaffold and the
+ * NavHost on every frame of the drift. They cannot visibly disagree — same target, same
+ * spec — and they are never both the focus.
  */
 @Composable
 fun rememberAnimatedPalette(target: DominantColors): DominantColors {

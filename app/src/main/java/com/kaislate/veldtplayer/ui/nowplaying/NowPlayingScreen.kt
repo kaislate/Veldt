@@ -78,10 +78,16 @@ private const val INACTIVE_ALPHA = 0.5f
  *
  * The cover is one end of the track-art morph; the other is the mini-player thumbnail this
  * screen replaced on the way in.
+ *
+ * [artVisible] says which of that pair is the live end, and is true exactly while this is the
+ * current route. The morph manages its ends' visibility explicitly rather than inferring it
+ * from an `AnimatedVisibilityScope`, because the other end is chrome that has no scope worth
+ * borrowing — see `Modifier.sharedSongArt`. The caller owns the answer, so it is a parameter.
  */
 @Composable
 fun NowPlayingScreen(
     vm: NowPlayingViewModel,
+    artVisible: Boolean,
     onCollapse: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -159,7 +165,7 @@ fun NowPlayingScreen(
                     modifier = Modifier
                         .fillMaxWidth(ART_WIDTH)
                         .aspectRatio(1f)
-                        .sharedSongArt(state.songId)
+                        .sharedSongArt(state.songId, visible = artVisible)
                         .clip(RoundedCornerShape(ART_CORNER)),
                 )
 

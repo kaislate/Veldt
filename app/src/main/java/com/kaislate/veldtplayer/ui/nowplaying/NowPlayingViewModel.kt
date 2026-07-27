@@ -34,6 +34,9 @@ class NowPlayingViewModel @Inject constructor(
     val nowPlaying = connection.nowPlaying
     val positionMs = connection.positionMs
 
+    /** The queue behind the current track. Consumed by the P1.4 queue sheet. */
+    val queue = connection.queue
+
     private val _palette = MutableStateFlow(ColorExtractor.extract(null))
 
     /**
@@ -63,4 +66,7 @@ class NowPlayingViewModel @Inject constructor(
     fun seekTo(ms: Long) = connection.seekTo(ms)
     fun setShuffle(enabled: Boolean) = connection.setShuffle(enabled)
     fun cycleRepeat() = connection.cycleRepeat()
+
+    /** Jump to a position in [queue]. Consumed by the P1.4 queue sheet. */
+    fun skipToQueueIndex(index: Int) = connection.skipToQueueIndex(index)
 }

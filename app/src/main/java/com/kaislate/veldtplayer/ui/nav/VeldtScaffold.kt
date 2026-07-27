@@ -19,21 +19,10 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.vector.ImageVector
-import com.kaislate.veldtplayer.ui.motion.LocalNavAnimatedVisibilityScope
 import com.kaislate.veldtplayer.ui.motion.Motion
-
-/**
- * Bottom-chrome opacity. High enough that the labels never fight the artwork scrolling
- * under them, low enough that something is visibly passing behind — at full opacity the
- * bar reads as a wall rather than as a layer.
- *
- * Shared with the mini-player, which sits directly on top of the navigation bar: two pieces
- * of chrome at different opacities read as two stacked slabs rather than one pane.
- */
-internal const val CHROME_ALPHA = 0.94f
+import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
 
 /** A bottom-bar destination. [enabled] is false for slots not yet implemented. */
 data class NavItem(
@@ -64,18 +53,19 @@ fun rememberNavItems(): List<NavItem> = remember {
  * route; an empty slot costs the Scaffold zero top padding, which is exactly what the
  * screens that pass content under the status bar already assume.
  *
- * [miniPlayer] is a slot for the same reason but with one extra requirement: it is a shared
- * element, so it needs an `AnimatedVisibilityScope`, and it is NOT a nav destination so it
- * has no `composable { }` receiver to borrow one from. The bottom chrome's own
- * `AnimatedVisibility` is that scope, and it is published here — see
- * [LocalNavAnimatedVisibilityScope].
+ * [miniPlayer] is a slot for a different reason: it is one end of the track-art morph, and a
+ * shared element matches on being COMPOSED, not on being visible. So it sits OUTSIDE the
+ * navigation bar's [AnimatedVisibility] and is composed on every route including the one
+ * that hides it — it manages its own visibility instead. Wrapping it was what made the morph
+ * work going out and snap coming back: the chrome that was supposed to be an end of the
+ * transition was being composed by that same transition.
  */
 @Composable
 fun VeldtScaffold(
     currentRoute: String?,
     items: List<NavItem>,
     snackbarHostState: SnackbarHostState,
-    bottomChromeVisible: Boolean,
+    navigationBarVisible: Boolean,
     onSelect: (String) -> Unit,
     topBar: @Composable () -> Unit,
     miniPlayer: @Composable () -> Unit,
@@ -85,22 +75,18 @@ fun VeldtScaffold(
         topBar = topBar,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            // FADE ONLY — no expand/shrink, and that is load-bearing rather than taste.
-            // The mini-player's thumbnail is the source of the art morph into the
-            // now-playing screen, which is the same navigation that hides this chrome; a
-            // size animation here would slide that source downward for the length of the
-            // morph and the cover would fly from a moving start.
-            AnimatedVisibility(
-                visible = bottomChromeVisible,
-                enter = fadeIn(Motion.gentle),
-                exit = fadeOut(Motion.gentle),
-            ) {
-                Column {
-                    CompositionLocalProvider(
-                        LocalNavAnimatedVisibilityScope provides this@AnimatedVisibility,
-                    ) {
-                        miniPlayer()
-                    }
+            Column {
+                miniPlayer()
+                // FADE ONLY — no expand/shrink, and that is load-bearing rather than taste.
+                // Shrinking this bar would drag the mini-player above it downward for the
+                // length of the very navigation that starts the morph, so the cover would
+                // fly from a moving origin. Fading holds the height until the animation is
+                // over, by which time the 420ms morph has long finished.
+                AnimatedVisibility(
+                    visible = navigationBarVisible,
+                    enter = fadeIn(Motion.gentle),
+                    exit = fadeOut(Motion.gentle),
+                ) {
                     // Translucent, because screens hand their window insets to a scrollable's
                     // contentPadding rather than clipping themselves above the bar. Content
                     // passing beneath the tint is what gives the bar somewhere to sit.
