@@ -36,6 +36,18 @@ object Motion {
         spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium)
 
     /**
+     * How long [sharedBounds] takes, in milliseconds — named rather than written inline
+     * because it is the ONE number the morph's plumbing has to agree with and
+     * `FiniteAnimationSpec` exposes no duration to read back.
+     *
+     * `ui/motion/SharedArt.kt` derives its "a transition that never reports itself finished
+     * must not park an invisible end in the tree forever" ceiling from this, so lengthening
+     * the morph can no longer silently leave that ceiling too low to cover it. That is the
+     * entire reason a magnitude lives in the vocabulary next to the spec it feeds.
+     */
+    const val SHARED_BOUNDS_MS = 420
+
+    /**
      * Shared-element art morph: the spec a cover travels between two destinations on.
      * Duration-based rather than a spring so both ends stay in lockstep.
      *
@@ -46,8 +58,10 @@ object Motion {
      * This exists so a call site SELECTS a spec instead of declaring one; a `tween` written
      * next to a `sharedElement` is the exact scattering this file prevents.
      */
-    val sharedBounds: FiniteAnimationSpec<Rect> =
-        tween(durationMillis = 420, easing = FastOutSlowInEasing)
+    val sharedBounds: FiniteAnimationSpec<Rect> = tween(
+        durationMillis = SHARED_BOUNDS_MS,
+        easing = FastOutSlowInEasing,
+    )
 
     /** Album-art palette drift on track change (spec §6) — competitors hard-cut here. */
     val palette: AnimationSpec<Color> = tween(durationMillis = 600, easing = LinearOutSlowInEasing)

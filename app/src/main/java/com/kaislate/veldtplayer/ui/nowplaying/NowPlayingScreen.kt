@@ -77,21 +77,31 @@ private const val INACTIVE_ALPHA = 0.5f
  * decoration on it.
  *
  * The cover is one end of the track-art morph; the other is the mini-player thumbnail this
- * screen replaced on the way in.
+ * screen replaced on the way in. Which of the pair is the LIVE end is declared explicitly
+ * rather than inferred by a `sharedElement` from an `AnimatedVisibilityScope`, because the
+ * other end is chrome with no scope of its own worth borrowing — see `Modifier.sharedSongArt`.
+ * [artVisible] is that declaration, and is true exactly while this is the current route.
  *
- * [artVisible] says which of that pair is the live end, and is true exactly while this is the
- * current route. The morph manages its ends' visibility explicitly rather than inferring it
- * from an `AnimatedVisibilityScope`, because the other end is chrome that has no scope worth
- * borrowing — see `Modifier.sharedSongArt`. The caller owns the answer, so it is a parameter.
+ * **A LAMBDA, not a `Boolean`, and the return morph does not run without that.** On a pop,
+ * navigation keeps this destination composed for the length of the exit and RE-INVOKES it
+ * whenever its own composition invalidates — what never happens is the PARENT re-invoking it
+ * with fresh arguments, because the parent's `composable { }` lambda is not re-run for an
+ * entry that is leaving. A `Boolean` therefore stays frozen at whatever it was handed on the
+ * way in, while the mini-player — chrome in the scaffold's `bottomBar`, which does recompose —
+ * has already reclaimed the element. Both ends then claim `visible == true` at once, the match
+ * has two live claimants instead of a hand-over, and the cover contends rather than travelling
+ * (measured: 807 → 96 → 798 → 807 → 96 in 294ms). Read HERE in composition, the lambda's own
+ * snapshot read is what invalidates this screen while it is leaving, so the departing end goes
+ * false on the same frame the mini-player's end comes back — the outbound leg exactly mirrored.
  *
- * **A LAMBDA, not a `Boolean`, and the return morph does not run without that.** On a pop the
- * navigation library keeps this destination composed for the length of the exit but does NOT
- * re-invoke it — a `Boolean` argument would still hold the value it was given on the way in.
- * Both ends of the morph then claim `visible == true` at once, the match has two live
- * claimants instead of a hand-over, and the cover contends rather than travelling (measured:
- * 807 → 96 → 798 → 807 → 96 in 294ms). Read here in COMPOSITION, the lambda's snapshot read
- * invalidates this screen even while it is leaving, so the departing end goes false on the
- * same frame the mini-player's end comes back — which is the outbound leg exactly mirrored.
+ * **The documented-looking alternative was tried and is measurably wrong.** Deriving this from
+ * this destination's own `AnimatedVisibilityScope.transition.targetState` is snapshot-backed
+ * public API and needs no parameter at all — but it does not flip when the pop STARTS, it flips
+ * when the exit animation is dispatched, ~184ms later on the reference device. The mini-player
+ * re-attaches at frame 0 regardless (it reads the back stack), so the two ends stop being
+ * handed over on the same frame and the return leg SNAPS: measured 807 at t+0, 96 at t+161, no
+ * frame between. What this pair actually requires is not "a documented signal" but ONE signal
+ * read by both ends, and the back stack is the only one that flips at frame 0 for both.
  */
 @Composable
 fun NowPlayingScreen(

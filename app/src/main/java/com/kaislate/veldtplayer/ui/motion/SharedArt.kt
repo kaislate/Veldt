@@ -96,6 +96,13 @@ fun rememberArtMorph(key: String): ArtMorph? {
     return remember(state) { ArtMorph(state) }
 }
 
+/** [rememberArtMorph] for the track cover, hoisted so more than one thing can ask about it. */
+@Composable
+fun rememberSongArtMorph(songId: Long?): ArtMorph? =
+    // No song is no identity: marking a placeholder would let two DIFFERENT empty surfaces
+    // claim the same element.
+    if (songId == null) null else rememberArtMorph(songArtKey(songId))
+
 /**
  * Whether [morph] is in flight right now, as a lambda so callers read it in the draw phase
  * instead of recomposing on it.
@@ -124,18 +131,37 @@ fun rememberArtMorphActive(morph: ArtMorph?): () -> Boolean {
 }
 
 /**
- * How long to wait for a transition to START before concluding that [routeKey]'s change
- * caused none. A nav transition begins on the very next frame, so this only ever expires on
- * a navigation with no shared element in it at all.
+ * How long to wait for this element's own morph to START before concluding that [routeKey]'s
+ * change caused none.
+ *
+ * **Sized for the slowest device this app supports, not for the one it was measured on.** The
+ * reference phone dispatches a navigation's first transition frame ~180-195ms after the tap
+ * (measured on both legs), and that lead-in is composition and navigation dispatch, not
+ * animation — it does not shrink when the spec does. `minSdk 29` is set where it is because
+ * the fleet includes Nexus 7-class tablets, where a cold destination composition can plausibly
+ * run several times that; 250ms (~15 frames) left no margin for them at all. 600ms is ~3x the
+ * measured lead-in, i.e. it still expires promptly on a device three times slower than the
+ * reference.
+ *
+ * The other side of the trade is weak, which is what makes the generous value cheap: when this
+ * expires wrongly the cost is a mini-player that stays COMPOSED a little longer than needed —
+ * invisible, non-clickable and out of the accessibility tree by then (see `MiniPlayer.visible`)
+ * — whereas expiring EARLY drops the morph's end mid-flight and snaps the cover. The two
+ * failure modes are not the same size, so the timeout is biased towards the survivable one.
  */
-private const val MORPH_START_TIMEOUT_MS = 250L
+private const val MORPH_START_TIMEOUT_MS = 600L
 
 /**
  * A hard ceiling on how long an end may linger once a transition HAS started, so a
  * transition that never reports itself finished cannot park an invisible end in the tree
- * forever. Comfortably longer than [Motion.sharedBounds] so it never truncates a real morph.
+ * forever.
+ *
+ * **Derived from [Motion.SHARED_BOUNDS_MS] rather than written as a magnitude**, so the
+ * relationship it depends on — comfortably longer than the morph it must never truncate — is
+ * now a compile-time one. It used to be a bare `3_000L` with the constraint stated only in
+ * prose, and probing the morph at 2500ms is exactly the edit that walks into it.
  */
-private const val MORPH_RUN_TIMEOUT_MS = 3_000L
+private const val MORPH_RUN_TIMEOUT_MS = Motion.SHARED_BOUNDS_MS * 7L
 
 /**
  * Whether a caller-managed shared element whose [routeKey] just changed must still be
@@ -160,15 +186,31 @@ private const val MORPH_RUN_TIMEOUT_MS = 3_000L
  * which time the end being kept alive has already left the tree and taken the morph's start
  * bounds with it — which is the trap in the naive `visible || scope.isTransitionActive`,
  * where the transition is not yet active on the frame the route flips.
+ *
+ * **Why [morph] and not just the route.** `isTransitionActive` is scope-global: it is true for
+ * ANY shared transition anywhere under the one `SharedTransitionLayout`, including an
+ * album-list -> album-detail morph that is already running when [routeKey] flips. Waiting on it
+ * alone would latch onto that transition, and then stop lingering when THAT one ended —
+ * possibly before this element's own morph had started, dropping the end mid-flight. Qualifying
+ * on this morph's own `isMatchFound` is the same fix, for the same reason, as
+ * [rememberArtMorphActive]; it is only answerable on a state a modifier actually attached,
+ * which is why the caller hoists one and hands it to both. See [ArtMorph].
+ *
+ * Only the START is qualified. Once this element's own morph is confirmed running, the wait for
+ * the end is the unqualified `!isTransitionActive`, which can only resolve at or after that
+ * morph finishes — a superset, and so incapable of truncating it. Waiting instead for the match
+ * to drop would end the linger when the OTHER end leaves composition, which on the return leg
+ * happens with a third of the travel still to run.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-fun rememberMorphLinger(routeKey: Any?): Boolean {
-    val transition = LocalSharedTransitionScope.current ?: return false
+fun rememberMorphLinger(routeKey: Any?, morph: ArtMorph?): Boolean {
+    val transition = LocalSharedTransitionScope.current
+    if (transition == null || morph == null) return false
     val linger = remember(routeKey) { mutableStateOf(true) }
-    LaunchedEffect(routeKey) {
+    LaunchedEffect(routeKey, morph) {
         val started = withTimeoutOrNull(MORPH_START_TIMEOUT_MS) {
-            snapshotFlow { transition.isTransitionActive }.first { it }
+            snapshotFlow { transition.isTransitionActive && morph.state.isMatchFound }.first { it }
         }
         if (started != null) {
             withTimeoutOrNull(MORPH_RUN_TIMEOUT_MS) {
@@ -230,20 +272,25 @@ fun Modifier.sharedArt(key: String): Modifier = sharedArt(rememberArtMorph(key))
  * return.
  *
  * [visible] is which END is the live one, so exactly one of the pair passes true.
+ *
+ * Takes a hoisted [ArtMorph] rather than minting its own, so the caller that has to decide this
+ * end's LIFETIME can ask the same state whether it has a match — see [rememberMorphLinger].
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-fun Modifier.sharedSongArt(songId: Long?, visible: Boolean): Modifier {
+fun Modifier.sharedSongArt(morph: ArtMorph?, visible: Boolean): Modifier {
     val transition = LocalSharedTransitionScope.current
-    // No song is no identity: marking a placeholder would let two DIFFERENT empty surfaces
-    // claim the same element.
-    if (transition == null || songId == null) return this
-    val morph = with(transition) { rememberSharedContentState(key = songArtKey(songId)) }
+    if (transition == null || morph == null) return this
     return with(transition) {
         this@sharedSongArt.sharedElementWithCallerManagedVisibility(
-            sharedContentState = morph,
+            sharedContentState = morph.state,
             visible = visible,
             boundsTransform = { _, _ -> Motion.sharedBounds },
         )
     }
 }
+
+/** [sharedSongArt] for the end that only marks itself and never asks about the morph. */
+@Composable
+fun Modifier.sharedSongArt(songId: Long?, visible: Boolean): Modifier =
+    sharedSongArt(rememberSongArtMorph(songId), visible)

@@ -31,6 +31,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.playback.NowPlayingState
+import com.kaislate.veldtplayer.ui.motion.ArtMorph
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
@@ -67,6 +68,11 @@ private val THUMB_CORNER = 8.dp
  * cannot swallow taps aimed at the screen behind it. The caller drops it entirely once the
  * transition settles; `visible == false` here is a state to pass THROUGH, never to rest in.
  * See `rememberMorphLinger`.
+ *
+ * [artMorph] is HOISTED for the same reason [visible] is a parameter: the caller decides how
+ * long this end lives, and it cannot make that decision without asking the very state this
+ * row's modifier attaches. Minting one here would leave the caller holding a state no modifier
+ * ever wrote, which reports "no match" forever. See `ArtMorph`.
  */
 @Composable
 fun MiniPlayer(
@@ -74,6 +80,7 @@ fun MiniPlayer(
     palette: DominantColors,
     progress: () -> Float,
     visible: Boolean,
+    artMorph: ArtMorph?,
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onOpen: () -> Unit,
@@ -143,7 +150,7 @@ fun MiniPlayer(
                 // shared node, matching AlbumCard.
                 modifier = Modifier
                     .size(THUMB_SIZE)
-                    .sharedSongArt(state.songId, visible = visible)
+                    .sharedSongArt(artMorph, visible = visible)
                     .clip(RoundedCornerShape(THUMB_CORNER)),
             )
             // weight(1f) so both labels ellipsize against the row rather than against

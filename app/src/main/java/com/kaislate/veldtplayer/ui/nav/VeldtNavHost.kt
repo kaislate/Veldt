@@ -38,6 +38,7 @@ import com.kaislate.veldtplayer.ui.components.MiniPlayer
 import com.kaislate.veldtplayer.ui.motion.LocalNavAnimatedVisibilityScope
 import com.kaislate.veldtplayer.ui.motion.LocalSharedTransitionScope
 import com.kaislate.veldtplayer.ui.motion.rememberMorphLinger
+import com.kaislate.veldtplayer.ui.motion.rememberSongArtMorph
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
@@ -69,10 +70,11 @@ private val TAB_ROUTES = setOf(Destinations.SONGS, Destinations.ALBUMS, Destinat
 fun VeldtNavHost() {
     val navController = rememberNavController()
     // Held as State and unwrapped separately, because the STATE OBJECT is passed on to the
-    // now-playing route while the unwrapped value is used here. A destination that is exiting
-    // is kept composed but is never re-invoked, so a plain Boolean argument would freeze at
-    // whatever it was on the way in; handing over something a screen can read for itself is
-    // what lets the departing end of the art morph notice that it is departing.
+    // now-playing route while the unwrapped value is used here. Both ends of the track-art
+    // morph have to change hands on the SAME frame, and the back stack is the only signal
+    // that flips at frame 0 for chrome and for an exiting destination alike — the
+    // destination's own AnimatedVisibilityScope lags it by ~184ms, which snaps the return
+    // leg. Measured; see NowPlayingScreen's KDoc.
     val backStackEntryState = navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntryState.value?.destination?.route
     val items = rememberNavItems()
@@ -115,12 +117,16 @@ fun VeldtNavHost() {
                         // track change and, for the palette drift, on every frame of it. That
                         // applies to `linger` too: it flips twice per navigation.
                         val npState by npVm.nowPlaying.collectAsStateWithLifecycle()
+                        // Hoisted HERE, above the gate that decides whether the row exists at
+                        // all, because that gate has to ask this very state whether the morph
+                        // has a match. One instance, handed to the modifier and to the latch.
+                        val artMorph = rememberSongArtMorph(npState.songId)
                         // Composed while it is the visible end, AND for the length of the
                         // transition that hands the screen over — then dropped. Both halves are
                         // load-bearing: leaving it composed on the now-playing route is what
                         // made the return leg SNAP, because an end that never moves has no
                         // bounds change to animate. See rememberMorphLinger.
-                        val morphing = rememberMorphLinger(onNowPlaying)
+                        val morphing = rememberMorphLinger(onNowPlaying, artMorph)
                         // The remaining two are collected only once something is playing. The
                         // position ticker is WhileSubscribed and polls for as long as anything
                         // is attached, so collecting it unconditionally would have it running
@@ -142,6 +148,7 @@ fun VeldtNavHost() {
                                 // so it hides itself rather than vanishing mid-flight. See
                                 // MiniPlayer's `visible`.
                                 visible = !onNowPlaying,
+                                artMorph = artMorph,
                                 onToggle = npVm::toggle,
                                 onNext = npVm::next,
                                 onOpen = {
