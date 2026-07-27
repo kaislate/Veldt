@@ -23,8 +23,15 @@ data class DominantColors(
     val waveColors: List<Color> = emptyList(),
 )
 
-/** Material's disabled-content strength, applied to palette tints by [onBgFor]. */
-private const val DISABLED_ALPHA = 0.38f
+/**
+ * Material's disabled-content strength, applied to palette tints by [onBgFor].
+ *
+ * `internal` rather than private because [onBgFor] only covers [DominantColors.onBg], and
+ * the queue sheet dims a whole inert list — accent tints and artwork included. One constant
+ * for "this control is dead", for the reason [onBgFor] exists at all: a second literal
+ * somewhere else is a disabled state that drifts out of step with every other one.
+ */
+internal const val DISABLED_ALPHA = 0.38f
 
 /**
  * [DominantColors.onBg], dimmed when the control it tints is disabled.
