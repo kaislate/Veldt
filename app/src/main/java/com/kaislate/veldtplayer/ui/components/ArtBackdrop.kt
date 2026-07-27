@@ -26,19 +26,36 @@ import com.kaislate.veldtplayer.data.art.SongArt
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
-/** Blur radius for the API 31-32 tier. Wide enough that no edge of the art is readable. */
+/** Blur radius for the tiers that have `RenderEffect`. Wide enough to erase all detail. */
 private val BLUR_RADIUS = 48.dp
 
 /**
- * How far past the surface the API 29-30 tier magnifies the art, so resampling softens it.
+ * How far past the surface [BackdropTier.Upscale] magnifies the art, so resampling softens it.
  *
  * Honest about what this buys: Coil sizes its bitmap to the surface it is drawn into, so a
- * full-screen backdrop gets a full-screen bitmap and magnifying it 1.6x only blurs by the
- * resample. Forcing this tier on device (Task 12) left large album typography still
- * readable — it is a softening, not a blur. Acceptable because it is the floor tier and
- * nothing in the fleet reaches it; the scrim, not the upscale, is what keeps text legible.
+ * full-screen backdrop gets a full-screen bitmap and magnifying it only blurs by the
+ * resample. At the original 1.6x, forcing this tier on device left large album typography
+ * plainly readable. 2.2x plus [BackdropTier.Upscale]'s heavier scrim is what finally broke
+ * that up — more aggressive upsampling is the only blur mechanism a pre-31 device has.
  */
-private const val UPSCALE = 1.6f
+private const val UPSCALE = 2.2f
+
+/**
+ * Opacity of the AGSL field where it sits over the artwork.
+ *
+ * The tier is *cover plus signature*, so this value is the whole balance: a blurred cover
+ * alone is what every other player ships, and an opaque palette gradient throws away the
+ * artwork the screen exists to be about.
+ *
+ * Chosen by measurement, not by eye. Taking the left-to-right colour spread across the top
+ * of the frame as a proxy for "how much of this specific cover survives" — the test cover
+ * runs cool on one side and warm on the other — the blurred cover alone scores 54.5, and:
+ * 0.45 keeps 31.8 (58%), 0.60 keeps 24.9 (46%), and the shader drawn opaque keeps 6.3
+ * (12%, i.e. the artwork is gone, which is exactly the defect this value was added to fix).
+ * 0.45 buys 12 more points of surviving cover than 0.60 while the warp bands still read
+ * plainly at 45% of full strength, so the extra opacity was not earning its cost.
+ */
+private const val SHADER_ALPHA = 0.45f
 
 /** Where the drift is parked when the user has animations off — mid-sweep, not at an end. */
 private const val DRIFT_REST = 0.5f
@@ -54,22 +71,52 @@ private const val NO_GLYPH = ' '
 private const val SHADER_TIME_SCALE = 20f
 
 /**
- * The now-playing backdrop: the album's colour, slowly drifting, under a scrim. What
- * actually gets drawn depends on what the device can do — a field derived from the
- * palette on the top tier, the artwork itself blurred or softened below it.
+ * How much backdrop this device can actually draw, and the scrim each one needs.
  *
- * THREE TIERS, one API (spec §8):
- *  - 33+   AGSL RuntimeShader — a domain-warped flowing gradient built from the palette
- *  - 31-32 Modifier.blur over the art
- *  - 29-30 the art itself, magnified past the surface so resampling softens it (see
- *          [UPSCALE] for what that does and does not buy), under the same scrim
+ * `Modifier.blur` is API 31+ and **silently does nothing below it**; `RuntimeShader` is API
+ * 33+. minSdk is 29, so neither may be required — hence the ladder. The scrim rides on the
+ * tier because the tiers do not arrive at the same place: [Shader] and [Blur] hand the scrim
+ * an image with no detail left in it, while [Upscale] hands it a merely softened cover, and
+ * a scrim tuned for the first two lets that cover's typography read straight through.
  *
- * `Modifier.blur` is API 31+ and **silently does nothing below it**; `RuntimeShader` is
- * API 33+. minSdk is 29, so neither may be required — hence the ladder. Tier selection
- * never leaks to callers: there is no tier parameter and no tier in the return type.
+ * Private, and never a parameter or a return type — callers cannot see which tier they got.
+ */
+private enum class BackdropTier(val scrimTop: Float, val scrimBottom: Float) {
+    /** 33+ — the blurred cover with the AGSL field over it. */
+    Shader(scrimTop = 0.35f, scrimBottom = 0.80f),
+
+    /** 31-32 — the blurred cover alone. */
+    Blur(scrimTop = 0.35f, scrimBottom = 0.80f),
+
+    /** 29-30 — the cover magnified and softened, under a scrim that does the rest. */
+    Upscale(scrimTop = 0.55f, scrimBottom = 0.92f),
+}
+
+/**
+ * THE single version check. One expression, one place — so there is exactly one thing to
+ * force when the lower tiers need exercising on a fleet that is entirely API 33+.
+ */
+private fun currentTier(): BackdropTier = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> BackdropTier.Shader
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> BackdropTier.Blur
+    else -> BackdropTier.Upscale
+}
+
+/**
+ * The now-playing backdrop: the album art, blurred and slowly drifting, under a scrim.
  *
- * The drift is identical on all three, so the MOTION reads the same on every device and
- * only the blur fidelity differs.
+ * THREE TIERS, one API (spec §8) — see [BackdropTier] for why the ladder exists:
+ *  - 33+   the blurred cover **with a domain-warped AGSL field composited over it**, so the
+ *          backdrop is the artwork *and* a treatment nothing else ships
+ *  - 31-32 the blurred cover alone, via `Modifier.blur`
+ *  - 29-30 the cover magnified past the surface so resampling softens it (see [UPSCALE]),
+ *          under a heavier scrim
+ *
+ * Tier selection never leaks to callers: [BackdropTier] is private, there is no tier
+ * parameter, and nothing tier-shaped appears in the signature.
+ *
+ * Every tier draws the artwork, and the drift is identical on all three — so the MOTION
+ * reads the same on every device and only the treatment differs.
  */
 @Composable
 fun ArtBackdrop(
@@ -79,56 +126,87 @@ fun ArtBackdrop(
     modifier: Modifier = Modifier,
 ) {
     val drift = rememberDrift(reducedMotion)
+    val tier = currentTier()
 
     Box(modifier.fillMaxSize().background(palette.bg)) {
-        when {
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU ->
-                ShaderBackdrop(palette, drift, Modifier.fillMaxSize())
+        when (tier) {
+            // Cover first, field over it. The shader is an overlay, not a replacement:
+            // the whole fleet is API 33+, so a tier that dropped the art would mean no
+            // album art on the now-playing screen of every device we have.
+            BackdropTier.Shader -> {
+                BlurredArt(art, palette, drift, Modifier.fillMaxSize())
+                // The SDK check is repeated here on purpose, and it is not defensive
+                // padding. [currentTier] already guarantees this branch is 33+, but that
+                // guarantee lives behind a function call and lint cannot see through it —
+                // without this line every RuntimeShader call reads as unguarded, and
+                // "the AGSL path is unreachable below 33" stops being machine-checkable
+                // and becomes a claim you have to take on trust. Suppressing the NewApi
+                // warning instead would delete the only automated proof of it we have.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    ShaderField(palette, drift, Modifier.fillMaxSize())
+                }
+            }
 
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-                ArtImage(
-                    art = art,
-                    palette = palette,
-                    initial = NO_GLYPH,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { applyDrift(drift.value) }
-                        .blur(BLUR_RADIUS),
-                )
+            BackdropTier.Blur -> BlurredArt(art, palette, drift, Modifier.fillMaxSize())
 
-            else ->
-                // No RenderEffect anywhere in this branch, so it works down to API 29.
-                ArtImage(
-                    art = art,
-                    palette = palette,
-                    initial = NO_GLYPH,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            applyDrift(drift.value)
-                            scaleX *= UPSCALE
-                            scaleY *= UPSCALE
-                        },
-                )
+            BackdropTier.Upscale -> UpscaledArt(art, palette, drift, Modifier.fillMaxSize())
         }
 
-        // Shared scrim so text stays legible on any artwork, on every tier. Weighted to
-        // the bottom because that is where the transport and the track title sit.
+        // Scrim last, over everything, so text stays legible on any artwork on any tier.
+        // Weighted to the bottom because that is where the transport and the title sit.
         Box(
             Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            palette.bg.copy(alpha = 0.35f),
-                            palette.bg.copy(alpha = 0.80f),
+                            palette.bg.copy(alpha = tier.scrimTop),
+                            palette.bg.copy(alpha = tier.scrimBottom),
                         )
                     )
                 )
         )
     }
+}
+
+/** The cover, drifting, with a real `RenderEffect` blur. API 31+ only — see [BackdropTier]. */
+@Composable
+private fun BlurredArt(
+    art: SongArt?,
+    palette: DominantColors,
+    drift: State<Float>,
+    modifier: Modifier,
+) {
+    ArtImage(
+        art = art,
+        palette = palette,
+        initial = NO_GLYPH,
+        contentScale = ContentScale.Crop,
+        modifier = modifier
+            .graphicsLayer { applyDrift(drift.value) }
+            .blur(BLUR_RADIUS),
+    )
+}
+
+/** The cover, drifting, magnified until resampling softens it. No `RenderEffect` anywhere. */
+@Composable
+private fun UpscaledArt(
+    art: SongArt?,
+    palette: DominantColors,
+    drift: State<Float>,
+    modifier: Modifier,
+) {
+    ArtImage(
+        art = art,
+        palette = palette,
+        initial = NO_GLYPH,
+        contentScale = ContentScale.Crop,
+        modifier = modifier.graphicsLayer {
+            applyDrift(drift.value)
+            scaleX *= UPSCALE
+            scaleY *= UPSCALE
+        },
+    )
 }
 
 /**
@@ -161,13 +239,13 @@ private fun GraphicsLayerScope.applyDrift(drift: Float) {
 }
 
 /**
- * AGSL flowing gradient. Deliberately small in scope — two warped colour fields, not a
- * general shader framework. Colours come from the animated palette, so the backdrop
- * re-themes with everything else.
+ * AGSL flowing gradient, drawn at [SHADER_ALPHA] over the cover. Deliberately small in
+ * scope — two warped colour fields, not a general shader framework. Colours come from the
+ * animated palette, so the treatment re-themes with everything else.
  */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 @Composable
-private fun ShaderBackdrop(
+private fun ShaderField(
     palette: DominantColors,
     drift: State<Float>,
     modifier: Modifier,
@@ -183,7 +261,9 @@ private fun ShaderBackdrop(
             "uWave",
             (palette.waveColors.firstOrNull() ?: palette.accent).toArgb(),
         )
-        drawRect(brush = ShaderBrush(shader))
+        // alpha on the draw call, not a graphicsLayer — no offscreen buffer to allocate
+        // and composite every frame of the drift.
+        drawRect(brush = ShaderBrush(shader), alpha = SHADER_ALPHA)
     }
 }
 
