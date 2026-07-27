@@ -60,12 +60,13 @@ private val THUMB_CORNER = 8.dp
  * for the life of the app. Read inside [drawBehind] it costs one draw invalidation of a 2dp
  * strip and no recomposition at all.
  *
- * [visible] is a parameter rather than the caller simply not composing this, and that is the
- * whole reason the morph works in BOTH directions. A shared element matches on registration:
- * an end that only exists while it is on screen cannot be an end of the transition that puts
- * it back on screen. So this stays composed on the now-playing route and hides ITSELF —
- * fading out, dropping its click targets, and leaving the accessibility tree, so an invisible
- * row cannot swallow taps aimed at the screen behind it.
+ * [visible] is a parameter rather than the caller simply not composing this, because an end
+ * that only exists while it is on screen cannot be an end of the transition that puts it back
+ * on screen. So this stays composed for the length of the hand-over and hides ITSELF — fading
+ * out, dropping its click targets, and leaving the accessibility tree, so an invisible row
+ * cannot swallow taps aimed at the screen behind it. The caller drops it entirely once the
+ * transition settles; `visible == false` here is a state to pass THROUGH, never to rest in.
+ * See `rememberMorphLinger`.
  */
 @Composable
 fun MiniPlayer(
@@ -78,6 +79,11 @@ fun MiniPlayer(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // BELT AND BRACES, and currently the braces: VeldtNavHost already gates the whole call on
+    // `npState.isActive` so it can skip collecting the position ticker for an empty queue.
+    // Neither guard is the single source of truth — this one keeps the component honest for a
+    // caller that does not gate, and dropping it would make that caller render a row with no
+    // song in it. Do not delete either half on the strength of the other.
     if (!state.isActive) return
 
     // Read in the LAYER phase, never unwrapped here: unwrapping would recompose the whole

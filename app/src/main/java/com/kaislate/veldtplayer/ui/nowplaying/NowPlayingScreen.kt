@@ -83,11 +83,20 @@ private const val INACTIVE_ALPHA = 0.5f
  * current route. The morph manages its ends' visibility explicitly rather than inferring it
  * from an `AnimatedVisibilityScope`, because the other end is chrome that has no scope worth
  * borrowing — see `Modifier.sharedSongArt`. The caller owns the answer, so it is a parameter.
+ *
+ * **A LAMBDA, not a `Boolean`, and the return morph does not run without that.** On a pop the
+ * navigation library keeps this destination composed for the length of the exit but does NOT
+ * re-invoke it — a `Boolean` argument would still hold the value it was given on the way in.
+ * Both ends of the morph then claim `visible == true` at once, the match has two live
+ * claimants instead of a hand-over, and the cover contends rather than travelling (measured:
+ * 807 → 96 → 798 → 807 → 96 in 294ms). Read here in COMPOSITION, the lambda's snapshot read
+ * invalidates this screen even while it is leaving, so the departing end goes false on the
+ * same frame the mini-player's end comes back — which is the outbound leg exactly mirrored.
  */
 @Composable
 fun NowPlayingScreen(
     vm: NowPlayingViewModel,
-    artVisible: Boolean,
+    artVisible: () -> Boolean,
     onCollapse: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -156,6 +165,10 @@ fun NowPlayingScreen(
                     textAlign = TextAlign.Center,
                 )
             } else {
+                // Read in COMPOSITION, deliberately: the snapshot read is what invalidates
+                // this screen while it is exiting, so the departing end of the morph can
+                // stop being the live one. See the KDoc.
+                val artIsLiveEnd = artVisible()
                 ArtImage(
                     art = state.art,
                     palette = palette,
@@ -165,7 +178,7 @@ fun NowPlayingScreen(
                     modifier = Modifier
                         .fillMaxWidth(ART_WIDTH)
                         .aspectRatio(1f)
-                        .sharedSongArt(state.songId, visible = artVisible)
+                        .sharedSongArt(state.songId, visible = artIsLiveEnd)
                         .clip(RoundedCornerShape(ART_CORNER)),
                 )
 

@@ -53,12 +53,13 @@ fun rememberNavItems(): List<NavItem> = remember {
  * route; an empty slot costs the Scaffold zero top padding, which is exactly what the
  * screens that pass content under the status bar already assume.
  *
- * [miniPlayer] is a slot for a different reason: it is one end of the track-art morph, and a
- * shared element matches on being COMPOSED, not on being visible. So it sits OUTSIDE the
- * navigation bar's [AnimatedVisibility] and is composed on every route including the one
- * that hides it — it manages its own visibility instead. Wrapping it was what made the morph
- * work going out and snap coming back: the chrome that was supposed to be an end of the
- * transition was being composed by that same transition.
+ * [miniPlayer] is a slot for a different reason: it is one end of the track-art morph, and its
+ * lifetime is therefore the CALLER's to decide, not this bar's. So it sits OUTSIDE the
+ * navigation bar's [AnimatedVisibility] and manages its own visibility. Wrapping it was what
+ * made the morph work going out and snap coming back: the chrome that was supposed to be an
+ * end of the transition was being composed by that same transition. What the caller does with
+ * the freedom — composed across the hand-over, absent once it settles — is in
+ * `rememberMorphLinger`; this bar only guarantees it never overrides it.
  */
 @Composable
 fun VeldtScaffold(

@@ -37,6 +37,7 @@ import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.components.MiniPlayer
 import com.kaislate.veldtplayer.ui.motion.LocalNavAnimatedVisibilityScope
 import com.kaislate.veldtplayer.ui.motion.LocalSharedTransitionScope
+import com.kaislate.veldtplayer.ui.motion.rememberMorphLinger
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
@@ -67,8 +68,13 @@ private val TAB_ROUTES = setOf(Destinations.SONGS, Destinations.ALBUMS, Destinat
 @Composable
 fun VeldtNavHost() {
     val navController = rememberNavController()
-    val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route
+    // Held as State and unwrapped separately, because the STATE OBJECT is passed on to the
+    // now-playing route while the unwrapped value is used here. A destination that is exiting
+    // is kept composed but is never re-invoked, so a plain Boolean argument would freeze at
+    // whatever it was on the way in; handing over something a screen can read for itself is
+    // what lets the departing end of the art morph notice that it is departing.
+    val backStackEntryState = navController.currentBackStackEntryAsState()
+    val currentRoute = backStackEntryState.value?.destination?.route
     val items = rememberNavItems()
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -106,13 +112,20 @@ fun VeldtNavHost() {
                     miniPlayer = {
                         // Every read is INSIDE this slot on purpose. Read at nav-host level they
                         // would invalidate the whole scaffold — including the NavHost — on each
-                        // track change and, for the palette drift, on every frame of it.
+                        // track change and, for the palette drift, on every frame of it. That
+                        // applies to `linger` too: it flips twice per navigation.
                         val npState by npVm.nowPlaying.collectAsStateWithLifecycle()
+                        // Composed while it is the visible end, AND for the length of the
+                        // transition that hands the screen over — then dropped. Both halves are
+                        // load-bearing: leaving it composed on the now-playing route is what
+                        // made the return leg SNAP, because an end that never moves has no
+                        // bounds change to animate. See rememberMorphLinger.
+                        val morphing = rememberMorphLinger(onNowPlaying)
                         // The remaining two are collected only once something is playing. The
                         // position ticker is WhileSubscribed and polls for as long as anything
                         // is attached, so collecting it unconditionally would have it running
                         // for the app's whole foreground life against an empty queue.
-                        if (npState.isActive) {
+                        if (npState.isActive && (!onNowPlaying || morphing)) {
                             val npPalette by npVm.palette.collectAsStateWithLifecycle()
                             // Held as State and never unwrapped here: the 250ms position tick is
                             // read in the mini-player's DRAW phase. See MiniPlayer's `progress`.
@@ -125,8 +138,9 @@ fun VeldtNavHost() {
                                     val duration = npState.durationMs
                                     if (duration > 0L) npPosition.value.toFloat() / duration else 0f
                                 },
-                                // Composed on EVERY route, including the one it hides on, because
-                                // it is one end of the art morph. See MiniPlayer's `visible`.
+                                // Still composed on the now-playing route while the morph runs,
+                                // so it hides itself rather than vanishing mid-flight. See
+                                // MiniPlayer's `visible`.
                                 visible = !onNowPlaying,
                                 onToggle = npVm::toggle,
                                 onNext = npVm::next,
@@ -251,9 +265,15 @@ fun VeldtNavHost() {
                         ) {
                             NowPlayingScreen(
                                 vm = npVm,
-                                // The other end of the same boolean the mini-player reads, so
-                                // exactly one end of the morph is ever the live one.
-                                artVisible = onNowPlaying,
+                                // The other end of the same question the mini-player answers
+                                // with `visible`, so exactly one end of the morph is ever the
+                                // live one — including on the frame of a pop, which is why
+                                // this re-reads the back stack instead of closing over
+                                // `onNowPlaying`. See NowPlayingScreen's KDoc.
+                                artVisible = {
+                                    backStackEntryState.value?.destination?.route ==
+                                        Destinations.NOW_PLAYING
+                                },
                                 onCollapse = { navController.popBackStack() },
                             )
                         }

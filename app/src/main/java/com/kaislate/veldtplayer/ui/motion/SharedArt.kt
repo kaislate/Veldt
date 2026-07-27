@@ -4,10 +4,15 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The album-art morph: a cover tapped on a browse surface travels into the detail screen's
@@ -70,9 +75,15 @@ fun songArtKey(songId: Long): String = "song-art:$songId"
  * A wrapper type rather than the raw `SharedContentState` so the experimental opt-in stops
  * HERE. Screens hold an [ArtMorph] and never annotate themselves, which is the same reason
  * the two scopes travel as CompositionLocals instead of as parameters.
+ *
+ * `@Stable`, deliberately NOT `@Immutable`: the wrapped `SharedContentState.isMatchFound` is
+ * snapshot-backed mutable state that the `sharedElement*` modifiers write. Today the only
+ * read is inside a draw-phase lambda, so the difference is invisible — but `@Immutable` is a
+ * promise the compiler acts on, and the first composable that reads `isMatchFound` directly
+ * in composition would be marked skippable and then never invalidate when the match changes.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
-@Immutable
+@Stable
 class ArtMorph internal constructor(
     internal val state: SharedTransitionScope.SharedContentState,
 )
@@ -113,6 +124,63 @@ fun rememberArtMorphActive(morph: ArtMorph?): () -> Boolean {
 }
 
 /**
+ * How long to wait for a transition to START before concluding that [routeKey]'s change
+ * caused none. A nav transition begins on the very next frame, so this only ever expires on
+ * a navigation with no shared element in it at all.
+ */
+private const val MORPH_START_TIMEOUT_MS = 250L
+
+/**
+ * A hard ceiling on how long an end may linger once a transition HAS started, so a
+ * transition that never reports itself finished cannot park an invisible end in the tree
+ * forever. Comfortably longer than [Motion.sharedBounds] so it never truncates a real morph.
+ */
+private const val MORPH_RUN_TIMEOUT_MS = 3_000L
+
+/**
+ * Whether a caller-managed shared element whose [routeKey] just changed must still be
+ * COMPOSED even though it is no longer the visible end.
+ *
+ * **This exists because "keep both ends composed forever" is the wrong contract.** A shared
+ * element stays in the UI tree when `visible == false`, and it starts a transition whenever
+ * its size or position changes *while it has an active match*. A bounds change on a live
+ * match is the trigger — registration alone is not. An end that has been sitting in the tree
+ * all along, at the same size and the same place, therefore has nothing to change and fires
+ * nothing: the departing end holds its bounds in the overlay until it leaves composition and
+ * the resident end then simply draws where it always was. That is the snap. Compose's own
+ * guidance is to remove a `visible == false` end once the transition is finished, and this is
+ * what lets a caller do that.
+ *
+ * Used as `visible || rememberMorphLinger(routeKey)`, an end is ABSENT while the other one
+ * owns the screen and is re-attached at frame 0 of the return — a freshly measured end
+ * against a live match, which is exactly the shape the outbound leg already has.
+ *
+ * **Why `remember(routeKey)` and not a `LaunchedEffect`.** This must already read true in the
+ * SAME composition that first sees the new [routeKey]. An effect runs after that frame, by
+ * which time the end being kept alive has already left the tree and taken the morph's start
+ * bounds with it — which is the trap in the naive `visible || scope.isTransitionActive`,
+ * where the transition is not yet active on the frame the route flips.
+ */
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+fun rememberMorphLinger(routeKey: Any?): Boolean {
+    val transition = LocalSharedTransitionScope.current ?: return false
+    val linger = remember(routeKey) { mutableStateOf(true) }
+    LaunchedEffect(routeKey) {
+        val started = withTimeoutOrNull(MORPH_START_TIMEOUT_MS) {
+            snapshotFlow { transition.isTransitionActive }.first { it }
+        }
+        if (started != null) {
+            withTimeoutOrNull(MORPH_RUN_TIMEOUT_MS) {
+                snapshotFlow { transition.isTransitionActive }.first { !it }
+            }
+        }
+        linger.value = false
+    }
+    return linger.value
+}
+
+/**
  * Marks this art as one end of [morph], for an element that lives in a NAV DESTINATION.
  *
  * No-ops when either scope is absent instead of throwing. The only caller that can be
@@ -148,17 +216,18 @@ fun Modifier.sharedArt(key: String): Modifier = sharedArt(rememberArtMorph(key))
  * Marks this art as one end of the TRACK cover's morph — the mini-player thumbnail and the
  * now-playing screen's full-bleed art.
  *
- * **Caller-managed visibility, not an [AnimatedVisibilityScope], and that asymmetry is the
- * difference between a morph that works one way and one that works both.** A shared element
- * matches on REGISTRATION, not on visibility: both ends must be composed from frame 0 of the
- * transition. A nav destination gets that free, because `AnimatedContent` composes the
- * incoming and outgoing content together. The mini-player is chrome — hang it off an
- * `AnimatedVisibility` and its end exists only while that chrome is composed, which going
- * OUT is true (the chrome is on screen when the tap lands) and coming BACK is not (the
- * chrome is composed by the same transition it is supposed to be an end of). The result was
- * a morph one way and a snap the other. Declaring visibility directly lets the element stay
- * registered in both directions, and the mini-player stops needing a scope it never had any
- * business borrowing.
+ * **Caller-managed visibility, not an [AnimatedVisibilityScope].** The mini-player is chrome:
+ * it has no `composable { }` receiver, so hanging it off an `AnimatedVisibility` meant
+ * borrowing a scope that belonged to something else, and its end then existed only while that
+ * chrome was composed — true going OUT, false coming BACK, because the chrome was composed by
+ * the very transition it was meant to be an end of. Declaring visibility directly removes the
+ * borrowed scope and puts the answer where the caller already knows it.
+ *
+ * **Registration is necessary and not sufficient, and the caller owns the rest.** An end that
+ * simply stays composed forever at unchanged bounds never triggers anything — see
+ * [rememberMorphLinger] for why, and for the lifetime the caller must give this instead: an
+ * end must be ABSENT while the other owns the screen, and re-attached at frame 0 of the
+ * return.
  *
  * [visible] is which END is the live one, so exactly one of the pair passes true.
  */
