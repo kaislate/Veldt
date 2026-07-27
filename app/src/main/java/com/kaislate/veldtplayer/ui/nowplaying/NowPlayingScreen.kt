@@ -46,7 +46,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -63,6 +65,7 @@ import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 import kotlinx.coroutines.delay
@@ -80,7 +83,6 @@ private val TRANSPORT_GAP = 8.dp
 private val PLAY_BUTTON = 72.dp
 private val PLAY_GLYPH = 44.dp
 
-private const val SUBTITLE_ALPHA = 0.72f
 private const val INACTIVE_ALPHA = 0.5f
 
 /** How long the surface must go untouched before the chrome fades away. */
@@ -119,11 +121,20 @@ internal fun ambientEligible(
 ): Boolean = !reduced && !touchExploration && isActive && isPlaying && !sheetOpen
 
 /**
- * Ambient fade for one piece of chrome.
+ * The ambient fade itself, and nothing else.
  *
  * [alpha] arrives as a `State` and is unwrapped inside the `graphicsLayer` block rather than
  * by the caller, so the per-frame snapshot read lands in the layer phase and the fade costs
  * no recomposition at all.
+ *
+ * Used bare by exactly one control — the collapse button, which fades but never leaves either
+ * tree. See its call site for why.
+ */
+private fun Modifier.ambientFade(alpha: State<Float>): Modifier =
+    this.graphicsLayer { this.alpha = alpha.value }
+
+/**
+ * Ambient fade for one piece of chrome, plus the withdrawal that goes with it.
  *
  * Once it is fully gone the chrome also leaves the accessibility tree. Alpha is a DRAW
  * property: a fully transparent transport is still a row of focusable, clickable buttons, so
@@ -135,9 +146,13 @@ internal fun ambientEligible(
  * `enabled = false` on the same [live] signal: a disabled `clickable` does not consume the
  * down, so a tap aimed at a button nobody can see falls through to the root Box and wakes the
  * chrome instead of silently pausing the music.
+ *
+ * **Never applied to every control at once.** `enabled = false` also takes a control out of the
+ * FOCUS tree, so between the two of them this modifier makes a control unreachable by any input
+ * method that is not a pointer. One control is therefore exempt — see the collapse button.
  */
 private fun Modifier.ambientChrome(alpha: State<Float>, live: Boolean): Modifier {
-    val faded = this.graphicsLayer { this.alpha = alpha.value }
+    val faded = ambientFade(alpha)
     return if (live) faded else faded.clearAndSetSemantics { }
 }
 
@@ -211,6 +226,22 @@ private fun rememberTouchExploration(): Boolean {
  * the scrub bar goes on to handle — restores the chrome. `detectTapGestures` would have seen
  * neither, because it waits for an unconsumed down on the MAIN pass and those children get
  * there first.
+ *
+ * **Waking it is not only a pointer, either, and that is not a nicety.** A pointer-only wake
+ * signal on a timer that also sets `enabled = false` is a trap with no door in it for anyone
+ * who does not use a pointer: `enabled = false` removes a control from the focus tree just as
+ * `clearAndSetSemantics` removes it from the accessibility tree, so eight seconds after a
+ * Switch Access or keyboard user arrives, every control on the screen stops existing for them
+ * and nothing they can do brings it back. Two mechanisms answer that, and they are chosen to
+ * overlap rather than to divide the space:
+ *
+ * - **Any key event bumps the idle clock**, watched at the root and never consumed. That is a
+ *   D-pad, an external keyboard, a remote — for whom moving focus IS a key press, so ordinary
+ *   navigation counts as activity exactly the way ordinary touching does. Focus ENTERING the
+ *   screen counts too, for a service that moves focus without a key event.
+ * - **The collapse button never fades out of either tree**, so there is always one control to
+ *   reach. Switch Access is the case the first mechanism does not cover: it scans by
+ *   accessibility focus and activates by action, and produces no key event at any point.
  */
 @Composable
 fun NowPlayingScreen(
@@ -236,6 +267,11 @@ fun NowPlayingScreen(
     var draggedY by remember { mutableFloatStateOf(0f) }
 
     var showQueue by remember { mutableStateOf(false) }
+    // The host below also guards on isActive, because this cannot run until after the frame
+    // that dropped it. This is the other half: without it the flag would still read "open"
+    // once the sheet had been taken away, and the sheet would spring back on its own the next
+    // time something started playing.
+    LaunchedEffect(state.isActive) { if (!state.isActive) showQueue = false }
     // A counter rather than a timestamp: it only ever has to differ from its previous value
     // to restart the idle timer, and a monotonic tick cannot be confused by a clock change.
     var lastTouchTick by remember { mutableIntStateOf(0) }
@@ -294,6 +330,20 @@ fun NowPlayingScreen(
                     lastTouchTick++
                 }
             }
+            // The non-pointer half of the same wake signal. Key events are delivered to the
+            // focused node and bubble UP its parent chain, so this sees every press made
+            // anywhere on the screen — a D-pad moving focus between transport buttons
+            // included, which is what "activity" looks like when there is no finger.
+            // Returns false always: observed, never consumed, exactly like the down above.
+            .onKeyEvent {
+                lastTouchTick++
+                false
+            }
+            // And focus ARRIVING, for a service that moves focus by action rather than by key
+            // event. Deliberately only the rising edge: focus is also lost when the fade
+            // disables the transport out from under it, and treating THAT as activity would
+            // wake the chrome every eight seconds forever.
+            .onFocusChanged { if (it.hasFocus) lastTouchTick++ }
             .pointerInput(Unit) {
                 val threshold = DISMISS_DRAG_DP.dp.toPx()
                 detectVerticalDragGestures(
@@ -386,6 +436,13 @@ fun NowPlayingScreen(
                     durationMs = state.durationMs,
                     palette = palette,
                     reducedMotion = reduced,
+                    // The bar stays through the fade — it is part of the record — but it must
+                    // not still be a SEEK target when it is the only live control left on a
+                    // screen with no visible chrome. A tap on it then means "wake up", and it
+                    // spans the full width right under the artwork, which is exactly where a
+                    // user aims when they want the chrome back. Dragging survives. See
+                    // WaveScrubBar's KDoc.
+                    tapToSeek = chromeLive,
                     onSeek = vm::seekTo,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -410,18 +467,38 @@ fun NowPlayingScreen(
         // A VISIBLE affordance, not only the drag. A downward swipe is undiscoverable, and
         // — the reason this is not a preference — it is unreachable with TalkBack on, which
         // would leave the screen a one-way trip for a screen-reader user.
+        //
+        // THE ONE CONTROL AMBIENT MODE DOES NOT WITHDRAW. It fades with everything else, but
+        // it keeps `enabled = true` and so keeps its place in both the accessibility tree and
+        // the focus tree. Every other control on this screen is unreachable while the chrome
+        // is down for anyone whose input is not a pointer, and Switch Access — which scans by
+        // accessibility focus and activates by action, producing no key event for the root
+        // wake handler to see — would otherwise have nothing on this screen to scan to at all,
+        // eight seconds after arriving. The paragraph two comments up claims this button is
+        // why the screen is never a one-way trip; ambient mode taking it away would have made
+        // that claim false, and taken the transport with it.
+        //
+        // Faded, it wakes rather than collapses. That keeps the rule the fade is built on —
+        // a control nobody can see must not fire — and it is the same two-step every sighted
+        // user already gets from ambient mode: the first press restores the chrome, the second
+        // does the thing. It is also strictly better than the alternative reading of "one way
+        // out survives", which would have been an exit and nothing else: this hands back the
+        // WHOLE screen, transport included, rather than only the door.
+        val collapseWakes = !chromeLive
         IconButton(
-            onClick = onCollapse,
-            enabled = chromeLive,
+            onClick = { if (collapseWakes) lastTouchTick++ else onCollapse() },
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .windowInsetsPadding(WindowInsets.systemBars)
                 .padding(start = 8.dp)
-                .ambientChrome(chromeAlpha, chromeLive),
+                .ambientFade(chromeAlpha),
         ) {
             Icon(
                 Icons.Filled.KeyboardArrowDown,
-                contentDescription = "Collapse",
+                // Announced as what it will actually do when pressed, not as what it is
+                // labelled the rest of the time — a screen reader has no other way to find
+                // out that the screen is currently in ambient mode.
+                contentDescription = if (collapseWakes) "Show controls" else "Collapse",
                 tint = palette.onBg,
             )
         }
@@ -449,7 +526,15 @@ fun NowPlayingScreen(
             }
         }
 
-        if (showQueue) {
+        // `state.isActive` as well as the flag, and not belt-and-braces: the button that sets
+        // showQueue is inside the isActive branch but this host is not, so the two can come
+        // apart while the sheet is OPEN. `PlaybackConnection.publish()` resolves the current
+        // song by indexing its queue and can come back null, which drops nowPlaying to EMPTY —
+        // and the sheet would then be a list with no highlighted row, still offering every row
+        // as a jump, because `canJump` only greys out on `isStalled` and isStalled is itself
+        // qualified on isActive. Harmless further down (skipToQueueIndex bounds-checks) and
+        // fixed here, where the state it describes actually is.
+        if (showQueue && state.isActive) {
             // collectAsStateWithLifecycle, and collected only while the sheet is up: nothing
             // else on this screen reads the queue, so there is no reason to hold a collector
             // on it for the whole life of the surface.

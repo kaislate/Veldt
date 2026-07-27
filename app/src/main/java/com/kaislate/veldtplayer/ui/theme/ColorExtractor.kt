@@ -34,6 +34,21 @@ data class DominantColors(
 internal const val DISABLED_ALPHA = 0.38f
 
 /**
+ * Strength of a SECONDARY label — the artist line under a title — against a palette ground.
+ *
+ * One constant for the same reason [DISABLED_ALPHA] is one: the mini-player's artist line, the
+ * now-playing artist line and the queue row's artist line are the same thing said three times,
+ * and two of them are on screen together the moment the queue sheet slides over the surface it
+ * was opened from. Held apart as per-file literals they had already drifted (0.7 / 0.72 / 0.7),
+ * which is a difference nobody chose and nobody can see a reason for — just an inconsistency
+ * that gets copied forward by the next surface that needs a subtitle.
+ *
+ * Lives here rather than in `Theme.kt` because it is a strength applied to
+ * [DominantColors.onBg], not to a Material colour role.
+ */
+internal const val SUBTITLE_ALPHA = 0.7f
+
+/**
  * [DominantColors.onBg], dimmed when the control it tints is disabled.
  *
  * One definition because it is easy to get silently wrong: Compose signals "disabled" by

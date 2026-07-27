@@ -36,13 +36,13 @@ import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 
 /** Thickness of the progress hairline that doubles as the chrome's top edge. */
 private val HAIRLINE = 2.dp
 
 private const val TRACK_ALPHA = 0.15f
-private const val SUBTITLE_ALPHA = 0.7f
 
 private val THUMB_SIZE = 48.dp
 private val THUMB_CORNER = 8.dp

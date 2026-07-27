@@ -40,6 +40,7 @@ import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.theme.DISABLED_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 
 private val ROW_ART = 40.dp
 private val ROW_ART_CORNER = 6.dp
@@ -47,7 +48,6 @@ private val ROW_SHAPE = RoundedCornerShape(12.dp)
 private val SHEET_INSET = 12.dp
 private val ROW_INSET = 8.dp
 
-private const val SUBTITLE_ALPHA = 0.7f
 private const val HANDLE_ALPHA = 0.4f
 
 /** How much of the accent tints the currently-playing row's ground. */

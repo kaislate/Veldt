@@ -54,6 +54,21 @@ import kotlin.math.abs
  * [positionMs] is the transport's own position and drives the wave whenever the user is
  * not touching the bar; during a drag the bar shows the finger instead, so the playhead
  * never fights a position tick arriving mid-gesture.
+ *
+ * [tapToSeek] is false while now-playing's ambient mode has faded the chrome away. The bar
+ * itself deliberately stays — it is part of the record, not part of the control panel — but it
+ * is then the ONLY live control on a screen whose every other control has gone, and it spans
+ * the full width directly under the artwork. A user tapping the middle of the screen to bring
+ * the chrome back is not asking to jump the playhead across the track, and losing your place in
+ * a song is not an undoable mistake. Dragging survives, because a deliberate horizontal sweep
+ * across a bar you cannot see is nobody's idea of "wake the screen up".
+ *
+ * Withheld by RE-KEYING the tap detector rather than by dropping it from the modifier chain:
+ * the wake happens on the same down that would start the tap, so the flag flips one frame INTO
+ * the gesture. Re-keying cancels that in-flight tap (correct — the finger went down on a faded
+ * screen), and leaves the chain's shape, and therefore the drag detector's node and its
+ * `dragFraction` sentinel, untouched. Removing an element instead would re-create every element
+ * after it and could strand a drag mid-gesture.
  */
 @Composable
 fun WaveScrubBar(
@@ -61,6 +76,7 @@ fun WaveScrubBar(
     durationMs: Long,
     palette: DominantColors,
     reducedMotion: Boolean,
+    tapToSeek: Boolean,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -202,7 +218,11 @@ fun WaveScrubBar(
                 }
                 .then(
                     if (!seekable) Modifier else Modifier
-                        .pointerInput(durationMs) {
+                        .pointerInput(durationMs, tapToSeek) {
+                            // Not attached at all while the chrome is faded, rather than
+                            // attached-and-ignoring: an unattached detector does not consume
+                            // the down either, so the tap stays purely a wake gesture.
+                            if (!tapToSeek) return@pointerInput
                             detectTapGestures { offset ->
                                 // Latched like a drag release, not just seeked: a tap has
                                 // the same pre-seek tick to ride out.
