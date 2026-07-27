@@ -1,5 +1,6 @@
 package com.kaislate.veldtplayer.ui.nowplaying
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -14,21 +15,35 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.ui.components.drawWave
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.VeldtText
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.PI
+import kotlin.math.abs
 
 /**
  * The signature surface: Veldt Wisp's wave, at full-screen scale, as the seek control.
@@ -65,6 +80,16 @@ fun WaveScrubBar(
     var dragFraction by remember(durationMs) { mutableFloatStateOf(NOT_DRAGGING) }
     val isDragging = dragFraction >= 0f
 
+    // THE SEEK LATCH. The position ticker resumes before the seek has landed, so for one
+    // 250ms tick the transport still reports the PRE-seek position — and without this the
+    // playhead visibly snaps back there the instant the finger lifts, then jumps forward
+    // again. Holding the released position until the transport catches up removes the whole
+    // round trip from view. Keyed on durationMs for the same reason dragFraction is: a
+    // duration change cancels the gesture detectors mid-gesture, and a stranded latch would
+    // freeze the playhead permanently.
+    var latchFraction by remember(durationMs) { mutableFloatStateOf(NOT_LATCHED) }
+    val isLatched = latchFraction >= 0f
+
     // A track with no duration cannot be seeked, and must not look like it can: the
     // gestures below are attached only when there is something to seek to, so the
     // playhead can never be dragged somewhere the transport will refuse to go.
@@ -72,7 +97,57 @@ fun WaveScrubBar(
 
     val liveFraction =
         if (seekable) (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f) else 0f
-    val fraction = if (isDragging) dragFraction else liveFraction
+
+    // Released the moment the transport's own position reaches the seek target, or after
+    // LATCH_TIMEOUT_MS if it never does — a seek can be refused outright (a disconnected
+    // controller parks the command), and a latch with no timeout would leave the playhead
+    // frozen at a position nothing is playing.
+    val livePositionMs = rememberUpdatedState(positionMs)
+    LaunchedEffect(latchFraction, durationMs) {
+        if (latchFraction < 0f) return@LaunchedEffect
+        val targetMs = latchFraction.toPositionMs(durationMs)
+        withTimeoutOrNull(LATCH_TIMEOUT_MS) {
+            snapshotFlow { livePositionMs.value }
+                .first { abs(it - targetMs) <= LATCH_TOLERANCE_MS }
+        }
+        latchFraction = NOT_LATCHED
+    }
+
+    // The fraction the bar DRAWS, as an Animatable rather than the raw target, for exactly
+    // one moment: the release of the latch. A seek does not always land where it was asked
+    // to — a VBR file with no seek table resolves to the nearest sync frame — so the
+    // playhead can have real distance to cover once the hold ends. Motion.settle is the spec
+    // written for this, and it is the ONLY transition that animates: everything else snaps,
+    // so the playhead never trails the transport during ordinary playback and a track change
+    // does not sweep it back across the whole bar.
+    val playhead = remember(durationMs) { Animatable(0f) }
+    val target = rememberUpdatedState(
+        when {
+            isDragging -> dragFraction
+            isLatched -> latchFraction
+            else -> liveFraction
+        }
+    )
+    val held = rememberUpdatedState(isDragging || isLatched)
+    LaunchedEffect(playhead) {
+        var wasHeld = false
+        snapshotFlow { target.value to held.value }.collect { (value, hold) ->
+            if (wasHeld && !hold) playhead.animateTo(value, Motion.settle) else playhead.snapTo(value)
+            wasHeld = hold
+        }
+    }
+
+    // Read directly while dragging rather than through the Animatable, so the playhead
+    // tracks the finger with no coroutine hop in between — including if a drag begins during
+    // the settle above, which the sequential collector would otherwise not see until it ends.
+    val fraction = if (isDragging) dragFraction else playhead.value
+
+    /** What the readout says and what TalkBack reports — the HELD time, never the animation. */
+    val readoutMs = when {
+        isDragging -> dragFraction.toPositionMs(durationMs)
+        isLatched -> latchFraction.toPositionMs(durationMs)
+        else -> positionMs
+    }
 
     // Grows under the finger. Selected from the motion vocabulary rather than hard-cut
     // between two radii, which on the one element the user is actually touching reads
@@ -94,11 +169,37 @@ fun WaveScrubBar(
             Modifier
                 .fillMaxWidth()
                 .height(CANVAS_HEIGHT_DP.dp)
+                // TalkBack saw a bare Canvas: the app's signature control was an unlabelled
+                // blank that could not be seeked at all. There is no Role for a seek bar in
+                // Compose's set — the platform mapping comes from the PAIR below, which the
+                // accessibility bridge turns into an android.widget.SeekBar node with an
+                // adjustable value, exactly as Material's own Slider is announced.
+                .semantics {
+                    contentDescription = SCRUB_LABEL
+                    stateDescription = "${formatTime(readoutMs)} of ${formatTime(durationMs)}"
+                    progressBarRangeInfo = ProgressBarRangeInfo(fraction, 0f..1f)
+                    if (seekable) {
+                        setProgress { value ->
+                            val f = value.coerceIn(0f, 1f)
+                            latchFraction = f
+                            onSeek(f.toPositionMs(durationMs))
+                            true
+                        }
+                    } else {
+                        // Same honesty as withholding the gestures: a track with no known
+                        // duration is announced as a control that cannot be adjusted.
+                        disabled()
+                    }
+                }
                 .then(
                     if (!seekable) Modifier else Modifier
                         .pointerInput(durationMs) {
                             detectTapGestures { offset ->
-                                onSeek(offset.x.fractionOf(size.width).toPositionMs(durationMs))
+                                // Latched like a drag release, not just seeked: a tap has
+                                // the same pre-seek tick to ride out.
+                                val f = offset.x.fractionOf(size.width)
+                                latchFraction = f
+                                onSeek(f.toPositionMs(durationMs))
                             }
                         }
                         .pointerInput(durationMs) {
@@ -109,6 +210,7 @@ fun WaveScrubBar(
                                 onDragEnd = {
                                     // Guarded because a cancel can land between the two.
                                     if (dragFraction >= 0f) {
+                                        latchFraction = dragFraction
                                         onSeek(dragFraction.toPositionMs(durationMs))
                                     }
                                     dragFraction = NOT_DRAGGING
@@ -164,11 +266,15 @@ fun WaveScrubBar(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = READOUT_INSET_DP.dp),
+                .padding(horizontal = READOUT_INSET_DP.dp)
+                // Hidden from accessibility, not because it is decoration but because the
+                // bar above already announces both times as its state — leaving these in
+                // makes TalkBack read the same two numbers again as unlabelled stray text.
+                .clearAndSetSemantics { },
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
-                formatTime(if (isDragging) dragFraction.toPositionMs(durationMs) else positionMs),
+                formatTime(readoutMs),
                 style = VeldtText.numeric,
                 color = palette.onBg.copy(alpha = READOUT_ALPHA),
             )
@@ -237,6 +343,20 @@ private fun rememberWavePhase(reducedMotion: Boolean): State<Float> {
 private const val PHASE_REST = 0f
 
 private const val NOT_DRAGGING = -1f
+private const val NOT_LATCHED = -1f
+
+/**
+ * How close the transport has to get to the seek target before the latch lets go. Three
+ * ticks' worth: the ticker's own 250ms granularity, plus room for a seek that resolves to a
+ * nearby sync frame rather than the exact millisecond asked for.
+ */
+private const val LATCH_TOLERANCE_MS = 750L
+
+/** Ceiling on the hold, for a seek that never lands at all. */
+private const val LATCH_TIMEOUT_MS = 1_500L
+
+/** The seek control's accessible name. Not "wave" — TalkBack needs the function, not the look. */
+private const val SCRUB_LABEL = "Playback position"
 
 /** Wisp's scrub canvas is 34dp with the baseline 13dp up; this is that, doubled. */
 private const val CANVAS_HEIGHT_DP = 68

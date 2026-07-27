@@ -54,6 +54,19 @@ data class NowPlayingState(
     val isActive: Boolean get() = songId != null
     val isPlaying: Boolean get() = playState == PlayState.PLAYING
 
+    /**
+     * A track is on screen but the player is not prepared to play it, so the transport
+     * would do nothing.
+     *
+     * This is reachable, and not only by exotic means. When
+     * [com.kaislate.veldtplayer.playback.PlaybackConnection]'s skip-on bound engages — a
+     * queue where every file is undecodable, e.g. an unmounted SD card against stale
+     * MediaStore rows — the player is left in `STATE_IDLE`, and `toggle`/`next`/`previous`
+     * never call `prepare()`. Only a fresh `playFrom` recovers. Exposed so the UI can render
+     * those controls DISABLED rather than offering three buttons that silently do nothing.
+     */
+    val isStalled: Boolean get() = isActive && playState == PlayState.IDLE
+
     /** Placeholder glyph when there's no artwork (spec §4). */
     val initial: Char get() = title.firstOrNull { it.isLetterOrDigit() } ?: '♪'
 

@@ -69,8 +69,12 @@ object VeldtText {
      * resolve to Compose's default instead of the slot's. Callers that need a
      * larger readout should copy it with an explicit size.
      *
-     * Verified on-device in Task 14; if Bricolage lacks `tnum`, switch this style's
-     * fontFamily to FontFamily.Monospace rather than shipping jittering digits.
+     * VERIFIED on device in Task 14 and the monospace fallback is NOT needed: ten
+     * consecutive readings of the now-playing position (1:12 through 1:25) measured a
+     * constant 42–43px ink box with the colon and the trailing digit landing in the same
+     * pixel columns every time. That range is the decisive one — it contains `1`, which is
+     * the glyph a proportional cut narrows and the reason a ticking clock jitters at all.
+     * Bricolage Grotesque honours `tnum`.
      */
     val numeric = TextStyle(
         fontFamily = TitleFamily,

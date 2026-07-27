@@ -148,6 +148,29 @@ class NowPlayingStateTest {
         assertFalse(state(song()).copy(playState = PlayState.PAUSED).isPlaying)
     }
 
+    /**
+     * The stall is what the error bound leaves behind: a track still on screen with the
+     * player parked in IDLE and no code path that will call prepare() again. Asserted
+     * against every other PlayState so a mis-wire cannot pass by being constantly true.
+     */
+    @Test fun `a song parked in IDLE reads as stalled`() {
+        val playing = state(song())
+        assertFalse(playing.isStalled)
+        assertTrue(playing.copy(playState = PlayState.IDLE).isStalled)
+        assertFalse(playing.copy(playState = PlayState.PAUSED).isStalled)
+        assertFalse(playing.copy(playState = PlayState.BUFFERING).isStalled)
+        assertFalse(playing.copy(playState = PlayState.ENDED).isStalled)
+    }
+
+    /**
+     * Nothing playing is not a stall — it is the ordinary pre-playback state, and rendering
+     * a disabled transport for it would mean the app opens looking broken.
+     */
+    @Test fun `IDLE with no song is not a stall`() {
+        assertFalse(NowPlayingState.EMPTY.isStalled)
+        assertFalse(state(null).copy(playState = PlayState.IDLE).isStalled)
+    }
+
     @Test fun `repeat mode cycles off to all to one and back`() {
         assertEquals(RepeatMode.ALL, RepeatModes.next(RepeatMode.OFF))
         assertEquals(RepeatMode.ONE, RepeatModes.next(RepeatMode.ALL))

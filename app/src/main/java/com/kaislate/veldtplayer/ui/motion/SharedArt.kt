@@ -22,7 +22,11 @@ import androidx.compose.ui.Modifier
 @OptIn(ExperimentalSharedTransitionApi::class)
 val LocalSharedTransitionScope = compositionLocalOf<SharedTransitionScope?> { null }
 
-/** The current nav destination's own transition scope. Provided per `composable { }`. */
+/**
+ * The transition scope of whatever the art currently lives in — provided per `composable { }`
+ * for a nav destination, and by the bottom chrome's own `AnimatedVisibility` for the
+ * mini-player, which is not a destination and so has no `composable { }` receiver to borrow.
+ */
 val LocalNavAnimatedVisibilityScope = compositionLocalOf<AnimatedVisibilityScope?> { null }
 
 /**
@@ -36,7 +40,18 @@ fun albumArtKey(albumKey: String): String = "album-art:$albumKey"
 fun artistArtKey(artistKey: String): String = "artist-art:$artistKey"
 
 /**
- * Whether a shared-element morph is in flight right now, as a lambda so callers read it in
+ * The morph identity for ONE TRACK's cover — the mini-player's thumbnail and the
+ * now-playing screen's full-bleed art, which are the same song and so resolve to the same
+ * [com.kaislate.veldtplayer.data.art.SongArt].
+ *
+ * Keyed on the song id rather than the album key on purpose: what travels here is the
+ * playing track's cover, and two tracks on one record must not be able to name the same
+ * element while both are on screen.
+ */
+fun songArtKey(songId: Long): String = "song-art:$songId"
+
+/**
+ * Whether the morph named [key] is in flight right now, as a lambda so callers read it in
  * the draw phase instead of recomposing on it.
  *
  * A screen needs this to stop applying its own scroll effects to art that is mid-morph. A
@@ -45,12 +60,22 @@ fun artistArtKey(artistKey: String): String = "artist-art:$artistKey"
  * So a fade meant to hide a scrolled-away header also hid the artwork all the way back to
  * the grid. Holding the effect at rest for the length of the morph is the honest fix: the
  * art is not in the header during a transition, it is in the air.
+ *
+ * **Per-element, not global.** `isTransitionActive` alone was exact while the app had one
+ * morph; the mini-player added a SECOND concurrent shared element, and a navigation that
+ * morphs the mini-player's cover would otherwise freeze an album header's parallax at
+ * whatever offset it happened to be scrolled to. [isMatchFound] is the qualifier: it is true
+ * only while some other surface is claiming this same key, i.e. only while THIS art is the
+ * thing travelling.
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
-fun rememberArtMorphActive(): () -> Boolean {
+fun rememberArtMorphActive(key: String): () -> Boolean {
     val transition = LocalSharedTransitionScope.current ?: return { false }
-    return remember(transition) { { transition.isTransitionActive } }
+    val state = with(transition) { rememberSharedContentState(key = key) }
+    return remember(transition, state) {
+        { transition.isTransitionActive && state.isMatchFound }
+    }
 }
 
 /**
@@ -79,3 +104,12 @@ fun Modifier.sharedArt(key: String): Modifier {
         )
     }
 }
+
+/**
+ * [sharedArt] for a surface whose subject may be absent: with nothing playing there is no
+ * track to name, and marking the placeholder as one end of a morph would let two DIFFERENT
+ * empty surfaces claim the same identity.
+ */
+@Composable
+fun Modifier.sharedSongArt(songId: Long?): Modifier =
+    if (songId == null) this else this.sharedArt(songArtKey(songId))

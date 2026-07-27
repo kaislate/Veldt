@@ -112,7 +112,9 @@ fun AlbumDetailScreen(
     // Distance the list has travelled, in pixels, saturating once the header is off-screen.
     // Read inside a graphicsLayer block, so the whole parallax stays on the draw phase —
     // no recomposition per scrolled pixel.
-    val morphing = rememberArtMorphActive()
+    // Keyed on THIS header's own art. A global "is anything morphing" would also freeze the
+    // parallax while the mini-player's cover flies to the now-playing screen.
+    val morphing = rememberArtMorphActive(albumArtKey(albumKey))
     val travelledPx: () -> Float = {
         // Held at rest for the length of a morph. The art is not in this header then, it
         // is in the air between two screens, and a header scrolled out of sight must not

@@ -1,0 +1,155 @@
+package com.kaislate.veldtplayer.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.kaislate.veldtplayer.playback.NowPlayingState
+import com.kaislate.veldtplayer.ui.motion.sharedSongArt
+import com.kaislate.veldtplayer.ui.nav.CHROME_ALPHA
+import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.onBgFor
+
+/** Thickness of the progress hairline that doubles as the chrome's top edge. */
+private val HAIRLINE = 2.dp
+
+private const val TRACK_ALPHA = 0.15f
+private const val SUBTITLE_ALPHA = 0.7f
+
+private val THUMB_SIZE = 48.dp
+private val THUMB_CORNER = 8.dp
+
+/**
+ * Persistent chrome above the bottom bar, and the second end of the track-art morph: the
+ * thumbnail here is the SAME shared element as the now-playing screen's full-bleed cover, so
+ * tapping the row flies one image up the screen instead of cross-fading two.
+ *
+ * Its ground and its progress hairline are the animated palette, so the browse screens drift
+ * in colour with the current track even though their lists stay on the neutral theme — the
+ * one place the whole app's colour is visible at once.
+ *
+ * [progress] is a LAMBDA, deliberately. It is fed by the 250ms position ticker; taken as a
+ * `Float` it would recompose this row — art, both labels, both buttons — four times a second
+ * for the life of the app. Read inside [drawBehind] it costs one draw invalidation of a 2dp
+ * strip and no recomposition at all.
+ */
+@Composable
+fun MiniPlayer(
+    state: NowPlayingState,
+    palette: DominantColors,
+    progress: () -> Float,
+    onToggle: () -> Unit,
+    onNext: () -> Unit,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (!state.isActive) return
+
+    Column(modifier.fillMaxWidth()) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(HAIRLINE)
+                .drawBehind {
+                    drawRect(palette.onBg.copy(alpha = TRACK_ALPHA))
+                    drawRect(
+                        color = palette.accent,
+                        size = Size(size.width * progress().coerceIn(0f, 1f), size.height),
+                    )
+                }
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                // Same translucency as the navigation bar below it, so the two read as one
+                // pane of chrome with the library passing behind rather than as two slabs.
+                .background(palette.bg.copy(alpha = CHROME_ALPHA))
+                .clickable(
+                    onClickLabel = "Open now playing",
+                    role = Role.Button,
+                    onClick = onOpen,
+                )
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ArtImage(
+                art = state.art,
+                palette = palette,
+                initial = state.initial,
+                // A fixed box, never an unbounded one — ArtImage's loading state fills its
+                // parent. sharedSongArt sits BEFORE clip so the rounding travels with the
+                // shared node, matching AlbumCard.
+                modifier = Modifier
+                    .size(THUMB_SIZE)
+                    .sharedSongArt(state.songId)
+                    .clip(RoundedCornerShape(THUMB_CORNER)),
+            )
+            // weight(1f) so both labels ellipsize against the row rather than against
+            // whatever width the longer of them happens to want.
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(horizontal = 10.dp)
+            ) {
+                Text(
+                    state.title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = palette.onBg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    state.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.onBg.copy(alpha = SUBTITLE_ALPHA),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            // Disabled while stalled, like the full transport: after the error bound engages
+            // the player is IDLE and neither of these would do anything. See isStalled.
+            //
+            // The tint is dimmed EXPLICITLY, via onBgFor: IconButton signals "disabled" by
+            // lowering LocalContentColor, which the explicit palette `tint` overrides.
+            val canToggle = !state.isStalled
+            IconButton(onClick = onToggle, enabled = canToggle) {
+                Icon(
+                    imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (state.isPlaying) "Pause" else "Play",
+                    tint = palette.onBgFor(canToggle),
+                )
+            }
+            val canSkip = state.hasNext && !state.isStalled
+            IconButton(onClick = onNext, enabled = canSkip) {
+                Icon(
+                    Icons.Filled.SkipNext,
+                    contentDescription = "Next",
+                    tint = palette.onBgFor(canSkip),
+                )
+            }
+        }
+    }
+}

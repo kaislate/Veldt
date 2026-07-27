@@ -23,6 +23,20 @@ data class DominantColors(
     val waveColors: List<Color> = emptyList(),
 )
 
+/** Material's disabled-content strength, applied to palette tints by [onBgFor]. */
+private const val DISABLED_ALPHA = 0.38f
+
+/**
+ * [DominantColors.onBg], dimmed when the control it tints is disabled.
+ *
+ * One definition because it is easy to get silently wrong: Compose signals "disabled" by
+ * lowering `LocalContentColor`, and every transport icon in the app passes an explicit
+ * palette tint that OVERRIDES that — so a dead button renders identically to a live one
+ * unless the call site dims it itself.
+ */
+fun DominantColors.onBgFor(enabled: Boolean): Color =
+    if (enabled) onBg else onBg.copy(alpha = DISABLED_ALPHA)
+
 /**
  * Derives a per-track palette from album art.
  *
