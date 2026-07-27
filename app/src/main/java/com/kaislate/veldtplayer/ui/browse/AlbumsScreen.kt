@@ -30,7 +30,9 @@ import com.kaislate.veldtplayer.data.library.LibraryKeys
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.ArtImage
+import com.kaislate.veldtplayer.ui.motion.albumArtKey
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
+import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.DominantColors
@@ -100,11 +102,12 @@ fun AlbumsScreen(
     //
     // Keyed on the COMPOUND album key, never on the album title: Queen's and ABBA's
     // "Greatest Hits" are two tiles, and a title-keyed map would hand them one cover.
-    // A track with embedded art is preferred where the album has one, because it gives
-    // AlbumArtFetcher a second source to fall back to when MediaStore has no thumbnail.
-    val coverByKey: Map<String, Song> = remember(songs) {
+    // The track itself is chosen by coverTrack(), which is order-independent — the album
+    // page reaches the same decision from a differently-sorted list, which is what lets
+    // the two ends of the art morph share one decoded bitmap.
+    val coverByKey: Map<String, Song?> = remember(songs) {
         songs.groupBy { LibraryKeys.albumKey(it) }
-            .mapValues { (_, rows) -> rows.firstOrNull { it.hasEmbeddedArt } ?: rows.first() }
+            .mapValues { (_, rows) -> rows.coverTrack() }
     }
 
     // Insets are split exactly as in SongsScreen: the bottom one becomes contentPadding so
@@ -171,6 +174,10 @@ private fun AlbumTile(
     ) {
         // aspectRatio, not an unbounded height: ArtImage's loading state fills its parent,
         // so under unbounded constraints the tile would collapse and jump when art lands.
+        //
+        // sharedArt makes this cover the SOURCE of the morph into the album page: tapping
+        // the tile sends this artwork to the detail header instead of cross-fading two
+        // copies of it. It sits before clip() so the corner radius interpolates too.
         ArtImage(
             art = cover?.toSongArt(),
             palette = palette,
@@ -178,6 +185,7 @@ private fun AlbumTile(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
+                .sharedArt(albumArtKey(album.key))
                 .clip(COVER_SHAPE),
         )
         Text(

@@ -30,7 +30,9 @@ import com.kaislate.veldtplayer.data.library.LibraryKeys
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.ArtImage
+import com.kaislate.veldtplayer.ui.motion.artistArtKey
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
+import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.DominantColors
@@ -81,12 +83,12 @@ fun ArtistsScreen(
         return
     }
 
-    // An artist has no artwork of its own, so one of their tracks lends its cover. Songs
-    // arrive title-ordered, so "which track" is deterministic; one carrying embedded art
-    // is preferred because it gives AlbumArtFetcher a fallback source.
-    val portraitByKey: Map<String, Song> = remember(songs) {
+    // An artist has no artwork of its own, so one of their tracks lends its cover. The
+    // choice is order-independent (see coverTrack), so the portrait no longer moves when
+    // the catalogue is re-sorted and the artist page arrives at the same image.
+    val portraitByKey: Map<String, Song?> = remember(songs) {
         songs.groupBy { LibraryKeys.artistKey(it) }
-            .mapValues { (_, rows) -> rows.firstOrNull { it.hasEmbeddedArt } ?: rows.first() }
+            .mapValues { (_, rows) -> rows.coverTrack() }
     }
 
     // Insets split as in SongsScreen: bottom into contentPadding so rows pass under the
@@ -109,6 +111,7 @@ fun ArtistsScreen(
             ArtistRow(
                 artist = artist,
                 portrait = portraitByKey[artist.key],
+                artistKey = artist.key,
                 palette = palette,
                 onClick = { onOpenArtist(artist.key) },
                 modifier = Modifier.staggeredEntrance(index, reduced),
@@ -121,6 +124,7 @@ fun ArtistsScreen(
 private fun ArtistRow(
     artist: Artist,
     portrait: Song?,
+    artistKey: String,
     palette: DominantColors,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -136,12 +140,15 @@ private fun ArtistRow(
     ) {
         // A fixed size, never an unbounded box: ArtImage's loading state fills its parent
         // and would otherwise collapse to ~0 and jump when the bitmap arrives.
+        //
+        // sharedArt makes this the source of the morph into the artist page's header.
         ArtImage(
             art = portrait?.toSongArt(),
             palette = palette,
             initial = name.firstOrNull { it.isLetterOrDigit() } ?: '♪',
             modifier = Modifier
                 .size(PORTRAIT_SIZE)
+                .sharedArt(artistArtKey(artistKey))
                 .clip(CircleShape),
         )
         // weight(1f) so the labels ellipsize against the row rather than against whatever
@@ -168,7 +175,3 @@ private fun ArtistRow(
         }
     }
 }
-
-/** "1 album", "4 albums" — a library full of "1 albums" reads as unfinished software. */
-private fun countOf(count: Int, noun: String): String =
-    if (count == 1) "$count $noun" else "$count ${noun}s"

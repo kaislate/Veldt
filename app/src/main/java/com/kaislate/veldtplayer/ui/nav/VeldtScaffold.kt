@@ -41,8 +41,8 @@ data class NavItem(
 fun rememberNavItems(): List<NavItem> = remember {
     listOf(
         NavItem(Destinations.SONGS, "Songs", Icons.Filled.MusicNote, enabled = true),
-        NavItem(Destinations.ALBUMS, "Albums", Icons.Filled.Album, enabled = false),
-        NavItem(Destinations.ARTISTS, "Artists", Icons.Filled.Person, enabled = false),
+        NavItem(Destinations.ALBUMS, "Albums", Icons.Filled.Album, enabled = true),
+        NavItem(Destinations.ARTISTS, "Artists", Icons.Filled.Person, enabled = true),
         NavItem(Destinations.PLAYLISTS, "Playlists", Icons.AutoMirrored.Filled.QueueMusic, enabled = false),
     )
 }

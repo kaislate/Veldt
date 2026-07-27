@@ -8,6 +8,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 
 /**
@@ -30,8 +31,23 @@ object Motion {
     val settle: SpringSpec<Float> =
         spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium)
 
+    /** How long a piece of album art takes to travel between two destinations. */
+    private const val SHARED_MS = 420
+
     /** Shared-element art morph. Duration-based so both ends stay in lockstep. */
-    val shared: FiniteAnimationSpec<Float> = tween(durationMillis = 420, easing = FastOutSlowInEasing)
+    val shared: FiniteAnimationSpec<Float> = tween(durationMillis = SHARED_MS, easing = FastOutSlowInEasing)
+
+    /**
+     * The same morph, Rect-typed.
+     *
+     * `BoundsTransform` animates a [Rect] and will not accept [shared], which is
+     * `FiniteAnimationSpec<Float>` — the two are not interchangeable. This exists so the
+     * call site selects a spec rather than declaring one; a `tween` written next to a
+     * `sharedElement` is the exact scattering this file prevents. Both forms read one
+     * duration constant so they cannot drift apart.
+     */
+    val sharedBounds: FiniteAnimationSpec<Rect> =
+        tween(durationMillis = SHARED_MS, easing = FastOutSlowInEasing)
 
     /** Album-art palette drift on track change (spec §6) — competitors hard-cut here. */
     val palette: AnimationSpec<Color> = tween(durationMillis = 600, easing = LinearOutSlowInEasing)
