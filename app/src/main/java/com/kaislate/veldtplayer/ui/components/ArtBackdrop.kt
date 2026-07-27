@@ -29,8 +29,15 @@ import com.kaislate.veldtplayer.ui.theme.DominantColors
 /** Blur radius for the tiers that have `RenderEffect`. Wide enough to erase all detail. */
 private val BLUR_RADIUS = 48.dp
 
-/** How far past the surface [BackdropTier.Upscale] magnifies the art. */
-private const val UPSCALE = 2.2f
+/**
+ * How far past the surface [BackdropTier.Upscale] magnifies the art.
+ *
+ * Not a blur mechanism — [BACKDROP_DECODE_SAMPLE] is. This only decides how much of the
+ * cover fills the frame. It was briefly raised to 2.2f while the tier was trying to blur by
+ * magnifying; that cropped deep into an already-tiny bitmap and threw away cover for no
+ * gain, so it is back where it started.
+ */
+private const val UPSCALE = 1.6f
 
 /**
  * [BackdropTier.Upscale] decodes the cover a fraction of the usual size and magnifies it,
@@ -44,15 +51,18 @@ private const val UPSCALE = 2.2f
  * fine detail and broad colour by the same factor, so neither can hide the lettering while
  * keeping the cover recognisable. Decoding small genuinely discards the detail instead.
  *
- * The divisor was picked against a target rather than by feel: the goal was for residual
- * cover detail to reach the `Modifier.blur` tier's level, which measures 0.62 as the
- * standard deviation of a high-passed band of backdrop. An eighth reached 1.04 — the
- * lettering was gone but the tier was still measurably sharper than a real blur. A
- * sixteenth reaches 0.71, and costs nothing: the cover's surviving colour spread is 15.7
- * against an eighth's 14.4, i.e. marginally BETTER, because the residue an eighth leaves is
- * mostly interpolation blocking rather than anything belonging to the artwork.
+ * The divisor was picked against a target rather than by feel: residual cover detail should
+ * reach the `Modifier.blur` tier's level, which measures 0.62 as the standard deviation of a
+ * high-passed band of backdrop, under the same scrim. An eighth reached 1.04 and a sixteenth
+ * 0.94; a thirty-second reaches **0.64**, i.e. parity.
+ *
+ * Sampling harder is free, which is the counter-intuitive part and the reason this is the
+ * knob to turn rather than the scrim. Surviving cover colour went 14.4 -> 32.1 -> 32.8 across
+ * those three, because what a coarser sample removes is the previous one's interpolation
+ * blocking, not artwork. Dimming would have cost real cover to buy the same number; this
+ * costs nothing, so the tier can keep the shared scrim and still match a real blur.
  */
-private const val BACKDROP_DECODE_SAMPLE = 16
+private const val BACKDROP_DECODE_SAMPLE = 32
 
 /**
  * Opacity of the AGSL field where it sits over the artwork.
@@ -71,6 +81,13 @@ private const val BACKDROP_DECODE_SAMPLE = 16
  */
 private const val SHADER_ALPHA = 0.45f
 
+/**
+ * The scrim every tier shares, top and bottom of a vertical gradient over `palette.bg`.
+ * Weighted to the bottom because that is where the transport and the track title sit.
+ */
+private const val SCRIM_TOP = 0.35f
+private const val SCRIM_BOTTOM = 0.80f
+
 /** Where the drift is parked when the user has animations off — mid-sweep, not at an end. */
 private const val DRIFT_REST = 0.5f
 
@@ -85,25 +102,29 @@ private const val NO_GLYPH = ' '
 private const val SHADER_TIME_SCALE = 20f
 
 /**
- * How much backdrop this device can actually draw, and the scrim each one needs.
+ * How much backdrop this device can actually draw.
  *
  * `Modifier.blur` is API 31+ and **silently does nothing below it**; `RuntimeShader` is API
- * 33+. minSdk is 29, so neither may be required — hence the ladder. The scrim rides on the
- * tier because the tiers do not arrive at the same place: [Shader] and [Blur] hand the scrim
- * an image with no detail left in it, while [Upscale] hands it a merely softened cover, and
- * a scrim tuned for the first two lets that cover's typography read straight through.
+ * 33+. minSdk is 29, so neither may be required — hence the ladder.
+ *
+ * The tiers deliberately carry no per-tier appearance. They all reach the scrim with the
+ * cover's detail already gone, so they can all take the SAME scrim — which is the whole
+ * design intent: the tiers differ in how the blur is produced, not in how much of the
+ * artwork you get to see. [Upscale] briefly did carry a heavier scrim, to compensate for a
+ * blur that turned out not to be working; once the blur was fixed the compensation was
+ * measured to be pure loss and removed.
  *
  * Private, and never a parameter or a return type — callers cannot see which tier they got.
  */
-private enum class BackdropTier(val scrimTop: Float, val scrimBottom: Float) {
+private enum class BackdropTier {
     /** 33+ — the blurred cover with the AGSL field over it. */
-    Shader(scrimTop = 0.35f, scrimBottom = 0.80f),
+    Shader,
 
     /** 31-32 — the blurred cover alone. */
-    Blur(scrimTop = 0.35f, scrimBottom = 0.80f),
+    Blur,
 
-    /** 29-30 — the cover magnified and softened, under a scrim that does the rest. */
-    Upscale(scrimTop = 0.55f, scrimBottom = 0.92f),
+    /** 29-30 — the cover decoded small and magnified. */
+    Upscale,
 }
 
 /**
@@ -124,10 +145,14 @@ private fun currentTier(): BackdropTier = when {
  *          backdrop is the artwork *and* a treatment nothing else ships
  *  - 31-32 the blurred cover alone, via `Modifier.blur`
  *  - 29-30 the cover decoded small and magnified, which is a real low-pass rather than a
- *          dimming (see [BACKDROP_DECODE_SAMPLE]), under a heavier scrim
+ *          dimming (see [BACKDROP_DECODE_SAMPLE])
  *
  * Tier selection never leaks to callers: [BackdropTier] is private, there is no tier
  * parameter, and nothing tier-shaped appears in the signature.
+ *
+ * All three carry the SAME scrim and show the same amount of artwork; measured, the bottom
+ * tier's residual cover detail matches the `Modifier.blur` tier's. Only how the blur is
+ * produced differs.
  *
  * Every tier draws the artwork, and the drift is identical on all three — so the MOTION
  * reads the same on every device and only the treatment differs.
@@ -174,8 +199,8 @@ fun ArtBackdrop(
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            palette.bg.copy(alpha = tier.scrimTop),
-                            palette.bg.copy(alpha = tier.scrimBottom),
+                            palette.bg.copy(alpha = SCRIM_TOP),
+                            palette.bg.copy(alpha = SCRIM_BOTTOM),
                         )
                     )
                 )
