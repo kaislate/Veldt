@@ -294,6 +294,10 @@ private fun ShaderField(
     modifier: Modifier,
 ) {
     val shader = remember { RuntimeShader(BACKDROP_AGSL) }
+    // The brush is remembered with the shader, not built in the draw scope. Uniforms are
+    // mutated on the shader itself, so the wrapper never changes — allocating one per frame
+    // would be ~120 short-lived objects a second for the life of the screen.
+    val brush = remember(shader) { ShaderBrush(shader) }
 
     Canvas(modifier) {
         shader.setFloatUniform("uSize", size.width, size.height)
@@ -306,7 +310,7 @@ private fun ShaderField(
         )
         // alpha on the draw call, not a graphicsLayer — no offscreen buffer to allocate
         // and composite every frame of the drift.
-        drawRect(brush = ShaderBrush(shader), alpha = SHADER_ALPHA)
+        drawRect(brush = brush, alpha = SHADER_ALPHA)
     }
 }
 

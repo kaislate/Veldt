@@ -23,6 +23,17 @@ import coil.request.Options
  */
 object ArtDecode {
 
+    /**
+     * The divisor is a request, not a guarantee, and it means slightly different things on
+     * the two art sources. On the thumbnail path it becomes an absolute pixel size —
+     * `loadThumbnail` is documented as free to return something larger. On the embedded path
+     * it becomes `inSampleSize`, which is relative to the ORIGINAL image and rounds down to a
+     * power of two. So the same divisor lands differently: at 32, the thumbnail path asks for
+     * 32px, while a 3000px embedded cover decodes to ~94px — roughly 3x the detail. Both are
+     * far below any surface that would draw them, so the low-pass holds either way; it is
+     * worth knowing before treating the divisor as an exact output size.
+     */
+
     /** The source's natural size — what every surface except the backdrop wants. */
     const val FULL = 1
 

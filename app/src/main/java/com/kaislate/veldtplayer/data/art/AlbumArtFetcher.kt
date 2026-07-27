@@ -29,7 +29,7 @@ import java.io.File
 class AlbumArtFetcher(
     private val data: SongArt,
     private val context: Context,
-    private val sample: Int = ArtDecode.FULL,
+    private val sample: Int,
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
@@ -41,11 +41,23 @@ class AlbumArtFetcher(
             if (bitmap != null) {
                 return@withContext DrawableResult(
                     drawable = BitmapDrawable(context.resources, bitmap),
-                    // Truthful, and load-bearing: Coil rejects a cached bitmap that is
-                    // flagged sampled when a later request needs a larger one. Claiming
-                    // a downsampled decode was the original is how a small backdrop
-                    // bitmap would end up on a full-screen surface.
-                    isSampled = sample != ArtDecode.FULL,
+                    // Always false, including for a sampled decode, and that is deliberate.
+                    //
+                    // The flag exists for ONE consumer: `MemoryCacheService.isSizeValid`
+                    // rejects a cached bitmap when `multiplier > 1.0 && isSampled` — i.e.
+                    // when a request needs a bigger image than the cache holds. Compose
+                    // requests are `Precision.INEXACT`, so that gate is the only one that
+                    // runs. A sampled entry is ~32px against a full-screen request, so
+                    // flagging it truthfully makes EVERY lookup of it miss: the entry is
+                    // written and never read, and the backdrop re-decodes on every visit —
+                    // a MediaStore IPC, or a full AudioFileIO parse of the music file.
+                    //
+                    // The protection the flag would give is already total: a sampled decode
+                    // has its own base key AND its own MemoryCache.Key extras, so no
+                    // full-size request can reach this entry to be under-served by it.
+                    // Within a sampled key namespace every entry has the same sample, so
+                    // the check has nothing left to protect against. See [ArtDecode].
+                    isSampled = false,
                     dataSource = DataSource.DISK,
                 )
             }
