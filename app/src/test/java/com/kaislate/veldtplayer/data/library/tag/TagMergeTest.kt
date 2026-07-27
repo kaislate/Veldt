@@ -29,6 +29,26 @@ class TagMergeTest {
         assertEquals("MS Artist", m.artist)
     }
 
+    /**
+     * The device case. Some downloaders write MediaStore's `<unknown>` sentinel into the
+     * ID3 frame itself, so the PARSED value carries it — non-blank, and under the old
+     * `isNotBlank()` rule it beat a correctly-cleaned fallback and walked straight into
+     * the database. 29 of 31 tracks on the test device arrived this way.
+     */
+    @Test fun sentinelParsedFields_areTreatedAsMissing() {
+        val parsed = fallback.copy(artist = "<unknown>", album = "<UNKNOWN>")
+        val m = TagMerge.merge(parsed, fallback)
+        assertEquals("MS Artist", m.artist)
+        assertEquals("MS Album", m.album)
+    }
+
+    /** Sentinel on BOTH sides means the field is simply unknown — not the literal. */
+    @Test fun sentinelOnBothSides_yieldsNull() {
+        val ms = fallback.copy(artist = "<unknown>")
+        val parsed = fallback.copy(artist = "<unknown>")
+        assertEquals(null, TagMerge.merge(parsed, ms).artist)
+    }
+
     @Test fun parsedNumbers_winWhenPresent() {
         val parsed = fallback.copy(trackNumber = 3, discNumber = 2)
         val m = TagMerge.merge(parsed, fallback)

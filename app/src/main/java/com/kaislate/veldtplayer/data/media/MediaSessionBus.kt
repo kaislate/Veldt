@@ -2,120 +2,132 @@ package com.kaislate.veldtplayer.data.media
 
 import android.graphics.Bitmap
 import android.media.MediaMetadata
-import android.media.session.MediaController
 import android.media.session.PlaybackState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
+/**
+ * One-way publication of Veldt's own playback for in-process surfaces (the built-in pill,
+ * wired in P1.5).
+ *
+ * Veldt is a MediaSession *producer*: it owns its player, so this bus only ever carries
+ * state outward. Transport commands belong to
+ * [com.kaislate.veldtplayer.playback.PlaybackConnection], which speaks to the session
+ * through a `MediaController`; nothing here sends anything back to the player.
+ *
+ * The values are deliberately framework types ([MediaMetadata], [PlaybackState]) rather
+ * than Media3 ones: a pill reads Veldt's session with the same code it would use for any
+ * other app's, and [com.kaislate.veldtplayer.playback.PlayerBusAdapter] already builds
+ * them.
+ *
+ * A singleton because the producer ([com.kaislate.veldtplayer.playback.PlaybackService])
+ * and its consumers live in the same process but have no lifecycle in common — the
+ * service can outlive every consumer and vice versa. [reset] is the counterweight: it is
+ * the only way to clear the retained values when the producer goes away.
+ */
 object MediaSessionBus {
-    private var controller: MediaController? = null
 
     private val _activePackage = MutableStateFlow<String?>(null)
-    val activePackage: StateFlow<String?> = _activePackage
 
-    // Numeric state (Compat)
+    /** Package whose playback these flows describe; Veldt's own while the service runs. */
+    val activePackage: StateFlow<String?> = _activePackage.asStateFlow()
+
     private val _playbackState = MutableStateFlow<Int?>(null)
-    val playbackState: StateFlow<Int?> = _playbackState
 
-    // Full state (for progress)
+    /** `PlaybackState.STATE_*` of [playback], mirrored for consumers that need only it. */
+    val playbackState: StateFlow<Int?> = _playbackState.asStateFlow()
+
     private val _playback = MutableStateFlow<PlaybackState?>(null)
-    val playback: StateFlow<PlaybackState?> = _playback
+
+    /** Full transport state: state code, position, speed and advertised actions. */
+    val playback: StateFlow<PlaybackState?> = _playback.asStateFlow()
 
     private val _metadata = MutableStateFlow<MediaMetadata?>(null)
-    val metadata: StateFlow<MediaMetadata?> = _metadata
+
+    /** Current track's title/artist/album/duration. Never cleared by a null update. */
+    val metadata: StateFlow<MediaMetadata?> = _metadata.asStateFlow()
 
     private val _albumArt = MutableStateFlow<Bitmap?>(null)
-    val albumArt: StateFlow<Bitmap?> = _albumArt
 
-    private val _customActions = MutableStateFlow<List<PlaybackState.CustomAction>>(emptyList())
-    val customActions: StateFlow<List<PlaybackState.CustomAction>> = _customActions
+    /** Current artwork. Re-emitted only when the pixels differ (see [setAlbumArt]). */
+    val albumArt: StateFlow<Bitmap?> = _albumArt.asStateFlow()
 
-    // The playing app's status-bar (notification small) icon. Like album art, it's
-    // resolved by the listener (which has a Context to load the Icon) — see
-    // MediaNotificationListener.pushSmallIcon.
-    private val _smallIcon = MutableStateFlow<Bitmap?>(null)
-    val smallIcon: StateFlow<Bitmap?> = _smallIcon
-
-    fun attachController(c: MediaController?) {
-        controller = c
-        _activePackage.value = c?.packageName
-        _playbackState.value = c?.playbackState?.state
-        _playback.value = c?.playbackState // full object: position/speed for progress
-        _metadata.value = c?.metadata
-        // Album art is resolved by the listener (which has a Context to load
-        // URI-based art), not here — see MediaNotificationListener.pushArt.
-        _customActions.value = c?.playbackState?.customActions ?: emptyList()
-        // Clear the previous app's status-bar icon; the listener re-pushes the new
-        // one right after this call (in reselect).
-        _smallIcon.value = null
+    /** Names the producer whose state follows. */
+    fun activePackageForProducer(pkg: String) {
+        _activePackage.value = pkg
     }
 
-    /** Set the source app's status-bar small icon (from its media notification). */
-    fun setSmallIcon(bmp: Bitmap?) { _smallIcon.value = bmp }
-
-    /** Producer feed: the built-in player owns the active package (no external controller). */
-    fun activePackageForProducer(pkg: String) { _activePackage.value = pkg }
-
-    /**
-     * Emit album art only when the PIXELS actually change. Some apps (VLC) parcel
-     * a brand-new Bitmap instance of the same art on every play/pause — emitting
-     * each instance made the image reload and blink. Called by the listener after
-     * it resolves art from the session (bitmap keys or a loaded URI).
-     */
-    fun setAlbumArt(newArt: Bitmap?, allowNull: Boolean = false) {
-        val cur = _albumArt.value
-        when {
-            newArt == null -> if (allowNull) _albumArt.value = null
-            cur == null -> _albumArt.value = newArt
-            cur.width == newArt.width && cur.height == newArt.height &&
-                runCatching { cur.sameAs(newArt) }.getOrDefault(false) -> Unit // identical pixels: keep the old instance
-            else -> _albumArt.value = newArt
-        }
-    }
-
-    fun updatePlaybackState(state: Int?) {
-        _playbackState.value = state
-        // tries to keep the PlaybackState object updated
-        val current = _playback.value
-        if (current != null && current.state != state) {
-            _playback.value = PlaybackState.Builder(current).setState(
-                state ?: PlaybackState.STATE_PAUSED,
-                current.position,
-                current.playbackSpeed
-            ).build()
-        }
-    }
-
+    /** Publishes transport state, keeping [playbackState] in step with it. */
     fun updatePlayback(playback: PlaybackState?) {
         _playback.value = playback
         _playbackState.value = playback?.state
-        _customActions.value = playback?.customActions ?: emptyList()
     }
 
+    /**
+     * Publishes track metadata. **Null is accepted and defined as a no-op.**
+     *
+     * This is the contract, not a workaround: "I have nothing to publish right now" must
+     * never be able to blank a surface. Letting a momentary null reach [metadata] would
+     * make a consumer swap to a placeholder and straight back, which reads as a blink, so
+     * the last good value stands until [reset] — the only thing that clears it.
+     *
+     * No current caller can trigger it: `PlayerBusAdapter.buildMetadata()` returns a
+     * non-null [MediaMetadata]. The guard defends the flow's invariant against every
+     * future caller, and holds whether or not one exists today.
+     */
     fun updateMetadata(meta: MediaMetadata?) {
-        // Some apps (VLC) momentarily re-post null metadata around pause/seek —
-        // swapping to the placeholder and back made the whole panel blink. Keep
-        // the last known metadata; attachController() resets it on session change.
         if (meta == null) return
         _metadata.value = meta
-        // Album art resolved by the listener (see pushArt).
     }
 
-    // ---- Real controls ----
-    fun play() = controller?.transportControls?.play()
-    fun pause() = controller?.transportControls?.pause()
-    fun togglePlayPause() {
-        when (_playbackState.value) {
-            PlaybackState.STATE_PLAYING, PlaybackState.STATE_BUFFERING -> pause()
-            else -> play()
+    /**
+     * Publishes artwork, emitting only when the picture actually changes.
+     *
+     * The producer decodes a fresh [Bitmap] on every push, so consecutive pushes for one
+     * track deliver distinct instances holding identical pixels. Emitting those would
+     * make consumers reload the image and flicker, so an incoming bitmap that matches the
+     * current one pixel for pixel is dropped and the existing instance kept.
+     *
+     * A null is treated as "no artwork available yet" and ignored unless [allowNull],
+     * which callers pass when they mean "this track genuinely has no cover".
+     */
+    fun setAlbumArt(newArt: Bitmap?, allowNull: Boolean = false) {
+        if (newArt == null) {
+            if (allowNull) _albumArt.value = null
+            return
         }
+        val current = _albumArt.value
+        if (current != null && showsSamePicture(current, newArt)) return
+        _albumArt.value = newArt
     }
 
-    fun next() = controller?.transportControls?.skipToNext()
-    fun previous() = controller?.transportControls?.skipToPrevious()
-    fun seekTo(posMs: Long) = controller?.transportControls?.seekTo(posMs)
+    /** Clears every flow. The hook for `PlaybackService.onDestroy` (wired in P1.5). */
+    fun reset() {
+        _activePackage.value = null
+        _playbackState.value = null
+        _playback.value = null
+        _metadata.value = null
+        _albumArt.value = null
+    }
 
-    fun sendCustomAction(a: PlaybackState.CustomAction) {
-        controller?.transportControls?.sendCustomAction(a, null)
+    /**
+     * Dimensions first, since that rules out most pairs without touching pixels.
+     *
+     * Any failure means "not equal": a recycled or `Config.HARDWARE` bitmap cannot be read
+     * back, and refusing to compare must never cost the caller a legitimate update — a
+     * redundant emit is a flicker, a dropped one is the previous track's cover left on
+     * screen for the rest of the session.
+     *
+     * Catching [Throwable] rather than [Exception] is deliberate: `sameAs` walks every
+     * pixel of a full-size cover, so [OutOfMemoryError] is a plausible outcome here, and
+     * "not equal" is the safe answer to it for exactly the same reason.
+     */
+    private fun showsSamePicture(current: Bitmap, incoming: Bitmap): Boolean = try {
+        current.width == incoming.width &&
+            current.height == incoming.height &&
+            current.sameAs(incoming)
+    } catch (t: Throwable) {
+        false
     }
 }

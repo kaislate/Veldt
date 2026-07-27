@@ -1,5 +1,7 @@
 package com.kaislate.veldtplayer.data.library.tag
 
+import com.kaislate.veldtplayer.data.library.DisplayNames
+
 /**
  * Pure, framework-free selection: an eAlvaTag-parsed value wins when present and
  * non-blank, otherwise the MediaStore-derived [fallback] value is kept. Numeric
@@ -21,6 +23,15 @@ object TagMerge {
         )
     }
 
+    /**
+     * A field is kept only if it SAYS something, on both sides.
+     *
+     * [DisplayNames.isMissing], not `isNotBlank()`: the `<unknown>` sentinel is written
+     * into the files' own ID3 frames by some downloaders, not just into MediaStore's
+     * columns — verified on device, where 29 of 31 scanned tracks carried it in the tag
+     * itself. Cleaning it at the MediaStore boundary alone let the parsed value walk it
+     * straight back in, because a non-blank `<unknown>` beat a correctly-blank fallback.
+     */
     private fun String?.orFallback(other: String?): String? =
-        if (this != null && this.isNotBlank()) this else other
+        DisplayNames.tagOrNull(this) ?: DisplayNames.tagOrNull(other)
 }

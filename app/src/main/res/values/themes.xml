@@ -1,5 +1,15 @@
 <resources>
-    <style name="Theme.Veldt" parent="Theme.Material3.DynamicColors.DayNight">
+    <!--
+      Dark parent, not DayNight, and that is the same decision VeldtTheme documents: the colour
+      pipeline has no light branch, so the app is dark on every phone. This style only ever
+      paints the window BEFORE Compose draws, and a DayNight parent would make that first frame
+      white on a light-mode device — a white flash that resolves to a dark app on every cold
+      start. Pinning it dark makes the launch frame match what follows it.
+
+      statusBarColor stays transparent for the same window: MainActivity's enableEdgeToEdge()
+      sets the runtime value, but the theme is what the launch frame is drawn with.
+    -->
+    <style name="Theme.Veldt" parent="Theme.Material3.DynamicColors.Dark">
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 </resources>

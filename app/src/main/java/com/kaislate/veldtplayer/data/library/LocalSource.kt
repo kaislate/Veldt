@@ -29,6 +29,21 @@ class LocalSource @Inject constructor(
 
     override val id: String = "local"
 
+    /**
+     * A MediaStore tag column as text, or null when it holds nothing.
+     *
+     * MediaStore does not return null for a missing artist or album — it substitutes the
+     * literal string `<unknown>`, which passes every `isBlank()` check in the app. Left
+     * alone it reaches the UI as a caption and, worse, becomes a grouping key that files
+     * the entire untagged half of a library under one imaginary artist.
+     *
+     * Both the platform constant and [DisplayNames.MEDIASTORE_UNKNOWN] are checked: the
+     * constant is the contract, the literal is what every device has actually produced,
+     * and comparing to only one of them would be trusting the wrong half of that.
+     */
+    private fun cleanTag(value: String?): String? =
+        DisplayNames.tagOrNull(value)?.takeUnless { it.equals(MediaStore.UNKNOWN_STRING, true) }
+
     override fun resolvePlayableUri(song: Song): String = song.uri
 
     override suspend fun listAlbums(): List<Album> = LibraryDerivations.deriveAlbums(listSongs())
@@ -83,11 +98,17 @@ class LocalSource @Inject constructor(
                     id = id,
                     uri = ContentUris.withAppendedId(base, id).toString(),
                     filePath = if (c.isNull(dataIx)) null else c.getString(dataIx),
-                    title = c.getString(titleIx) ?: "Unknown",
-                    artist = c.getString(artistIx) ?: "Unknown artist",
-                    album = c.getString(albumIx) ?: "Unknown album",
-                    albumArtist = if (albumArtistIx >= 0 && !c.isNull(albumArtistIx)) {
-                        c.getString(albumArtistIx)
+                    // Tags are stored as the tags actually are — EMPTY when absent, never
+                    // a display string and never MediaStore's "<unknown>" sentinel. Naming
+                    // is the UI's job (DisplayNames); a data layer that invents "Unknown
+                    // artist" leaves the UI unable to tell a missing tag from a band who
+                    // called themselves that, and gave the library two different spellings
+                    // of "no album" to sort into two different places.
+                    title = cleanTag(c.getString(titleIx)).orEmpty(),
+                    artist = cleanTag(c.getString(artistIx)).orEmpty(),
+                    album = cleanTag(c.getString(albumIx)).orEmpty(),
+                    albumArtist = if (albumArtistIx >= 0) {
+                        cleanTag(c.getString(albumArtistIx))
                     } else {
                         null
                     },
