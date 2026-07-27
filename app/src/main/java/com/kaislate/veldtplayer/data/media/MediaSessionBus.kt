@@ -65,12 +65,16 @@ object MediaSessionBus {
     }
 
     /**
-     * Publishes track metadata, **ignoring null**.
+     * Publishes track metadata. **Null is accepted and defined as a no-op.**
      *
-     * The producer pushes on every player event, and some of those events land while the
-     * next item's tags are still being read. Letting a momentary null through would make
-     * a consuming surface swap to a placeholder and straight back, which reads as a blink.
-     * The last good value therefore stands until [reset].
+     * This is the contract, not a workaround: "I have nothing to publish right now" must
+     * never be able to blank a surface. Letting a momentary null reach [metadata] would
+     * make a consumer swap to a placeholder and straight back, which reads as a blink, so
+     * the last good value stands until [reset] — the only thing that clears it.
+     *
+     * No current caller can trigger it: `PlayerBusAdapter.buildMetadata()` returns a
+     * non-null [MediaMetadata]. The guard defends the flow's invariant against every
+     * future caller, and holds whether or not one exists today.
      */
     fun updateMetadata(meta: MediaMetadata?) {
         if (meta == null) return
@@ -112,7 +116,12 @@ object MediaSessionBus {
      *
      * Any failure means "not equal": a recycled or `Config.HARDWARE` bitmap cannot be read
      * back, and refusing to compare must never cost the caller a legitimate update — a
-     * redundant emit is a flicker, a dropped one is stale artwork.
+     * redundant emit is a flicker, a dropped one is the previous track's cover left on
+     * screen for the rest of the session.
+     *
+     * Catching [Throwable] rather than [Exception] is deliberate: `sameAs` walks every
+     * pixel of a full-size cover, so [OutOfMemoryError] is a plausible outcome here, and
+     * "not equal" is the safe answer to it for exactly the same reason.
      */
     private fun showsSamePicture(current: Bitmap, incoming: Bitmap): Boolean = try {
         current.width == incoming.width &&
