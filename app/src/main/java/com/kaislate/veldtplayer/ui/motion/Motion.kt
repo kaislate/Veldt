@@ -3,9 +3,13 @@ package com.kaislate.veldtplayer.ui.motion
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.InfiniteRepeatableSpec
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.geometry.Rect
@@ -47,6 +51,22 @@ object Motion {
 
     /** Album-art palette drift on track change (spec §6) — competitors hard-cut here. */
     val palette: AnimationSpec<Color> = tween(durationMillis = 600, easing = LinearOutSlowInEasing)
+
+    /**
+     * The now-playing backdrop's ambient drift: 0f..1f across 40 seconds, then back.
+     *
+     * Lives here rather than inline at the `rememberInfiniteTransition` call site for the
+     * reason this file exists at all — it is an `AnimationSpec`, and the moment one is
+     * written next to its consumer the vocabulary stops being a vocabulary. Linear because
+     * an eased loop visibly pauses at each turn, which reads as a stutter rather than as
+     * drift; Reverse rather than Restart because a restart snaps the artwork back across
+     * the frame. Deliberately slower than anything else here: at 40s the backdrop is
+     * something you notice having moved, never something you watch move.
+     */
+    val drift: InfiniteRepeatableSpec<Float> = infiniteRepeatable(
+        animation = tween(durationMillis = 40_000, easing = LinearEasing),
+        repeatMode = RepeatMode.Reverse,
+    )
 
     /** Per-item delay in a staggered list entrance. */
     const val STAGGER_MS = 28
