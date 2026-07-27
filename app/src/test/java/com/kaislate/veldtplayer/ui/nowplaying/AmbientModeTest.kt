@@ -52,4 +52,35 @@ class AmbientModeTest {
         assertFalse(eligible(reduced = true, isPlaying = true, isActive = true))
         assertFalse(eligible(touchExploration = true, sheetOpen = false))
     }
+
+    // ---- the withdrawal, which is a separate question from the fade ----------------------
+    //
+    // ambientEligible decides whether the chrome may FADE. chromeReachable decides whether the
+    // faded chrome may also be taken out of the accessibility and focus trees. Only the second
+    // one can leave a user with no control to reach, so it has the stricter rule — and pinning
+    // them apart is the point: an enabled service must NOT switch the fade off (that would
+    // spend the app's signature on the users it is protecting), only the withdrawal.
+
+    @Test fun `visible chrome is reachable, service or no service`() {
+        assertTrue(chromeReachable(chromeLive = true, accessibilityActive = false))
+        assertTrue(chromeReachable(chromeLive = true, accessibilityActive = true))
+    }
+
+    @Test fun `faded chrome is withdrawn only when nothing is listening`() {
+        assertFalse(chromeReachable(chromeLive = false, accessibilityActive = false))
+    }
+
+    @Test fun `an enabled service keeps every control in both trees through the fade`() {
+        // The M-4 case: Switch Access and Voice Access never produce the pointer down that
+        // wakes ambient mode, so a withdrawal here is permanent for them.
+        assertTrue(chromeReachable(chromeLive = false, accessibilityActive = true))
+    }
+
+    @Test fun `an enabled service does not disqualify the fade itself`() {
+        // chromeReachable is not a sixth clause of ambientEligible, and this is why: isEnabled
+        // is true for ANY service, so gating eligibility on it would delete the ambient fade
+        // for a user running only a magnifier. The fade still runs; only the withdrawal stops.
+        assertTrue(eligible())
+        assertTrue(chromeReachable(chromeLive = false, accessibilityActive = true))
+    }
 }

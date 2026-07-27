@@ -101,18 +101,30 @@ private const val VEIL_ALPHA = 0.14f
  * Rendered by `VeldtNavHost` in place of whichever destination was asked for, so a denied
  * user tapping Albums is told what is wrong instead of being shown an empty grid and a
  * Scan button that cannot possibly help.
+ *
+ * [blocked] is `PermissionGate`'s "the system will not ask again" — two denials, after which
+ * a request resolves instantly and silently. This surface is the only place the user finds
+ * that out, so it says so and re-points the one button at the only place the decision can
+ * still be changed. Same layout, same emblem: it is the SAME wall, told what it is standing
+ * in front of. Offering "Grant access" there would be a button that visibly does nothing.
  */
 @Composable
 fun AudioAccessRequired(
     onRequestAudio: () -> Unit,
+    blocked: Boolean,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     EmptyState(
         palette = ColorExtractor.extract(null),
         title = "Veldt needs access to your music",
-        body = "Grant audio access and Veldt will index everything on this device.",
-        actionLabel = "Grant access",
+        body = if (blocked) {
+            "Audio access is turned off for Veldt, and Android will not ask again. " +
+                "Turn on the music or audio permission in app settings and come straight back."
+        } else {
+            "Grant audio access and Veldt will index everything on this device."
+        },
+        actionLabel = if (blocked) "Open settings" else "Grant access",
         onAction = onRequestAudio,
         contentPadding = contentPadding,
         modifier = modifier,

@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -192,6 +193,15 @@ fun WaveScrubBar(
             Modifier
                 .fillMaxWidth()
                 .height(CANVAS_HEIGHT_DP.dp)
+                // Semantics are not focus. The accessibility node below makes this bar
+                // reachable by anything that walks the a11y tree — TalkBack, Switch Access —
+                // but Compose's D-pad and keyboard traversal is driven by the FOCUS tree, and
+                // a Canvas is not focusable by default. Without this one modifier the app's
+                // signature control is the only thing on the screen a D-pad or an external
+                // keyboard cannot reach at all: every transport button is an IconButton and
+                // brings its own focus target, so tabbing would step straight past the seek
+                // bar as if it were decoration.
+                .focusable()
                 // TalkBack saw a bare Canvas: the app's signature control was an unlabelled
                 // blank that could not be seeked at all. There is no Role for a seek bar in
                 // Compose's set — the platform mapping comes from the PAIR below, which the

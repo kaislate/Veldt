@@ -80,7 +80,7 @@ fun VeldtNavHost() {
     val items = rememberNavItems()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    PermissionGate(onGranted = { }) { audioGranted, requestAudio ->
+    PermissionGate(onGranted = { }) { audioGranted, audioBlocked, requestAudio ->
         val vm: BrowseViewModel = hiltViewModel()
         // Resolved HERE, not inside the now-playing destination. hiltViewModel() inside a
         // composable { } is scoped to that back-stack entry, so the screen and the
@@ -207,10 +207,14 @@ fun VeldtNavHost() {
                         navController = navController,
                         startDestination = Destinations.SONGS,
                     ) {
-                        veldtDestination(Destinations.SONGS, audioGranted, requestAudio, padding) {
+                        veldtDestination(
+                            Destinations.SONGS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
                             SongsScreen(vm = vm, contentPadding = padding)
                         }
-                        veldtDestination(Destinations.ALBUMS, audioGranted, requestAudio, padding) {
+                        veldtDestination(
+                            Destinations.ALBUMS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
                             AlbumsScreen(
                                 vm = vm,
                                 onOpenAlbum = { key ->
@@ -219,7 +223,9 @@ fun VeldtNavHost() {
                                 contentPadding = padding,
                             )
                         }
-                        veldtDestination(Destinations.ARTISTS, audioGranted, requestAudio, padding) {
+                        veldtDestination(
+                            Destinations.ARTISTS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
                             ArtistsScreen(
                                 vm = vm,
                                 onOpenArtist = { key ->
@@ -228,7 +234,9 @@ fun VeldtNavHost() {
                                 contentPadding = padding,
                             )
                         }
-                        veldtDestination(Destinations.SEARCH, audioGranted, requestAudio, padding) {
+                        veldtDestination(
+                            Destinations.SEARCH, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
                             SearchScreen(
                                 vm = vm,
                                 onBack = { navController.popBackStack() },
@@ -242,7 +250,7 @@ fun VeldtNavHost() {
                             )
                         }
                         veldtDestination(
-                            Destinations.ALBUM_DETAIL, audioGranted, requestAudio, padding,
+                            Destinations.ALBUM_DETAIL, audioGranted, audioBlocked, requestAudio, padding,
                         ) { entry ->
                             AlbumDetailScreen(
                                 vm = vm,
@@ -252,7 +260,7 @@ fun VeldtNavHost() {
                             )
                         }
                         veldtDestination(
-                            Destinations.ARTIST_DETAIL, audioGranted, requestAudio, padding,
+                            Destinations.ARTIST_DETAIL, audioGranted, audioBlocked, requestAudio, padding,
                         ) { entry ->
                             ArtistDetailScreen(
                                 vm = vm,
@@ -268,7 +276,7 @@ fun VeldtNavHost() {
                         // the window insets itself, so it never depends on a PaddingValues
                         // that is mid-animation. See NowPlayingScreen.
                         veldtDestination(
-                            Destinations.NOW_PLAYING, audioGranted, requestAudio, padding,
+                            Destinations.NOW_PLAYING, audioGranted, audioBlocked, requestAudio, padding,
                         ) {
                             NowPlayingScreen(
                                 vm = npVm,
@@ -307,6 +315,7 @@ fun VeldtNavHost() {
 private fun NavGraphBuilder.veldtDestination(
     route: String,
     audioGranted: Boolean,
+    audioBlocked: Boolean,
     onRequestAudio: () -> Unit,
     contentPadding: PaddingValues,
     content: @Composable (NavBackStackEntry) -> Unit,
@@ -315,7 +324,11 @@ private fun NavGraphBuilder.veldtDestination(
         if (audioGranted) {
             content(entry)
         } else {
-            AudioAccessRequired(onRequestAudio = onRequestAudio, contentPadding = contentPadding)
+            AudioAccessRequired(
+                onRequestAudio = onRequestAudio,
+                blocked = audioBlocked,
+                contentPadding = contentPadding,
+            )
         }
     }
 }

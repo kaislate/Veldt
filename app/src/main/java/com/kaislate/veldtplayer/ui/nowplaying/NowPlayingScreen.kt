@@ -121,6 +121,40 @@ internal fun ambientEligible(
 ): Boolean = !reduced && !touchExploration && isActive && isPlaying && !sheetOpen
 
 /**
+ * Whether the chrome is still REACHABLE — the second half of ambient mode, kept separate from
+ * [ambientEligible] because it answers a different question and answers it later.
+ *
+ * [ambientEligible] decides whether the fade may START. This decides, once it has finished,
+ * whether the faded chrome may also be WITHDRAWN — dropped out of the accessibility tree by
+ * `clearAndSetSemantics` and out of the focus tree by `enabled = false`. Those two are what
+ * turn a visual fade into a disappearance, and they are the only part that can strand anyone.
+ *
+ * - [chromeLive] — the ordinary answer. The chrome is visible to some degree, so it is
+ *   reachable by everything, and the withdrawal has not happened yet.
+ * - [accessibilityActive] — `AccessibilityManager.isEnabled`: SOME service is driving this
+ *   device. Ambient mode's wake signal is a pointer down, and Switch Access, Voice Access and
+ *   scanning services never produce one; the key-event and focus-arrival wakes cover a D-pad
+ *   and a keyboard but not a service that activates by accessibility action. Rather than guess
+ *   which services can wake it, nothing is taken away from any of them: the chrome still fades
+ *   to nothing on screen — the signature stays intact, for everyone, including these users —
+ *   but every control keeps its place in both trees, so it can always be found and pressed.
+ *
+ * Deliberately NOT folded into [ambientEligible] as a sixth disqualifier. `isEnabled` is true
+ * for any enabled service at all, including ones with no stake in this (a magnifier, a
+ * password-reveal helper, a third-party keyboard's service), and disqualifying on it would
+ * switch the fade OFF outright for exactly those users instead of merely keeping their
+ * controls. The eligibility gate keeps the one service that must not see this feature at all —
+ * touch exploration, whose users navigate linearly and whose idle is reading, not watching.
+ *
+ * The cost is accepted rather than hidden: with a service running, a faded transport is still
+ * PRESSABLE, so a pointer tap aimed at the invisible pause button pauses rather than falling
+ * through to the root's wake handler. A control that is present but invisible for one press is
+ * strictly better than a control that has ceased to exist with no way to bring it back.
+ */
+internal fun chromeReachable(chromeLive: Boolean, accessibilityActive: Boolean): Boolean =
+    chromeLive || accessibilityActive
+
+/**
  * The ambient fade itself, and nothing else.
  *
  * [alpha] arrives as a `State` and is unwrapped inside the `graphicsLayer` block rather than
@@ -138,18 +172,20 @@ private fun Modifier.ambientFade(alpha: State<Float>): Modifier =
  *
  * Once it is fully gone the chrome also leaves the accessibility tree. Alpha is a DRAW
  * property: a fully transparent transport is still a row of focusable, clickable buttons, so
- * without this a service could park focus on an invisible pause button. Ambient mode already
- * refuses to run under touch exploration ([ambientEligible]) — this covers every other
- * service, and the case where one is switched on while the chrome is already down.
+ * without this a sighted user could tab focus onto an invisible pause button.
  *
  * The pointer half of the same problem is handled at the call sites, which pass
  * `enabled = false` on the same [live] signal: a disabled `clickable` does not consume the
  * down, so a tap aimed at a button nobody can see falls through to the root Box and wakes the
  * chrome instead of silently pausing the music.
  *
- * **Never applied to every control at once.** `enabled = false` also takes a control out of the
- * FOCUS tree, so between the two of them this modifier makes a control unreachable by any input
- * method that is not a pointer. One control is therefore exempt — see the collapse button.
+ * **[live] is [chromeReachable], NOT the raw visibility.** `enabled = false` also takes a
+ * control out of the FOCUS tree, so between the two of them this modifier makes a control
+ * unreachable by any input method that is not a pointer — and the pointer is precisely what a
+ * Switch Access or Voice Access user does not have. While any accessibility service is running
+ * the withdrawal is therefore suppressed outright: the fade still runs, so the screen still
+ * becomes the record, but nothing leaves either tree. See [chromeReachable] for why that is a
+ * separate predicate from [ambientEligible] and not a sixth clause of it.
  */
 private fun Modifier.ambientChrome(alpha: State<Float>, live: Boolean): Modifier {
     val faded = ambientFade(alpha)
@@ -178,6 +214,33 @@ private fun rememberTouchExploration(): Boolean {
         onDispose { manager?.removeTouchExplorationStateChangeListener(listener) }
     }
     return enabled
+}
+
+/**
+ * True while ANY accessibility service is enabled — the signal [chromeReachable] gates on.
+ *
+ * A SECOND observer next to [rememberTouchExploration] rather than a widened one, because the
+ * two questions have different answers and different listeners. `isEnabled` and
+ * `isTouchExplorationEnabled` are separate properties with separate change callbacks, and
+ * reading `isEnabled` while subscribed only to `TouchExplorationStateChangeListener` would
+ * sample it once at composition and never hear about it again — stale for exactly the user it
+ * exists to protect, who may well switch their service on while this screen is already open
+ * and already faded. Hence `add/removeAccessibilityStateChangeListener`, its own listener for
+ * its own property.
+ */
+@Composable
+private fun rememberAccessibilityActive(): Boolean {
+    val context = LocalContext.current
+    val manager = remember(context) {
+        context.getSystemService(AccessibilityManager::class.java)
+    }
+    var active by remember(manager) { mutableStateOf(manager?.isEnabled == true) }
+    DisposableEffect(manager) {
+        val listener = AccessibilityManager.AccessibilityStateChangeListener { on -> active = on }
+        manager?.addAccessibilityStateChangeListener(listener)
+        onDispose { manager?.removeAccessibilityStateChangeListener(listener) }
+    }
+    return active
 }
 
 /**
@@ -242,6 +305,13 @@ private fun rememberTouchExploration(): Boolean {
  * - **The collapse button never fades out of either tree**, so there is always one control to
  *   reach. Switch Access is the case the first mechanism does not cover: it scans by
  *   accessibility focus and activates by action, and produces no key event at any point.
+ * - **And while any service is enabled at all, NOTHING is withdrawn** — not the transport, not
+ *   the queue button, not the titles. The two mechanisms above are each a door out of a room
+ *   that has been emptied; this one declines to empty the room. It is the load-bearing
+ *   guarantee and the other two are the belt to its braces: whatever the service is and
+ *   however it drives the screen, every control it could reach a second ago it can still
+ *   reach. The fade itself is untouched, so the aesthetic is not spent on it. See
+ *   [chromeReachable].
  */
 @Composable
 fun NowPlayingScreen(
@@ -308,6 +378,10 @@ fun NowPlayingScreen(
     // that still works. `derivedStateOf` for the same reason as above: this is a boolean that
     // flips twice per fade, and without it the >0f comparison would be a per-frame read.
     val chromeLive by remember(chromeAlpha) { derivedStateOf { chromeAlpha.value > 0f } }
+    // The fade is one thing; taking the controls out of the accessibility and focus trees is
+    // another, and only the second one can strand somebody. While a service is running the
+    // chrome still fades to nothing on screen but is never withdrawn. See [chromeReachable].
+    val chromeUsable = chromeReachable(chromeLive, rememberAccessibilityActive())
 
     Box(
         modifier
@@ -408,7 +482,7 @@ fun NowPlayingScreen(
                 )
 
                 Column(
-                    modifier = Modifier.ambientChrome(chromeAlpha, chromeLive),
+                    modifier = Modifier.ambientChrome(chromeAlpha, chromeUsable),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -450,13 +524,13 @@ fun NowPlayingScreen(
                 Transport(
                     state = state,
                     palette = palette,
-                    interactive = chromeLive,
+                    interactive = chromeUsable,
                     onShuffle = { vm.setShuffle(!state.shuffle) },
                     onPrevious = vm::previous,
                     onToggle = vm::toggle,
                     onNext = vm::next,
                     onRepeat = vm::cycleRepeat,
-                    modifier = Modifier.ambientChrome(chromeAlpha, chromeLive),
+                    modifier = Modifier.ambientChrome(chromeAlpha, chromeUsable),
                 )
             }
         }
@@ -468,15 +542,14 @@ fun NowPlayingScreen(
         // — the reason this is not a preference — it is unreachable with TalkBack on, which
         // would leave the screen a one-way trip for a screen-reader user.
         //
-        // THE ONE CONTROL AMBIENT MODE DOES NOT WITHDRAW. It fades with everything else, but
-        // it keeps `enabled = true` and so keeps its place in both the accessibility tree and
-        // the focus tree. Every other control on this screen is unreachable while the chrome
-        // is down for anyone whose input is not a pointer, and Switch Access — which scans by
-        // accessibility focus and activates by action, producing no key event for the root
-        // wake handler to see — would otherwise have nothing on this screen to scan to at all,
-        // eight seconds after arriving. The paragraph two comments up claims this button is
-        // why the screen is never a one-way trip; ambient mode taking it away would have made
-        // that claim false, and taken the transport with it.
+        // THE ONE CONTROL AMBIENT MODE NEVER WITHDRAWS, UNCONDITIONALLY. It fades with
+        // everything else, but it keeps `enabled = true` and so keeps its place in both the
+        // accessibility tree and the focus tree — with no service running, and therefore no
+        // chromeReachable reprieve, every other control on this screen is gone from both trees
+        // while the chrome is down, so a sighted keyboard user eight seconds in would otherwise
+        // have nothing left to focus. The paragraph two comments up claims this button is why
+        // the screen is never a one-way trip; ambient mode taking it away would have made that
+        // claim false, and taken the transport with it.
         //
         // Faded, it wakes rather than collapses. That keeps the rule the fade is built on —
         // a control nobody can see must not fire — and it is the same two-step every sighted
@@ -511,12 +584,12 @@ fun NowPlayingScreen(
         if (state.isActive) {
             IconButton(
                 onClick = { showQueue = true },
-                enabled = chromeLive,
+                enabled = chromeUsable,
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(end = 8.dp)
-                    .ambientChrome(chromeAlpha, chromeLive),
+                    .ambientChrome(chromeAlpha, chromeUsable),
             ) {
                 Icon(
                     Icons.AutoMirrored.Filled.QueueMusic,
@@ -568,9 +641,12 @@ fun NowPlayingScreen(
  *
  * [interactive] is the other reason a control here can be dead, and it takes ALL FIVE with
  * it including the two toggles: it is false only while ambient mode has faded this row to
- * nothing, and an invisible control must not be pressable. A disabled `clickable` does not
- * consume the down, so the tap falls through to the root Box and wakes the chrome — which is
- * what the user aiming at a button they cannot see actually wants.
+ * nothing AND no accessibility service is running ([chromeReachable]), and an invisible
+ * control must not be pressable. A disabled `clickable` does not consume the down, so the tap
+ * falls through to the root Box and wakes the chrome — which is what the user aiming at a
+ * button they cannot see actually wants. With a service running the row stays enabled instead,
+ * because `enabled = false` is also what removes it from the FOCUS tree, and a row that has
+ * left both trees cannot be reached again by anyone who does not have a pointer.
  */
 @Composable
 private fun Transport(
