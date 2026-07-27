@@ -1,6 +1,5 @@
 package com.kaislate.veldtplayer.ui.browse
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
@@ -176,10 +174,7 @@ fun ArtistDetailScreen(
 
         item(key = "albums") {
             SectionLabel("Albums")
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = SIDE_MARGIN),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+            Shelf {
                 items(albums, key = { it.key }) { album ->
                     // caption null: every card on this shelf belongs to the artist named in
                     // the header, so repeating them under each cover would say nothing.

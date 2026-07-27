@@ -5,23 +5,23 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListScope
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -41,7 +41,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,9 +81,6 @@ import com.kaislate.veldtplayer.ui.theme.DominantColors
 private val ARTIST_PORTRAIT_SIZE = 88.dp
 private val ARTIST_CARD_WIDTH = 104.dp
 
-/** Gap between cards on a shelf. */
-private val SHELF_GAP = 12.dp
-
 /** The emblem glyph when the term itself has no letter or digit to draw. */
 private const val NO_MATCH_GLYPH = '?'
 
@@ -111,7 +111,10 @@ fun SearchScreen(
     // WhileSubscribed, and a backgrounded screen must let the upstream stop.
     val query by vm.query.collectAsStateWithLifecycle()
     val settled by vm.settledQuery.collectAsStateWithLifecycle()
-    val songs by vm.results.collectAsStateWithLifecycle()
+    // The ROWS AND THE TERM THEY ANSWER, from one value. Not vm.results: an empty list on
+    // its own cannot say whether the term matched nothing or has not reached Room yet.
+    val answer by vm.answered.collectAsStateWithLifecycle()
+    val songs = answer.songs
     val albums by vm.resultAlbums.collectAsStateWithLifecycle()
     val artists by vm.resultArtists.collectAsStateWithLifecycle()
     // The whole library, for the shelves' artwork ONLY — see the covers note above.
@@ -126,7 +129,20 @@ fun SearchScreen(
 
     // Opening search means wanting to type: the field takes focus, which brings the
     // keyboard with it, so reaching the screen costs one tap rather than two.
-    LaunchedEffect(Unit) { focus.requestFocus() }
+    //
+    // ONCE, though — hence rememberSaveable rather than a bare LaunchedEffect(Unit).
+    // This is a plain `composable` destination, so opening an album from a result DISPOSES
+    // this screen and popping back RECOMPOSES it; an unguarded effect would re-run there
+    // and shove the keyboard over the bottom half of the results the user came back to
+    // READ. The flag rides the back stack entry's saved state, so it survives that round
+    // trip and dies with the entry — the next fresh trip to search opens typing-ready.
+    var focusClaimed by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (!focusClaimed) {
+            focusClaimed = true
+            focus.requestFocus()
+        }
+    }
 
     // Scrolling means reading, not typing. Dropping the keyboard on the first drag gives
     // the results back half the screen without the user having to aim at a Back gesture.
@@ -146,7 +162,16 @@ fun SearchScreen(
     // contentPadding so results pass under the translucent navigation bar, while the top and
     // sides stay padding modifiers because the search field must not slide under the clock.
     val direction = LocalLayoutDirection.current
-    val bottomInset = contentPadding.calculateBottomPadding()
+    // ...but the bottom one here has to account for the keyboard, which is this screen's
+    // PRIMARY state. `contentPadding` comes from a Scaffold whose contentWindowInsets are
+    // systemBars, so it is the navigation bar's height whether or not the keyboard is up;
+    // imePadding() below already lifts the whole column clear of the keyboard, and adding
+    // the nav-bar height on top of that reserves ~80dp of dead space above the IME. So the
+    // list only pads out whatever the keyboard does NOT already cover — a max(), expressed
+    // as "the part of the nav bar the keyboard is not standing on".
+    val imeInset = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
+    val bottomInset =
+        (contentPadding.calculateBottomPadding() - imeInset).coerceAtLeast(0.dp)
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -168,8 +193,9 @@ fun SearchScreen(
         )
 
         val nothingFound = songs.isEmpty() && albums.isEmpty() && artists.isEmpty()
-        // The field has changed since the term that produced these results was run.
-        val pending = query.trim() != settled
+        // True while the field has moved on from the settled term (still typing) OR the
+        // settled term has not come back from Room yet. See searchPending.
+        val pending = searchPending(query = query, settled = settled, answeredTerm = answer.term)
         val messagePadding = PaddingValues(bottom = bottomInset)
 
         when {
@@ -288,16 +314,6 @@ fun SearchScreen(
             )
         }
     }
-}
-
-/** One horizontal run of cards, inset to the same margin the rows below it use. */
-@Composable
-private fun Shelf(content: LazyListScope.() -> Unit) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = SIDE_MARGIN),
-        horizontalArrangement = Arrangement.spacedBy(SHELF_GAP),
-        content = content,
-    )
 }
 
 /**

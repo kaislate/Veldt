@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -63,6 +65,27 @@ internal fun SectionLabel(text: String, modifier: Modifier = Modifier) {
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = modifier.padding(start = SIDE_MARGIN, top = 20.dp, bottom = 10.dp),
+    )
+}
+
+/** Gap between cards on a [Shelf]. */
+private val SHELF_GAP = 12.dp
+
+/**
+ * One horizontal run of cards, inset to the same margin the rows above and below it use.
+ *
+ * Here rather than in either caller because both the artist page's records strip and
+ * search's artist/album sections ARE this idiom, and two copies of it is two gap constants
+ * for one visual rhythm — the exact drift that pulling [com.kaislate.veldtplayer.ui.components.AlbumCard]
+ * out of `ArtistDetailScreen` was meant to stop, left one level up.
+ */
+@Composable
+internal fun Shelf(modifier: Modifier = Modifier, content: LazyListScope.() -> Unit) {
+    LazyRow(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = SIDE_MARGIN),
+        horizontalArrangement = Arrangement.spacedBy(SHELF_GAP),
+        content = content,
     )
 }
 

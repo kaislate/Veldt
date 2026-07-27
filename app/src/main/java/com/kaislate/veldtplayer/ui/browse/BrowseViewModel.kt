@@ -8,27 +8,15 @@ import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
-
-/**
- * How long the field rests before its text becomes a query. Short enough that results feel
- * live, long enough that a fast typist costs one Room query instead of one per keystroke.
- */
-private const val SEARCH_DEBOUNCE_MS = 180L
 
 /**
  * One ViewModel for every browse surface. It holds NO MediaController — playback goes
@@ -80,30 +68,51 @@ class BrowseViewModel @Inject constructor(
     }
 
     /**
-     * The term [results], [resultAlbums] and [resultArtists] actually describe: the field
-     * text, trimmed, once it has stopped changing for [SEARCH_DEBOUNCE_MS].
+     * The term [answered], [resultAlbums] and [resultArtists] are being computed FOR: the
+     * field text, trimmed, once it has stopped changing for [SEARCH_DEBOUNCE_MS].
      *
      * Public rather than private because "nothing matched" is only ever true of a SETTLED
      * term. A screen that compares this against [query] can tell an empty result set apart
      * from a query that has not run yet, and so does not flash "No matches for b" at every
      * fast typist. It is also the term the empty message should quote back.
      */
-    @OptIn(FlowPreview::class)
     val settledQuery: StateFlow<String> = _query
-        .debounce(SEARCH_DEBOUNCE_MS)
-        .map { it.trim() }
-        .distinctUntilChanged()
+        .settleSearchTerms()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
     /**
-     * Songs matching [settledQuery], title/artist/album substring.
+     * Songs matching [settledQuery] (title/artist/album substring), **tagged with the term
+     * they answer**.
+     *
+     * The tag is why this exists rather than [results] alone. [settledQuery] closes the
+     * debounce window but not the Room one: `repo.search` answers on the Room query
+     * executor, so for the length of one query the rows here still describe the PREVIOUS
+     * term while the pure shelves below have already moved on. Reading "settled, and
+     * nothing here" as a verdict would then announce "No matches" about a query still in
+     * flight — the same false negative [settledQuery] exists to prevent, one stage later.
+     * Comparing [SearchAnswer.term] against [settledQuery] shuts that window too; see
+     * [searchPending].
+     *
+     * `internal`, unlike the rest of the search surface: [SearchAnswer] is the pipeline's
+     * own vocabulary, not part of the published contract, and the only consumer that has to
+     * reason about the query window is the search screen next door.
+     */
+    internal val answered: StateFlow<SearchAnswer> = settledQuery
+        .answerSearch(repo::search)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SearchAnswer.NONE)
+
+    /**
+     * Songs matching [settledQuery] — the published rows-only view of [answered].
      *
      * A blank term yields nothing rather than the whole library — a search screen that
-     * dumps every song before you type reads as broken.
+     * dumps every song before you type reads as broken. Anything that has to decide
+     * whether an empty list is a VERDICT must read [answered] instead and take both the
+     * rows and the term from that one value: these are two independently-collected
+     * `stateIn`s, so pairing this list with a term read from elsewhere reopens exactly the
+     * window [answered] was introduced to close.
      */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    val results: StateFlow<List<Song>> = settledQuery
-        .flatMapLatest { term -> if (term.isBlank()) flowOf(emptyList()) else repo.search(term) }
+    val results: StateFlow<List<Song>> = answered
+        .map { it.songs }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /**
