@@ -73,15 +73,14 @@ object Motion {
      *
      * Here rather than inline for the same reason as [drift] — it is an `AnimationSpec`, and
      * the vocabulary stops being a vocabulary the moment one is written next to its consumer.
-     * The *amplitude* of the sweep (0f..20π) stays at the call site: this file holds timings,
-     * not the arithmetic a formula multiplies.
      *
-     * LOAD-BEARING — 26_000ms and the call site's 20π are a matched pair, not two independent
-     * knobs. Every renderer in `ui/components/WaveStyles.kt` picks its internal rates as
-     * multiples that land on a whole number of periods at 20π, so the wrap is invisible.
-     * Change either number without the other and all twenty styles visibly restart once per
-     * loop. Linear for a related reason: an eased sweep would stall the phase at each wrap,
-     * which reads as the wave hitching rather than flowing.
+     * LOAD-BEARING — this duration and [WAVE_PHASE_TURNS] are a matched pair, not two
+     * independent knobs, which is why they sit together. Every renderer in
+     * `ui/components/WaveStyles.kt` picks its internal rates as multiples that land on a
+     * whole number of periods at 20π, so the wrap is invisible. Change either number without
+     * the other and all twenty styles visibly restart once per loop. Linear for a related
+     * reason: an eased sweep would stall the phase at each wrap, which reads as the wave
+     * hitching rather than flowing.
      *
      * Restart rather than Reverse because phase is a monotonic sweep — reversing it would run
      * every wave backwards for half the cycle.
@@ -90,6 +89,16 @@ object Motion {
         animation = tween(durationMillis = 26_000, easing = LinearEasing),
         repeatMode = RepeatMode.Restart,
     )
+
+    /**
+     * Half-turns of phase per [wavePhase] loop: the sweep runs 0f..`WAVE_PHASE_TURNS * PI`.
+     *
+     * A raw magnitude rather than a spec, and kept here anyway — same as [RISE_DP] — because
+     * it is only correct *relative to* the duration above. Splitting the pair across two
+     * files would make each half look independently tunable, which is exactly the edit that
+     * breaks every wave style at once.
+     */
+    const val WAVE_PHASE_TURNS = 20f
 
     /** Per-item delay in a staggered list entrance. */
     const val STAGGER_MS = 28

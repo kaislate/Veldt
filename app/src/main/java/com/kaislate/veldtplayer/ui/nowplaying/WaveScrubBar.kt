@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
@@ -48,10 +49,20 @@ fun WaveScrubBar(
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val phase = rememberWavePhase(reducedMotion)
+    val wavePhase = rememberWavePhase(reducedMotion)
 
     // -1f means "not dragging". A nullable Float would box on every drag frame.
-    var dragFraction by remember { mutableFloatStateOf(NOT_DRAGGING) }
+    //
+    // Keyed on durationMs to match the gesture detectors below. When that key changes the
+    // detector's coroutine is cancelled outright and awaitEachGesture rethrows, so NEITHER
+    // onDragEnd NOR onDragCancel runs — an unkeyed remember would strand dragFraction >= 0
+    // and leave the bar permanently "dragging": playhead and readout frozen, thumb stuck at
+    // the enlarged radius, never following the transport again. This is not an exotic case;
+    // NowPlayingState swaps the MediaStore duration for the player-reported one shortly
+    // after a track starts, with no track change, so resting a finger on the bar early in a
+    // song is enough to trigger it. Re-keying resets the sentinel in the same recomposition
+    // that re-arms the detectors.
+    var dragFraction by remember(durationMs) { mutableFloatStateOf(NOT_DRAGGING) }
     val isDragging = dragFraction >= 0f
 
     // A track with no duration cannot be seeked, and must not look like it can: the
@@ -66,8 +77,14 @@ fun WaveScrubBar(
     // Grows under the finger. Selected from the motion vocabulary rather than hard-cut
     // between two radii, which on the one element the user is actually touching reads
     // as a glitch rather than as feedback.
-    val thumbRadiusDp by animateFloatAsState(
-        targetValue = if (isDragging) THUMB_RADIUS_DRAGGING_DP else THUMB_RADIUS_DP,
+    //
+    // Held as State, not unwrapped with `by`, so the read below happens in the draw phase.
+    // Under reduced motion the draw reads the target directly and this animation is never
+    // observed — so it invalidates nothing, and Motion.snappy's overshoot (0.55 damping)
+    // cannot spring on a user who asked for no animations.
+    val targetThumbRadiusDp = if (isDragging) THUMB_RADIUS_DRAGGING_DP else THUMB_RADIUS_DP
+    val thumbRadiusDp = animateFloatAsState(
+        targetValue = targetThumbRadiusDp,
         animationSpec = Motion.snappy,
         label = "scrubThumbRadius",
     )
@@ -122,7 +139,8 @@ fun WaveScrubBar(
                     style = WAVE_STYLE,
                     color = palette.accent,
                     ampPx = AMPLITUDE_DP.dp.toPx(),
-                    phase = phase,
+                    // Read here, in the draw phase, never in composition. See rememberWavePhase.
+                    phase = wavePhase.value,
                     baseY = baseY,
                     width = playheadX,
                     vibrant = palette.waveColors.isNotEmpty(),
@@ -137,7 +155,8 @@ fun WaveScrubBar(
             // Playhead LAST so it always sits on top of the wave.
             drawCircle(
                 color = palette.onBg,
-                radius = thumbRadiusDp.dp.toPx(),
+                radius = (if (reducedMotion) targetThumbRadiusDp else thumbRadiusDp.value)
+                    .dp.toPx(),
                 center = Offset(playheadX, baseY),
             )
         }
@@ -190,26 +209,32 @@ internal fun formatTime(ms: Long): String {
 
 /**
  * The seamless loop: phase sweeps 0 -> 20π on [Motion.wavePhase]'s 26s linear cycle.
- * Every renderer's internal rates are chosen against that pairing, so neither the sweep
- * here nor the duration there can be changed alone without every style visibly
- * restarting once a loop. Returns a frozen phase under reduced motion, which leaves the
- * wave drawn but still.
+ * Every renderer's internal rates are chosen against that pairing, which is why both
+ * halves live together in [Motion]. Frozen at [PHASE_REST] under reduced motion, which
+ * leaves the wave drawn but still rather than removing it.
+ *
+ * Returns the `State` rather than the `Float`, exactly as `ArtBackdrop.rememberDrift`
+ * does and for the same reason. A composable that READS an animated float recomposes on
+ * every frame of it — and this loop never ends, so [WaveScrubBar] would recompose for as
+ * long as the surface is visible, re-running `formatTime` twice a frame (two String
+ * allocations for text that changes once a second) and rebuilding the modifier chain.
+ * Handing the state down lets the `Canvas` read it in the draw phase, so the loop costs
+ * no recomposition at all.
  */
 @Composable
-private fun rememberWavePhase(reducedMotion: Boolean): Float {
-    if (reducedMotion) return 0f
+private fun rememberWavePhase(reducedMotion: Boolean): State<Float> {
+    if (reducedMotion) return remember { mutableFloatStateOf(PHASE_REST) }
     val transition = rememberInfiniteTransition(label = "wavePhase")
-    val phase by transition.animateFloat(
+    return transition.animateFloat(
         initialValue = 0f,
-        targetValue = PHASE_TURNS * PI.toFloat(),
+        targetValue = Motion.WAVE_PHASE_TURNS * PI.toFloat(),
         animationSpec = Motion.wavePhase,
         label = "wavePhaseValue",
     )
-    return phase
 }
 
-/** See [rememberWavePhase]: paired with `Motion.wavePhase`'s duration. */
-private const val PHASE_TURNS = 20f
+/** Phase the wave rests at when animations are off — the start of the loop. */
+private const val PHASE_REST = 0f
 
 private const val NOT_DRAGGING = -1f
 
