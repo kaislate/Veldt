@@ -228,7 +228,7 @@ fun WaveScrubBar(
                     // From the READOUT, not the transport: consecutive presses while a seek is
                     // still in flight must compound, and `positionMs` would not have caught up
                     // yet — so stepping from it would make the second press repeat the first.
-                    val target = (readoutMs + step).coerceIn(0L, durationMs)
+                    val target = keyboardSeekTarget(readoutMs, step, durationMs)
                     latchFraction = (target.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
                     onSeek(target)
                     true
@@ -470,6 +470,16 @@ private const val READOUT_INSET_DP = 4
 private const val READOUT_ALPHA = 0.8f
 private const val WAVE_STYLE = "wisptrail"
 
+/**
+ * Where an arrow-key press lands.
+ *
+ * Clamped at BOTH ends, which is the whole reason this is a function: stepping back at the
+ * top of a track would otherwise ask the transport to seek to a negative position, and
+ * stepping forward at the end would ask it to seek past the end. Media3 tolerates neither
+ * uniformly across sources, and the readout would show a time the track does not have.
+ */
+internal fun keyboardSeekTarget(fromMs: Long, stepMs: Long, durationMs: Long): Long =
+    (fromMs + stepMs).coerceIn(0L, durationMs)
 /** Five seconds a press, the step every mainstream player uses for arrow-key seeking. */
 private const val KEYBOARD_SEEK_STEP_MS = 5_000L
 
