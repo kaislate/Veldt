@@ -11,6 +11,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.kaislate.veldtplayer.MainActivity
+import com.kaislate.veldtplayer.data.media.MediaSessionBus
 
 /**
  * Media3 MediaLibraryService: hosts the ExoPlayer and publishes a
@@ -49,6 +50,13 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         busAdapter?.detach()
+        // Detach first, then clear: the adapter can push during teardown, and a push landing
+        // after the reset would refill the bus with the state this is meant to drop.
+        //
+        // MediaSessionBus is a process-scoped singleton, so without this it keeps serving the
+        // dead service's last track — and holds its decoded full-size cover bitmap — for as
+        // long as the process lives.
+        MediaSessionBus.reset()
         session?.release()
         player?.release()
         session = null

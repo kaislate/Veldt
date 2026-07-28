@@ -44,6 +44,12 @@ class MainActivity : ComponentActivity() {
      * tint from the SYSTEM's day/night setting, and Veldt is dark on every phone (see
      * `VeldtTheme`) — so on a light-mode device `auto` would ask for dark icons and put them
      * on the app's near-black chrome, which is the light-mode bug one layer up.
+     *
+     * That choice also settles navigation-bar contrast, which is why nothing here sets
+     * `isNavigationBarContrastEnforced`. It is `SystemBarStyle.auto()` that turns the
+     * framework scrim ON; `dark()` already sets the flag false. Assigning it again after this
+     * call is a no-op — and on three-button navigation the scrim would land exactly where the
+     * mini-player already paints its own translucent pane, stacking two slabs.
      */
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -51,13 +57,6 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
-        // A `dark` navigation-bar style asks the framework to enforce contrast behind a
-        // transparent bar, which on three-button navigation draws a system scrim exactly where
-        // the mini-player and the navigation bar already paint their own translucent pane —
-        // two slabs, which is the one thing CHROME_ALPHA exists to avoid. This app supplies its
-        // own scrim, so it opts out of the framework's. No-op from API 35 up, where the
-        // property is deprecated and the system stops drawing the bar background at all.
-        window.isNavigationBarContrastEnforced = false
         setContent { VeldtTheme { Surface(Modifier.fillMaxSize()) { VeldtNavHost() } } }
     }
 }

@@ -4,10 +4,11 @@
 package com.kaislate.veldtplayer.ui.nowplaying
 
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -17,19 +18,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -44,10 +53,10 @@ import com.kaislate.veldtplayer.ui.components.drawWave
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.VeldtText
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The signature surface: Veldt Wisp's wave, at full-screen scale, as the seek control.
@@ -191,11 +200,39 @@ fun WaveScrubBar(
         label = "scrubThumbRadius",
     )
 
+    // Focus is only useful if the user can SEE it and ACT on it. `focusable()` alone gave the
+    // bar a place in the traversal order and nothing else: no highlight, so a keyboard user
+    // could not tell the bar had focus, and no key handler, so arrow keys fell through to the
+    // navigation host and moved focus off the control instead of seeking within it.
+    var focused by remember { mutableStateOf(false) }
+
     Column(modifier) {
         Canvas(
             Modifier
                 .fillMaxWidth()
                 .height(CANVAS_HEIGHT_DP.dp)
+                .onFocusChanged { focused = it.isFocused }
+                // Before `focusable()`, so this node is a PARENT of the focus target and sees
+                // the key event on its way up. After it, the event would be consumed by the
+                // focus machinery first and arrow keys would go back to moving focus.
+                //
+                // KeyDown only: a held arrow repeats, and handling KeyUp as well would seek
+                // twice per press.
+                .onKeyEvent { event ->
+                    val step = when {
+                        !seekable || event.type != KeyEventType.KeyDown -> return@onKeyEvent false
+                        event.key == Key.DirectionLeft -> -KEYBOARD_SEEK_STEP_MS
+                        event.key == Key.DirectionRight -> KEYBOARD_SEEK_STEP_MS
+                        else -> return@onKeyEvent false
+                    }
+                    // From the READOUT, not the transport: consecutive presses while a seek is
+                    // still in flight must compound, and `positionMs` would not have caught up
+                    // yet — so stepping from it would make the second press repeat the first.
+                    val target = (readoutMs + step).coerceIn(0L, durationMs)
+                    latchFraction = (target.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+                    onSeek(target)
+                    true
+                }
                 // Semantics are not focus. The accessibility node below makes this bar
                 // reachable by anything that walks the a11y tree — TalkBack, Switch Access —
                 // but Compose's D-pad and keyboard traversal is driven by the FOCUS tree, and
@@ -205,6 +242,20 @@ fun WaveScrubBar(
                 // brings its own focus target, so tabbing would step straight past the seek
                 // bar as if it were decoration.
                 .focusable()
+                // The highlight only exists for keyboard and D-pad users, so it is drawn only
+                // when focus actually arrives — a pointer or touch user never sees it, and a
+                // permanent outline round the signature control would be pure noise.
+                .then(
+                    if (focused) {
+                        Modifier.border(
+                            width = FOCUS_RING_DP.dp,
+                            color = palette.accent.copy(alpha = FOCUS_RING_ALPHA),
+                            shape = RoundedCornerShape(FOCUS_RING_RADIUS_DP.dp),
+                        )
+                    } else {
+                        Modifier
+                    }
+                )
                 // TalkBack saw a bare Canvas: the app's signature control was an unlabelled
                 // blank that could not be seeked at all. There is no Role for a seek bar in
                 // Compose's set — the platform mapping comes from the PAIR below, which the
@@ -418,3 +469,10 @@ private const val THUMB_RADIUS_DRAGGING_DP = 8f
 private const val READOUT_INSET_DP = 4
 private const val READOUT_ALPHA = 0.8f
 private const val WAVE_STYLE = "wisptrail"
+
+/** Five seconds a press, the step every mainstream player uses for arrow-key seeking. */
+private const val KEYBOARD_SEEK_STEP_MS = 5_000L
+
+private const val FOCUS_RING_DP = 2
+private const val FOCUS_RING_RADIUS_DP = 12
+private const val FOCUS_RING_ALPHA = 0.9f

@@ -35,9 +35,14 @@ class PlayerBusAdapter(
         val snap = PlaybackMapper.playState(player.playbackState, player.playWhenReady)
         MediaSessionBus.updatePlayback(buildPlaybackState(snap))
         MediaSessionBus.updateMetadata(buildMetadata())
+        // allowNull because this producer is authoritative about its own tracks: it reads
+        // the metadata of the item the player currently holds, so an absent artwork frame
+        // means "this track has no cover", not "no cover has arrived yet". Left at the
+        // default, a track with art followed by one without would strand the first track's
+        // cover on screen for the rest of the session.
         val art = player.mediaMetadata.artworkData
             ?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size) }
-        MediaSessionBus.setAlbumArt(art)
+        MediaSessionBus.setAlbumArt(art, allowNull = true)
     }
 
     private fun buildPlaybackState(snap: PlayState): PlaybackState {

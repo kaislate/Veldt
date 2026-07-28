@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.ActivityCompat
@@ -103,7 +104,14 @@ fun PermissionGate(
     // guessed at composition: before the first request `shouldShowRequestPermissionRationale`
     // is false for a fresh install too, and seeding from it would send a first-run user to
     // Settings for a permission nobody has asked them about yet.
-    var blocked by remember { mutableStateOf(false) }
+    //
+    // `rememberSaveable`, because this is the one piece of gate state that cannot be recovered
+    // by re-reading the system: `granted` above is re-derived from `checkSelfPermission` on
+    // every recomposition path, but "the dialog will not appear again" is only ever learned
+    // from a request result. Held in a plain `remember`, a rotation on the blocked wall would
+    // reset it and put the dead "Grant" button back in front of the user, which is the exact
+    // dead end this state exists to route around.
+    var blocked by rememberSaveable { mutableStateOf(false) }
 
     val audioLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
