@@ -50,7 +50,12 @@ Requires JDK 17+ and the Android SDK (compileSdk 36).
 
 ## Credits & license
 
-Veldt reuses the overlay/pill and media-session plumbing from Veldt Wisp, itself a
-fork of [DynamicIslandMusic](https://github.com/bguerraDev/DynamicIslandMusic) by
-**Bryan Guerra**. Distributed under the MIT License with Attribution Requirement —
-see [LICENSE](LICENSE).
+Veldt is original work, written from scratch. It is the sibling of
+[**Veldt Wisp**](https://github.com/kaislate/veldt-wisp) and shares its design
+language, but no code is carried over — the two files that once were (the palette
+extractor and the media-session bus) were both rewritten clean-room during Veldt's
+own development. Distributed under the MIT License — see [LICENSE](LICENSE).
+
+Bundled third-party assets: the [Bricolage Grotesque](https://github.com/ateliertriay/bricolage)
+typeface, under the SIL Open Font License 1.1 — see
+[licenses/bricolage-grotesque-OFL.txt](licenses/bricolage-grotesque-OFL.txt).
