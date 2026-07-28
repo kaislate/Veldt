@@ -54,7 +54,9 @@ Veldt is original work, written from scratch. It is the sibling of
 [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp) and shares its design
 language, but no code is carried over — the two files that once were (the palette
 extractor and the media-session bus) were both rewritten clean-room during Veldt's
-own development. Distributed under the MIT License — see [LICENSE](LICENSE).
+own development. Distributed under the GNU General Public License v3.0 or later
+— see [LICENSE](LICENSE). If you distribute a modified version, it must carry the
+same licence and ship its source.
 
 Bundled third-party assets: the [Bricolage Grotesque](https://github.com/ateliertriay/bricolage)
 typeface, under the SIL Open Font License 1.1 — see

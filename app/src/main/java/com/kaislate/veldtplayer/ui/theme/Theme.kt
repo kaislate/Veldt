@@ -1,3 +1,6 @@
+// Copyright (c) 2026 kaislate
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 package com.kaislate.veldtplayer.ui.theme
 
 import androidx.compose.material3.MaterialTheme
