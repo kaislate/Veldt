@@ -7,6 +7,7 @@ import android.content.Context
 import androidx.room.Room
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
+import com.kaislate.veldtplayer.data.playlist.db.PlaylistDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -34,4 +35,7 @@ object DatabaseModule {
 
     @Provides
     fun provideSongDao(db: VeldtDatabase): SongDao = db.songDao()
+
+    @Provides
+    fun providePlaylistDao(db: VeldtDatabase): PlaylistDao = db.playlistDao()
 }
