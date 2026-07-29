@@ -49,7 +49,8 @@ class PlaylistRepositoryTest {
      */
     private class FakeSource(override val id: String = "local") : LibrarySource {
         override fun resolvePlayableUri(song: Song): String = song.uri
-        override fun stableKey(song: Song): String = song.filePath ?: song.uri
+        override fun stableKey(song: Song): String =
+            song.relativeKey ?: song.filePath ?: song.uri
         override suspend fun listSongs(): List<Song> =
             error("resolve() must read the Room songs projection, not the live source")
         override suspend fun listAlbums(): List<Album> = emptyList()
@@ -76,10 +77,21 @@ class PlaylistRepositoryTest {
 
     @After fun tearDown() = db.close()
 
-    private fun song(id: Long, path: String, title: String = "T$id") = Song(
+    /**
+     * Defaults to a DATA path and no relative key, so the bulk of this class exercises rung 2 of
+     * the key ladder. [songWithoutDataPath] covers rung 1, which is the case a provider that
+     * withholds DATA produces.
+     */
+    private fun song(
+        id: Long,
+        path: String?,
+        title: String = "T$id",
+        relativeKey: String? = null,
+    ) = Song(
         id = id,
         uri = "content://media/external/audio/media/$id",
         filePath = path,
+        relativeKey = relativeKey,
         title = title,
         artist = "Artist",
         album = "Album",
@@ -91,6 +103,10 @@ class PlaylistRepositoryTest {
         dateModifiedSec = 0L,
         hasEmbeddedArt = false,
     )
+
+    /** A row from a provider that withholds `DATA`: no file path, relative key only. */
+    private fun songWithoutDataPath(id: Long, relativeKey: String, title: String = "T$id") =
+        song(id = id, path = null, title = title, relativeKey = relativeKey)
 
     /**
      * Replace the whole `songs` projection — i.e. what a library scan does. Clearing first is the
@@ -326,6 +342,63 @@ class PlaylistRepositoryTest {
         assertEquals("Alpha", track.song?.title)
         assertEquals(7L, track.song?.id)
         assertEquals("the corrected id must be written back", 7L, dao.getEntries(pl).single().songId)
+    }
+
+    /**
+     * The case that used to be silent, and the whole point of this round.
+     *
+     * Some providers withhold `DATA` on API 29+, so `filePath` is null. Before `relativeKey`
+     * existed those rows fell all the way through to the content:// uri — the exact key we
+     * removed for embedding `_ID` — and nothing surfaced it: the entry was written, looked fine,
+     * and went blank at the next rescan.
+     *
+     * Same rescan as the test above, but the row has no file path at all.
+     */
+    @Test fun `an entry keyed without a DATA path still survives an id reissue`() = runTest {
+        val pl = repo.create("Mix")
+        rescanLibraryAs(songWithoutDataPath(3, "Music/a.mp3", "Alpha"))
+        repo.addSongs(pl, listOf(songWithoutDataPath(3, "Music/a.mp3", "Alpha")))
+
+        val entry = dao.getEntries(pl).single()
+        assertEquals("Music/a.mp3", entry.sourceKey)
+        assertNotEquals(
+            "an entry with no DATA path must not fall back to the id-bearing uri",
+            "content://media/external/audio/media/3",
+            entry.sourceKey,
+        )
+
+        rescanLibraryAs(songWithoutDataPath(7, "Music/a.mp3", "Alpha"))
+
+        val track = repo.resolve(pl).single()
+        assertNotNull("a DATA-less entry must survive a rescan too", track.song)
+        assertEquals(7L, track.song?.id)
+        assertEquals(7L, dao.getEntries(pl).single().songId)
+    }
+
+    /**
+     * The same DATA-less rescan, but wired to the **real** [LocalSource] instead of the fake.
+     *
+     * Every other test here uses `FakeSource`, so none of them can see a regression in the actual
+     * key implementation — `LocalSourceKeysTest` guards that in isolation, and this composes the
+     * two halves so the seam between them is covered too. `LocalSource.listSongs()` is never
+     * reached (resolve reads Room), so no MediaStore provider is needed.
+     */
+    @Test fun `the real LocalSource key survives an id reissue through the repository`() = runTest {
+        val real = com.kaislate.veldtplayer.data.library.LocalSource(
+            ApplicationProvider.getApplicationContext()
+        )
+        val realRepo = PlaylistRepository(dao, songDao, real) { ++clock }
+        val pl = realRepo.create("Mix")
+
+        rescanLibraryAs(songWithoutDataPath(3, "Music/a.mp3", "Alpha"))
+        realRepo.addSongs(pl, listOf(songWithoutDataPath(3, "Music/a.mp3", "Alpha")))
+        assertEquals("Music/a.mp3", dao.getEntries(pl).single().sourceKey)
+
+        rescanLibraryAs(songWithoutDataPath(7, "Music/a.mp3", "Alpha"))
+
+        val track = realRepo.resolve(pl).single()
+        assertNotNull(track.song)
+        assertEquals(7L, track.song?.id)
     }
 
     /**

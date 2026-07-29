@@ -24,7 +24,8 @@ class SongDaoTest {
 
     private fun entity(id: Long, title: String, album: String = "Al", modified: Long = 100) =
         SongEntity(
-            id = id, uri = "content://$id", filePath = null, title = title, artist = "A",
+            id = id, uri = "content://$id", filePath = null, relativeKey = null,
+            title = title, artist = "A",
             album = album, albumArtist = null, trackNumber = null, discNumber = null, year = null,
             durationMs = 1000, dateModifiedSec = modified, hasEmbeddedArt = false,
         )

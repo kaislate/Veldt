@@ -15,6 +15,7 @@ class NowPlayingStateTest {
         id = 7L,
         uri = "content://media/external/audio/media/7",
         filePath = "/music/7.mp3",
+        relativeKey = "Music/7.mp3",
         title = title,
         artist = "New Order",
         album = "Power, Corruption & Lies",

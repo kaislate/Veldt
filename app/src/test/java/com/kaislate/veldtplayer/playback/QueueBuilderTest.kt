@@ -14,6 +14,7 @@ class QueueBuilderTest {
         id = id,
         uri = "content://media/external/audio/media/$id",
         filePath = "/music/$id.mp3",
+        relativeKey = "Music/$id.mp3",
         title = "Track $id",
         artist = "Artist",
         album = "Album",

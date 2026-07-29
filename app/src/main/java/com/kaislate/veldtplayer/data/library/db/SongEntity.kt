@@ -11,6 +11,8 @@ data class SongEntity(
     @PrimaryKey val id: Long,
     val uri: String,
     val filePath: String?,
+    /** See [com.kaislate.veldtplayer.data.library.model.Song.relativeKey]. */
+    val relativeKey: String?,
     val title: String,
     val artist: String,
     val album: String,

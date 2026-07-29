@@ -9,11 +9,15 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistDao
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntity
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 
-// v2 adds the playlist tables. The app is pre-release with zero users, so the builder's
-// destructive migration is the correct upgrade path; no Migration is written.
+// v2 adds the playlist tables; v3 adds SongEntity.relativeKey, the rescan-stable playlist key.
+// The app is pre-release with zero users, so the builder's destructive migration is the correct
+// upgrade path; no Migration is written (Global Constraint 7).
+//
+// v3 wipes the songs table, which a rescan rebuilds — but it also wipes the playlist tables, which
+// nothing can regenerate. That is acceptable only pre-release; see DatabaseModule's standing note.
 @Database(
     entities = [SongEntity::class, PlaylistEntity::class, PlaylistEntryEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class VeldtDatabase : RoomDatabase() {
