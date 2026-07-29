@@ -49,6 +49,17 @@ class LocalSource @Inject constructor(
 
     override fun resolvePlayableUri(song: Song): String = song.uri
 
+    /**
+     * The MediaStore DATA path, which survives a rescan; the content:// uri does not, because it
+     * embeds `_ID` and MediaStore reissues that when a file moves or a volume remounts.
+     *
+     * `filePath` is null on API 29+ when the provider withholds DATA (and is documented on [Song]
+     * as "null for remote sources"). Falling back to the uri there is strictly better than
+     * failing: such an entry is no worse off than it would have been with the uri as its only
+     * key, and every entry that does have a path gets the durable one.
+     */
+    override fun stableKey(song: Song): String = song.filePath ?: song.uri
+
     override suspend fun listAlbums(): List<Album> = LibraryDerivations.deriveAlbums(listSongs())
     override suspend fun listArtists(): List<Artist> = LibraryDerivations.deriveArtists(listSongs())
 

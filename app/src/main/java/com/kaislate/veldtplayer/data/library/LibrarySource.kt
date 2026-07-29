@@ -23,4 +23,18 @@ interface LibrarySource {
 
     /** Resolve the string a MediaItem should play. Local: the content:// uri. */
     fun resolvePlayableUri(song: Song): String
+
+    /**
+     * Stable identity for playlist membership. Must NOT embed anything a rescan can change.
+     *
+     * Deliberately separate from [resolvePlayableUri]: they answer different questions, and
+     * conflating them is a real defect, not a style point. The local playable uri is
+     * `content://media/external/audio/media/<MediaStore _ID>` — keyed on the very id that a
+     * rescan reissues when a file moves or a volume remounts. A playlist entry keyed on it would
+     * fail to re-resolve in exactly the scenario re-resolution exists for, so
+     * [com.kaislate.veldtplayer.data.playlist.PlaylistRepository] stores this instead.
+     *
+     * A future remote source returns its server-side GUID here and needs no other change.
+     */
+    fun stableKey(song: Song): String
 }

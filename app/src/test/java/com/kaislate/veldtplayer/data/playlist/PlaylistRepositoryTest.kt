@@ -6,7 +6,9 @@ package com.kaislate.veldtplayer.data.playlist
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
+import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
@@ -17,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -32,19 +35,23 @@ import org.robolectric.annotation.Config
 class PlaylistRepositoryTest {
 
     /**
-     * A stand-in library whose stable key is the file path, not the content:// uri.
+     * A stand-in library source. It mirrors [com.kaislate.veldtplayer.data.library.LocalSource]'s
+     * two key functions exactly — playable uri embeds the id, stable key is the path — because the
+     * difference between them is the property under test. `LocalSourceKeysTest` guards the real
+     * implementation; this fake only has to be faithful to its shape.
      *
-     * That is the point of the fixture: it makes `sourceKey` genuinely independent of the
-     * MediaStore id, so "the id changed but the key did not" — the rescan case the whole
-     * re-resolution ladder exists for — is expressible. A fixture may name its source literally;
-     * production code must read it from [LibrarySource.id] (Global Constraint 2).
+     * `listSongs()` deliberately throws: [PlaylistRepository.resolve] must read the tag-merged
+     * Room projection, so a regression back to a live source enumeration fails loudly here rather
+     * than passing quietly against different data.
+     *
+     * A fixture may name its source literally; production code must read it from
+     * [LibrarySource.id] (Global Constraint 2).
      */
-    private class FakeSource(
-        override val id: String = "local",
-        var songs: List<Song> = emptyList(),
-    ) : LibrarySource {
-        override fun resolvePlayableUri(song: Song): String = song.filePath!!
-        override suspend fun listSongs(): List<Song> = songs
+    private class FakeSource(override val id: String = "local") : LibrarySource {
+        override fun resolvePlayableUri(song: Song): String = song.uri
+        override fun stableKey(song: Song): String = song.filePath ?: song.uri
+        override suspend fun listSongs(): List<Song> =
+            error("resolve() must read the Room songs projection, not the live source")
         override suspend fun listAlbums(): List<Album> = emptyList()
         override suspend fun listArtists(): List<Artist> = emptyList()
         override suspend fun search(query: String): List<Song> = emptyList()
@@ -52,6 +59,7 @@ class PlaylistRepositoryTest {
 
     private lateinit var db: VeldtDatabase
     private lateinit var dao: PlaylistDao
+    private lateinit var songDao: SongDao
     private lateinit var source: FakeSource
     private lateinit var repo: PlaylistRepository
     private var clock = 1_000L
@@ -61,8 +69,9 @@ class PlaylistRepositoryTest {
             ApplicationProvider.getApplicationContext(), VeldtDatabase::class.java
         ).allowMainThreadQueries().build()
         dao = db.playlistDao()
+        songDao = db.songDao()
         source = FakeSource()
-        repo = PlaylistRepository(dao, source) { ++clock }
+        repo = PlaylistRepository(dao, songDao, source) { ++clock }
     }
 
     @After fun tearDown() = db.close()
@@ -82,6 +91,16 @@ class PlaylistRepositoryTest {
         dateModifiedSec = 0L,
         hasEmbeddedArt = false,
     )
+
+    /**
+     * Replace the whole `songs` projection — i.e. what a library scan does. Clearing first is the
+     * point: the scanner deletes and reinserts rows keyed on MediaStore `_ID`, so the same file
+     * can come back under a different id, and that is the case the ladder exists for.
+     */
+    private suspend fun rescanLibraryAs(vararg songs: Song) {
+        songDao.clear()
+        songDao.upsertAll(songs.map { it.toEntity() })
+    }
 
     private suspend fun positions(playlistId: Long) =
         dao.getEntries(playlistId).map { it.position }
@@ -131,12 +150,26 @@ class PlaylistRepositoryTest {
      */
     @Test fun `addSongs takes source identity from the LibrarySource, never a literal`() = runTest {
         val other = FakeSource(id = "not-local")
-        val otherRepo = PlaylistRepository(dao, other) { ++clock }
+        val otherRepo = PlaylistRepository(dao, songDao, other) { ++clock }
         val pl = otherRepo.create("Mix")
         otherRepo.addSongs(pl, listOf(song(1, "/a.mp3")))
         val entry = dao.getEntries(pl).single()
         assertEquals("not-local", entry.sourceId)
         assertEquals("/a.mp3", entry.sourceKey)
+    }
+
+    /**
+     * The stored key must be [LibrarySource.stableKey], NOT the playable uri. The uri embeds the
+     * MediaStore `_ID`, so keying on it would make the entry unresolvable after precisely the
+     * rescan that re-resolution exists to survive.
+     */
+    @Test fun `addSongs stores the stable key, not the playable uri`() = runTest {
+        val pl = repo.create("Mix")
+        val s = song(3, "/a.mp3")
+        repo.addSongs(pl, listOf(s))
+        val entry = dao.getEntries(pl).single()
+        assertEquals(source.stableKey(s), entry.sourceKey)
+        assertNotEquals(source.resolvePlayableUri(s), entry.sourceKey)
     }
 
     @Test fun `addSongs denormalises the display strings and caches the resolved id`() = runTest {
@@ -262,9 +295,37 @@ class PlaylistRepositoryTest {
 
     @Test fun `resolve joins entries to the current library in position order`() = runTest {
         val pl = repo.create("Mix")
-        source.songs = listOf(song(1, "/a.mp3", "Alpha"), song(2, "/b.mp3", "Bravo"))
-        repo.addSongs(pl, source.songs)
+        val library = listOf(song(1, "/a.mp3", "Alpha"), song(2, "/b.mp3", "Bravo"))
+        rescanLibraryAs(*library.toTypedArray())
+        repo.addSongs(pl, library)
         assertEquals(listOf("Alpha", "Bravo"), repo.resolve(pl).map { it.song?.title })
+    }
+
+    /**
+     * THE test the first round was missing, and the reason `stableKey` exists.
+     *
+     * A real rescan: the scanner clears the `songs` table and reinserts, so `/a.mp3` — the same
+     * file, untouched — comes back under MediaStore `_ID` 7 instead of 3. Nothing about the entry
+     * changed; the library's idea of the id did.
+     *
+     * With `sourceKey` keyed on the playable uri (`content://.../3`) rung 1 misses and rung 2
+     * misses too (id 3 no longer exists), and the entry goes permanently blank. Keyed on the file
+     * path it re-links, and the corrected id is cached for next time.
+     */
+    @Test fun `an entry survives a rescan that reissues its MediaStore id`() = runTest {
+        val pl = repo.create("Mix")
+        rescanLibraryAs(song(3, "/a.mp3", "Alpha"))
+        repo.addSongs(pl, listOf(song(3, "/a.mp3", "Alpha")))
+        assertEquals(3L, dao.getEntries(pl).single().songId)
+
+        // the scan runs: same file, new id, and the old id is simply gone
+        rescanLibraryAs(song(7, "/a.mp3", "Alpha"))
+
+        val track = repo.resolve(pl).single()
+        assertNotNull("a rescan must not blank an entry whose file never moved", track.song)
+        assertEquals("Alpha", track.song?.title)
+        assertEquals(7L, track.song?.id)
+        assertEquals("the corrected id must be written back", 7L, dao.getEntries(pl).single().songId)
     }
 
     /**
@@ -274,9 +335,10 @@ class PlaylistRepositoryTest {
      */
     @Test fun `an unresolvable entry is still returned with a null song`() = runTest {
         val pl = repo.create("Mix")
-        source.songs = listOf(song(1, "/a.mp3", "Alpha"), song(2, "/b.mp3", "Bravo"))
-        repo.addSongs(pl, source.songs)
-        source.songs = listOf(song(1, "/a.mp3", "Alpha")) // b.mp3 left the library
+        val library = listOf(song(1, "/a.mp3", "Alpha"), song(2, "/b.mp3", "Bravo"))
+        rescanLibraryAs(*library.toTypedArray())
+        repo.addSongs(pl, library)
+        rescanLibraryAs(song(1, "/a.mp3", "Alpha")) // b.mp3 left the library
 
         val tracks = repo.resolve(pl)
         assertEquals(2, tracks.size)
@@ -287,9 +349,10 @@ class PlaylistRepositoryTest {
 
     @Test fun `resolve on an empty library returns every entry unresolved`() = runTest {
         val pl = repo.create("Mix")
-        source.songs = listOf(song(1, "/a.mp3"), song(2, "/b.mp3"))
-        repo.addSongs(pl, source.songs)
-        source.songs = emptyList()
+        val library = listOf(song(1, "/a.mp3"), song(2, "/b.mp3"))
+        rescanLibraryAs(*library.toTypedArray())
+        repo.addSongs(pl, library)
+        rescanLibraryAs()
 
         val tracks = repo.resolve(pl)
         assertEquals(2, tracks.size)
@@ -299,22 +362,21 @@ class PlaylistRepositoryTest {
     }
 
     /**
-     * THE design point. After a rescan the library deleted and reinserted its rows by MediaStore
-     * `_ID`, so "/a.mp3" came back as id 7 and id 3 now belongs to a completely different file.
-     * The entry still caches songId = 3.
+     * The ladder's order, in the case where the two rungs disagree. After a rescan `/a.mp3` is id
+     * 7, and id 3 has been reused by an unrelated file. The entry still caches songId = 3.
      *
      * Matching `(sourceId, sourceKey)` first yields Alpha. Matching songId first yields Bravo —
-     * the wrong track, silently. This test is the negative control for that ladder order.
+     * the wrong track, silently.
      */
     @Test fun `resolve prefers source identity over a stale songId that now points elsewhere`() =
         runTest {
             val pl = repo.create("Mix")
-            source.songs = listOf(song(3, "/a.mp3", "Alpha"))
-            repo.addSongs(pl, source.songs)
+            rescanLibraryAs(song(3, "/a.mp3", "Alpha"))
+            repo.addSongs(pl, listOf(song(3, "/a.mp3", "Alpha")))
             assertEquals(3L, dao.getEntries(pl).single().songId)
 
             // rescan: a.mp3 is now id 7, and id 3 has been reused by an unrelated file
-            source.songs = listOf(song(7, "/a.mp3", "Alpha"), song(3, "/b.mp3", "Bravo"))
+            rescanLibraryAs(song(7, "/a.mp3", "Alpha"), song(3, "/b.mp3", "Bravo"))
 
             val track = repo.resolve(pl).single()
             assertNotNull(track.song)
@@ -325,10 +387,10 @@ class PlaylistRepositoryTest {
     /** The other half of the same story: the corrected id is written back, so it is a cache. */
     @Test fun `resolve writes the corrected songId back to the entry`() = runTest {
         val pl = repo.create("Mix")
-        source.songs = listOf(song(3, "/a.mp3", "Alpha"))
-        repo.addSongs(pl, source.songs)
+        rescanLibraryAs(song(3, "/a.mp3", "Alpha"))
+        repo.addSongs(pl, listOf(song(3, "/a.mp3", "Alpha")))
 
-        source.songs = listOf(song(7, "/a.mp3", "Alpha"), song(3, "/b.mp3", "Bravo"))
+        rescanLibraryAs(song(7, "/a.mp3", "Alpha"), song(3, "/b.mp3", "Bravo"))
         repo.resolve(pl)
 
         assertEquals(7L, dao.getEntries(pl).single().songId)
@@ -340,11 +402,11 @@ class PlaylistRepositoryTest {
     @Test fun `resolve falls back to the cached songId when the source key no longer matches`() =
         runTest {
             val pl = repo.create("Mix")
-            source.songs = listOf(song(7, "/a.mp3", "Alpha"))
-            repo.addSongs(pl, source.songs)
+            rescanLibraryAs(song(7, "/a.mp3", "Alpha"))
+            repo.addSongs(pl, listOf(song(7, "/a.mp3", "Alpha")))
 
-            // the source now reports the same song under a different key
-            source.songs = listOf(song(7, "/renamed.mp3", "Alpha"))
+            // the file moved: same MediaStore id, different path
+            rescanLibraryAs(song(7, "/moved/a.mp3", "Alpha"))
 
             val track = repo.resolve(pl).single()
             assertEquals(7L, track.song?.id)
@@ -366,11 +428,29 @@ class PlaylistRepositoryTest {
                 )
             )
         )
-        source.songs = listOf(song(1, "/a.mp3", "Local Alpha"))
+        rescanLibraryAs(song(1, "/a.mp3", "Local Alpha"))
 
         val track = repo.resolve(pl).single()
         assertNull("a remote entry must not resolve against the local library", track.song)
         assertEquals("Remote Alpha", track.entry.sourceTitle)
+    }
+
+    /**
+     * The scanner's tag merge lands in the Room row, not in MediaStore. Resolving against a live
+     * source enumeration would show the untagged title here and the tagged one on the album
+     * screen — the same track under two names.
+     */
+    @Test fun `resolve returns the tag-merged Room row, not the source's own view`() = runTest {
+        val pl = repo.create("Mix")
+        rescanLibraryAs(song(1, "/a.mp3", "Untagged filename"))
+        repo.addSongs(pl, listOf(song(1, "/a.mp3", "Untagged filename")))
+
+        // the scanner re-writes the row with the title read from the file's tags
+        rescanLibraryAs(song(1, "/a.mp3", "Proper Tagged Title"))
+
+        assertEquals("Proper Tagged Title", repo.resolve(pl).single().song?.title)
+        // the entry keeps what it was imported as, for when it stops resolving
+        assertEquals("Untagged filename", dao.getEntries(pl).single().sourceTitle)
     }
 
     @Test fun `resolve on an empty playlist returns an empty list`() = runTest {
@@ -380,9 +460,10 @@ class PlaylistRepositoryTest {
     @Test fun `resolve is scoped to its own playlist`() = runTest {
         val gym = repo.create("Gym")
         val chill = repo.create("Chill")
-        source.songs = listOf(song(1, "/g.mp3", "Gymnopedie"), song(2, "/c.mp3", "Chill"))
-        repo.addSongs(gym, listOf(source.songs[0]))
-        repo.addSongs(chill, listOf(source.songs[1]))
+        val library = listOf(song(1, "/g.mp3", "Gymnopedie"), song(2, "/c.mp3", "Chill"))
+        rescanLibraryAs(*library.toTypedArray())
+        repo.addSongs(gym, listOf(library[0]))
+        repo.addSongs(chill, listOf(library[1]))
         assertEquals(listOf("Gymnopedie"), repo.resolve(gym).map { it.song?.title })
         assertEquals(listOf("Chill"), repo.resolve(chill).map { it.song?.title })
     }

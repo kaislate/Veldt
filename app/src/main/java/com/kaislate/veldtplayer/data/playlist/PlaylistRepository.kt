@@ -4,6 +4,8 @@
 package com.kaislate.veldtplayer.data.playlist
 
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.db.SongDao
+import com.kaislate.veldtplayer.data.library.db.toDomain
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistDao
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntity
@@ -40,16 +42,26 @@ data class PlaylistTrack(
  * `_ID`, so a file that moves — or a volume that remounts — comes back under a different id. An
  * entry keyed on that id alone would go permanently blank. Keyed on source identity it re-links
  * itself, and the corrected id is written back so the next resolve is a cache hit.
+ *
+ * That only works because `sourceKey` is [LibrarySource.stableKey], **not**
+ * [LibrarySource.resolvePlayableUri] — the local playable uri embeds the MediaStore `_ID`, so
+ * keying on it would make rung 1 fail in precisely the case it was written for.
+ *
+ * **Reads go through the Room `songs` projection, not [LibrarySource.listSongs].** The scanner's
+ * tag merge lands in Room, so the library screens render tag-augmented rows; resolving against a
+ * live MediaStore enumeration would show a different title for the same track on the playlist
+ * screen, and would re-enumerate the whole device on every call.
  */
 @Singleton
 class PlaylistRepository(
     private val dao: PlaylistDao,
+    private val songDao: SongDao,
     private val source: LibrarySource,
     private val now: () -> Long,
 ) {
     /** Hilt entry point. The clock is a seam for tests, not a graph dependency. */
-    @Inject constructor(dao: PlaylistDao, source: LibrarySource) :
-        this(dao, source, System::currentTimeMillis)
+    @Inject constructor(dao: PlaylistDao, songDao: SongDao, source: LibrarySource) :
+        this(dao, songDao, source, System::currentTimeMillis)
 
     fun observe(): Flow<List<PlaylistEntity>> = dao.observePlaylists()
 
@@ -71,9 +83,10 @@ class PlaylistRepository(
      * Duplicates are allowed and are NOT deduped: a playlist legitimately contains the same track
      * twice, and silently swallowing the second add would be the wrong surprise.
      *
-     * Source identity comes from [LibrarySource.id] and [LibrarySource.resolvePlayableUri] — never
-     * a hardcoded `"local"` (spec §3.1.1). The display strings are denormalised at add time so the
-     * entry still says something after the song leaves the library.
+     * Source identity comes from [LibrarySource.id] and [LibrarySource.stableKey] — never a
+     * hardcoded `"local"` (spec §3.1.1), and never the playable uri, which embeds the MediaStore
+     * id a rescan reissues. The display strings are denormalised at add time so the entry still
+     * says something after the song leaves the library.
      */
     suspend fun addSongs(playlistId: Long, songs: List<Song>) {
         if (songs.isEmpty()) return
@@ -85,7 +98,7 @@ class PlaylistRepository(
                     playlistId = playlistId,
                     position = start + i,
                     sourceId = source.id,
-                    sourceKey = source.resolvePlayableUri(song),
+                    sourceKey = source.stableKey(song),
                     songId = song.id,
                     sourceTitle = song.title,
                     sourceArtist = song.artist,
@@ -122,8 +135,8 @@ class PlaylistRepository(
      * Join a playlist's entries to the current library.
      *
      * The ladder, in order:
-     * 1. `(sourceId, sourceKey)` — the durable identity. A rescan changes MediaStore ids but not
-     *    the source's own key, so this rung is what survives one.
+     * 1. `(sourceId, sourceKey)` — the durable identity, [LibrarySource.stableKey]. A rescan
+     *    changes MediaStore ids but not the source's own key, so this rung is what survives one.
      * 2. the cached [PlaylistEntryEntity.songId] — only for entries owned by this source, so a
      *    future second source's ids can never collide into a local match.
      *
@@ -139,8 +152,10 @@ class PlaylistRepository(
         val entries = dao.getEntries(playlistId)
         if (entries.isEmpty()) return emptyList()
 
-        val songs = source.listSongs()
-        val byKey = songs.associateBy { source.resolvePlayableUri(it) }
+        // The Room projection, not source.listSongs(): these are the tag-merged rows the rest of
+        // the app renders, and it is one indexed table read instead of a device-wide enumeration.
+        val songs = songDao.getAllSongs().map { it.toDomain() }
+        val byKey = songs.associateBy { source.stableKey(it) }
         val byId = songs.associateBy { it.id }
 
         val corrections = LinkedHashMap<Long, Long?>()
