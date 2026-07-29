@@ -10,10 +10,15 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntity
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 
 // v2 adds the playlist tables; v3 adds SongEntity.relativeKey, the rescan-stable playlist key;
-// v4 volume-qualifies that key's FORMAT (external_primary:Music/a.mp3), which changes the stored
-// values in songs.relativeKey and playlist_entries.sourceKey even though no column changed shape.
-// The bump is what discards the old-format rows: left in place they would be unqualified keys that
-// collide across storage volumes, which is the defect v4 exists to fix.
+// v4 volume-qualifies that key's FORMAT (external_primary:Music/a.mp3); v5 stops trimming
+// whitespace out of the directory and filename parts, so " a.mp3" no longer keys as "a.mp3".
+//
+// v4 and v5 change stored VALUES, not column shapes. The bump is what discards the old-format
+// rows, and it is required rather than cosmetic: nothing rewrites an existing
+// playlist_entries.sourceKey, and songs.relativeKey goes stale for every row the scan diff does
+// not touch (the diff keys on dateModifiedSec, which a format change does not move). Without a
+// bump the defect would survive only on upgraded devices — worse to diagnose than one that is
+// uniform.
 //
 // The app is pre-release with zero users, so the builder's destructive migration is the correct
 // upgrade path; no Migration is written (Global Constraint 7).
@@ -22,7 +27,7 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 // which nothing can regenerate. Acceptable only pre-release; see DatabaseModule's standing note.
 @Database(
     entities = [SongEntity::class, PlaylistEntity::class, PlaylistEntryEntity::class],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class VeldtDatabase : RoomDatabase() {

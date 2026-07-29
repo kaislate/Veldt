@@ -173,6 +173,52 @@ class LocalSource @Inject constructor(
         private const val VOLUME_SEPARATOR = ":"
 
         /**
+         * ## The key uniqueness invariant — read this before changing any rung
+         *
+         * A playlist key must be unique **across all four** of the following, and stable under the
+         * fourth. Four defects in this task were each a rung that satisfied three and quietly
+         * missed one, so check a candidate key against every line, not the one you are thinking
+         * about:
+         *
+         * 1. **Volume** — internal storage vs. removable SD. [listSongs] queries `VOLUME_EXTERNAL`,
+         *    which spans both, so a volume-relative key collides. (Missed in round 3.)
+         * 2. **Directory** — `Music/a.mp3` vs. `Podcasts/a.mp3`, and `Music` vs. `" Music"`, which
+         *    are genuinely different folders on ext4/f2fs. A key that normalises them together
+         *    merges real directories. (Missed by an over-broad `trim()`.)
+         * 3. **Filename** — including leading/trailing whitespace, which is legal on ext4/f2fs
+         *    (illegal only on FAT/exFAT, i.e. the SD card). `" a.mp3"` and `"a.mp3"` can coexist in
+         *    one folder, so `DISPLAY_NAME` is used verbatim. (Missed by the same `trim()`.)
+         * 4. **MediaStore `_ID` generation** — the key must NOT change when a rescan reissues the
+         *    id for an unchanged file, which is the entire reason this function exists rather than
+         *    using [Song.uri]. (Missed in round 1.)
+         *
+         * A rung that fails 1–3 returns the WRONG track and then writes the wrong `songId` back,
+         * corrupting the cache on a read path. A rung that fails 4 returns nothing and the entry
+         * goes blank. The first is much worse, so when a part is missing this function returns null
+         * and lets the caller fall through to an absolute path rather than emitting a partial key.
+         *
+         * ### An assumption this rests on that is not visible in this file
+         *
+         * **MediaStore `_ID` is unique across external volumes.** [com.kaislate.veldtplayer.data.library.db.SongEntity]'s
+         * primary key is that id, so if two volumes could reuse one id, the internal and SD rows
+         * would collapse into a single Room row *before* [stableKey] ever ran — and volume-
+         * qualifying the key would be decorative. This holds on API 29+ (one `external.db` with
+         * `volume_name` as a column, not a database per volume), but nothing here enforces it and
+         * it is unobservable from Robolectric, because the fixtures supply the rows. If a future
+         * source ever shares the `songs` table with per-volume id spaces, that is the thing that
+         * breaks first, silently, and no test in this repo would notice.
+         *
+         * ### Note for Task 4 (the deeper resolution ladder)
+         *
+         * All rungs currently share ONE flat key space: `PlaylistRepository.resolve` builds a
+         * single `associateBy { stableKey(it) }`. Today they happen not to overlap — a rung-1 key
+         * never starts with `/`, a `DATA` path always does, and a uri always starts with
+         * `content://` — but that is luck, not design. A title/artist/duration rung has no such
+         * discipline and could collide with a filename. **Task 4 needs namespaced rung prefixes**
+         * (e.g. `rel:`, `data:`, `tag:`), not merely rungs that are each individually correct.
+         *
+         * ---
+         *
          * Compose `VOLUME_NAME` + `RELATIVE_PATH` + `DISPLAY_NAME` into one fully-qualified key,
          * e.g. `external_primary` + `Music/Beck/` + `Lost Cause.mp3` →
          * `external_primary:Music/Beck/Lost Cause.mp3`.
@@ -204,10 +250,21 @@ class LocalSource @Inject constructor(
             relativePath: String?,
             displayName: String?,
         ): String? {
+            // Volume: whitespace-trimmed. It is a MediaStore identifier, not a user-authored
+            // name, so padding on it is noise and can never be meaningful.
             val volume = volumeName?.trim().orEmpty()
-            val name = displayName?.trim().orEmpty()
-            val dir = relativePath?.trim()?.trim('/').orEmpty()
-            if (volume.isEmpty() || name.isEmpty() || dir.isEmpty()) return null
+            // Directory: ONLY separators trimmed, never whitespace. A folder named " Music" is a
+            // different folder from "Music" on ext4/f2fs, and normalising them together would
+            // merge two real directories into one key.
+            val dir = relativePath?.trim('/').orEmpty()
+            // Filename: verbatim. DISPLAY_NAME is the literal name on disk and MediaStore does not
+            // pad it, so trimming buys nothing and silently merges " a.mp3" with "a.mp3".
+            val name = displayName.orEmpty()
+            if (volume.isEmpty() || dir.isEmpty() || name.isEmpty()) return null
+            // Structural, not documentary: a volume name we cannot encode unambiguously is not a
+            // volume name we may use. Falling through to the absolute DATA path is the right
+            // answer, and this is one line rather than a KDoc claim nothing checks.
+            if (volume.contains(VOLUME_SEPARATOR)) return null
             return "$volume$VOLUME_SEPARATOR$dir/$name"
         }
     }

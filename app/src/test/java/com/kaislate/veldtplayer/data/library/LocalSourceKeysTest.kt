@@ -128,12 +128,13 @@ class LocalSourceKeysTest {
      * normalise it, the same file would key differently depending on what the provider returned,
      * and a playlist would stop resolving after an OS update changed its mind about the slash.
      */
+    /** Only the separator is normalised — never whitespace inside the path or the name. */
     @Test fun `composeRelativeKey inserts exactly one separator whatever the input`() {
         val expected = "external_primary:Music/Beck/Lost Cause.mp3"
         assertEquals(expected, key("external_primary", "Music/Beck/", "Lost Cause.mp3"))
         assertEquals(expected, key("external_primary", "Music/Beck", "Lost Cause.mp3"))
         assertEquals(expected, key("external_primary", "/Music/Beck/", "Lost Cause.mp3"))
-        assertEquals(expected, key("external_primary", "  Music/Beck/  ", " Lost Cause.mp3 "))
+        // the volume IS whitespace-trimmed: it is a MediaStore identifier, not a name on disk
         assertEquals(expected, key("  external_primary  ", "Music/Beck/", "Lost Cause.mp3"))
     }
 
@@ -146,14 +147,56 @@ class LocalSourceKeysTest {
     @Test fun `composeRelativeKey returns null unless all three parts are present`() {
         assertNull(key(null, "Music/Beck/", "Lost.mp3"))
         assertNull(key("", "Music/Beck/", "Lost.mp3"))
-        assertNull(key("  ", "Music/Beck/", "Lost.mp3"))
+        assertNull(key("  ", "Music/Beck/", "Lost.mp3")) // volume is trimmed, so this IS empty
         assertNull(key("external_primary", null, "Lost.mp3"))
         assertNull(key("external_primary", "", "Lost.mp3"))
-        assertNull(key("external_primary", "   ", "Lost.mp3"))
         assertNull(key("external_primary", "/", "Lost.mp3"))
         assertNull(key("external_primary", "Music/Beck/", null))
-        assertNull(key("external_primary", "Music/Beck/", "  "))
+        assertNull(key("external_primary", "Music/Beck/", ""))
         assertNull(key(null, null, null))
+    }
+
+    /**
+     * THE round-4 defect, and the fourth instance of this task's recurring bug class.
+     *
+     * Leading and trailing spaces in filenames are LEGAL on ext4/f2fs, which is what backs internal
+     * storage — they are illegal only on FAT/exFAT, i.e. the SD card. `DISPLAY_NAME` is the literal
+     * name on disk and MediaStore does not pad it, so trimming it bought nothing and cost
+     * uniqueness: `" a.mp3"` and `"a.mp3"` could sit in one folder and shared a key.
+     *
+     * A collision here is the dangerous direction — it returns the WRONG track and writes the wrong
+     * `songId` back — not the merely-blank direction.
+     */
+    @Test fun `composeRelativeKey does not merge a space-padded filename with its sibling`() {
+        val padded = key("external_primary", "Music/", " a.mp3")
+        val plain = key("external_primary", "Music/", "a.mp3")
+        val trailing = key("external_primary", "Music/", "a.mp3 ")
+        assertNotNull(padded)
+        assertNotNull(trailing)
+        assertNotEquals("a leading space is part of the filename on ext4", plain, padded)
+        assertNotEquals("a trailing space is part of the filename on ext4", plain, trailing)
+        assertNotEquals(padded, trailing)
+        assertEquals("external_primary:Music/ a.mp3", padded)
+    }
+
+    /** Same defect on the directory half: `" Music"` and `"Music"` are different folders. */
+    @Test fun `composeRelativeKey does not merge a space-padded directory with its sibling`() {
+        val padded = key("external_primary", " Music/", "a.mp3")
+        val plain = key("external_primary", "Music/", "a.mp3")
+        assertNotNull(padded)
+        assertNotEquals("a leading space is part of the directory name on ext4", plain, padded)
+        assertEquals("external_primary: Music/a.mp3", padded)
+    }
+
+    /**
+     * Structural, not documentary. The KDoc's claim that `VOLUME_NAME` never contains the
+     * separator is true of the reachable set, but round 3's failure mode was exactly "governing
+     * fact written in a KDoc, applied one level only". A volume name we cannot encode
+     * unambiguously falls through to the absolute `DATA` path instead.
+     */
+    @Test fun `composeRelativeKey refuses a volume name containing the separator`() {
+        assertNull(key("bad:volume", "Music/", "a.mp3"))
+        assertNull(key(":", "Music/", "a.mp3"))
     }
 
     /** Two different files in the same folder must not collapse onto one key. */
