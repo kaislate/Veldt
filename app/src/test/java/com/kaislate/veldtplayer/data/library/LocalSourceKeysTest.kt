@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.model.Song
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -69,8 +70,8 @@ class LocalSourceKeysTest {
 
     /** Rung 1 wins outright: it is the guaranteed-present, non-deprecated one. */
     @Test fun `stableKey prefers the relative key over the DATA path`() {
-        val s = song(3, "/storage/emulated/0/Music/a.mp3", relativeKey = "Music/a.mp3")
-        assertEquals("Music/a.mp3", source.stableKey(s))
+        val s = song(3, "/storage/emulated/0/Music/a.mp3", relativeKey = "external_primary:Music/a.mp3")
+        assertEquals("external_primary:Music/a.mp3", source.stableKey(s))
     }
 
     /** Rung 2: DATA is fully qualified when present, and is what the tag reader already uses. */
@@ -87,15 +88,15 @@ class LocalSourceKeysTest {
      * with nothing anywhere to surface it.
      */
     @Test fun `stableKey works when DATA is withheld but the relative key is present`() {
-        val s = song(3, filePath = null, relativeKey = "Music/a.mp3")
-        assertEquals("Music/a.mp3", source.stableKey(s))
+        val s = song(3, filePath = null, relativeKey = "external_primary:Music/a.mp3")
+        assertEquals("external_primary:Music/a.mp3", source.stableKey(s))
         assertNotEquals(source.resolvePlayableUri(s), source.stableKey(s))
     }
 
     /** The same file, no DATA at all, before and after a rescan reissues its id. */
     @Test fun `a file with no DATA path still keys stably across an id reissue`() {
-        val before = song(3, filePath = null, relativeKey = "Music/a.mp3")
-        val after = song(7, filePath = null, relativeKey = "Music/a.mp3")
+        val before = song(3, filePath = null, relativeKey = "external_primary:Music/a.mp3")
+        val after = song(7, filePath = null, relativeKey = "external_primary:Music/a.mp3")
         assertEquals(source.stableKey(before), source.stableKey(after))
         assertNotEquals(source.resolvePlayableUri(before), source.resolvePlayableUri(after))
     }
@@ -120,7 +121,7 @@ class LocalSourceKeysTest {
         assertEquals("content://media/external/audio/media/3", source.resolvePlayableUri(s))
     }
 
-    // ---- composing the relative key from the two MediaStore columns --------------------------
+    // ---- composing the relative key from the three MediaStore columns ------------------------
 
     /**
      * `RELATIVE_PATH` conventionally carries a trailing separator. If the composer did not
@@ -128,38 +129,73 @@ class LocalSourceKeysTest {
      * and a playlist would stop resolving after an OS update changed its mind about the slash.
      */
     @Test fun `composeRelativeKey inserts exactly one separator whatever the input`() {
-        val expected = "Music/Beck/Lost Cause.mp3"
-        assertEquals(expected, LocalSource.composeRelativeKey("Music/Beck/", "Lost Cause.mp3"))
-        assertEquals(expected, LocalSource.composeRelativeKey("Music/Beck", "Lost Cause.mp3"))
-        assertEquals(expected, LocalSource.composeRelativeKey("/Music/Beck/", "Lost Cause.mp3"))
-        assertEquals(expected, LocalSource.composeRelativeKey("  Music/Beck/  ", " Lost Cause.mp3 "))
+        val expected = "external_primary:Music/Beck/Lost Cause.mp3"
+        assertEquals(expected, key("external_primary", "Music/Beck/", "Lost Cause.mp3"))
+        assertEquals(expected, key("external_primary", "Music/Beck", "Lost Cause.mp3"))
+        assertEquals(expected, key("external_primary", "/Music/Beck/", "Lost Cause.mp3"))
+        assertEquals(expected, key("external_primary", "  Music/Beck/  ", " Lost Cause.mp3 "))
+        assertEquals(expected, key("  external_primary  ", "Music/Beck/", "Lost Cause.mp3"))
     }
 
     /**
-     * A bare display name is deliberately NOT a key. `EXTERNAL_CONTENT_URI` spans volumes on API
-     * 29+, so `Lost.mp3` alone collides across directories and could resolve an entry to the wrong
-     * file. Returning null falls through to the fully-qualified DATA path instead, which is
-     * strictly safer than a confidently wrong match.
+     * A partial key is deliberately NOT a key — the caller falls through to the `DATA` path, which
+     * is absolute and therefore already volume-qualified. Emitting a partial key would defeat the
+     * point: an unqualified key is exactly the thing that collides, so it must never be the
+     * fallback for a missing qualifier.
      */
-    @Test fun `composeRelativeKey returns null unless both parts are present`() {
-        assertNull(LocalSource.composeRelativeKey(null, "Lost.mp3"))
-        assertNull(LocalSource.composeRelativeKey("", "Lost.mp3"))
-        assertNull(LocalSource.composeRelativeKey("   ", "Lost.mp3"))
-        assertNull(LocalSource.composeRelativeKey("/", "Lost.mp3"))
-        assertNull(LocalSource.composeRelativeKey("Music/Beck/", null))
-        assertNull(LocalSource.composeRelativeKey("Music/Beck/", "  "))
-        assertNull(LocalSource.composeRelativeKey(null, null))
+    @Test fun `composeRelativeKey returns null unless all three parts are present`() {
+        assertNull(key(null, "Music/Beck/", "Lost.mp3"))
+        assertNull(key("", "Music/Beck/", "Lost.mp3"))
+        assertNull(key("  ", "Music/Beck/", "Lost.mp3"))
+        assertNull(key("external_primary", null, "Lost.mp3"))
+        assertNull(key("external_primary", "", "Lost.mp3"))
+        assertNull(key("external_primary", "   ", "Lost.mp3"))
+        assertNull(key("external_primary", "/", "Lost.mp3"))
+        assertNull(key("external_primary", "Music/Beck/", null))
+        assertNull(key("external_primary", "Music/Beck/", "  "))
+        assertNull(key(null, null, null))
     }
 
     /** Two different files in the same folder must not collapse onto one key. */
     @Test fun `composeRelativeKey distinguishes files within a folder and folders across files`() {
         assertNotEquals(
-            LocalSource.composeRelativeKey("Music/Beck/", "a.mp3"),
-            LocalSource.composeRelativeKey("Music/Beck/", "b.mp3"),
+            key("external_primary", "Music/Beck/", "a.mp3"),
+            key("external_primary", "Music/Beck/", "b.mp3"),
         )
         assertNotEquals(
-            LocalSource.composeRelativeKey("Music/Beck/", "a.mp3"),
-            LocalSource.composeRelativeKey("Music/Nick/", "a.mp3"),
+            key("external_primary", "Music/Beck/", "a.mp3"),
+            key("external_primary", "Music/Nick/", "a.mp3"),
         )
     }
+
+    /**
+     * THE gap this round closes. `RELATIVE_PATH` is *volume-relative*, but `listSongs` queries
+     * `EXTERNAL_CONTENT_URI` = `VOLUME_EXTERNAL`, which spans primary storage AND removable SD on
+     * API 29+. A user with `Music/a.mp3` on internal and a copy at `Music/a.mp3` on an SD card
+     * produces two distinct rows at the same relative path.
+     *
+     * Without the volume qualifier those two rows share one key, `resolve`'s
+     * `associateBy { stableKey(it) }` silently keeps the last, and rung 1 returns the wrong file —
+     * then writes the wrong `songId` back. `PlaylistRepositoryTest` shows that damage end to end;
+     * this pins the key-level cause.
+     */
+    @Test fun `composeRelativeKey distinguishes the same path on different volumes`() {
+        val internal = key("external_primary", "Music/", "a.mp3")
+        val sdCard = key("1234-5678", "Music/", "a.mp3")
+        assertNotNull(internal)
+        assertNotNull(sdCard)
+        assertNotEquals(
+            "the same relative path on two volumes must not share a key",
+            internal,
+            sdCard,
+        )
+    }
+
+    /** The volume qualifier is actually in the emitted string, not merely influencing it. */
+    @Test fun `composeRelativeKey is qualified by the volume name`() {
+        assertEquals("1234-5678:Music/a.mp3", key("1234-5678", "Music/", "a.mp3"))
+    }
+
+    private fun key(volume: String?, relativePath: String?, displayName: String?) =
+        LocalSource.composeRelativeKey(volume, relativePath, displayName)
 }

@@ -10,13 +10,16 @@ data class Song(
     val uri: String,            // content:// playable uri, as String
     val filePath: String?,      // MediaStore DATA path for tag reading; null for remote sources
     /**
-     * `RELATIVE_PATH + DISPLAY_NAME`, e.g. `Music/Beck/Lost Cause.mp3` — the volume-relative
-     * location of the file. Present from API 29 (this app's floor) and the non-deprecated
-     * replacement for [filePath], which providers may withhold.
+     * `VOLUME_NAME + RELATIVE_PATH + DISPLAY_NAME`, e.g.
+     * `external_primary:Music/Beck/Lost Cause.mp3` — the fully-qualified location of the file.
+     * Present from API 29 (this app's floor) and the non-deprecated replacement for [filePath],
+     * which providers may withhold.
      *
      * This is the preferred playlist identity: unlike [uri] it embeds no MediaStore `_ID`, so it
-     * survives a rescan reissuing one. Null for remote sources, and null when the row carries no
-     * relative path (see `LocalSource.composeRelativeKey`).
+     * survives a rescan reissuing one. The volume is part of the key because `RELATIVE_PATH` alone
+     * is volume-relative while the library query spans volumes — see
+     * `LocalSource.composeRelativeKey`. Null for remote sources, and null whenever any of the
+     * three parts is missing (a partial key would collide, so it is never emitted).
      */
     val relativeKey: String?,
     val title: String,

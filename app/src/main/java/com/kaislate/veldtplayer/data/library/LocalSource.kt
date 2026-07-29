@@ -52,11 +52,12 @@ class LocalSource @Inject constructor(
     /**
      * A key that survives a rescan reissuing the MediaStore `_ID`. Three rungs, in order:
      *
-     * 1. [Song.relativeKey] — `RELATIVE_PATH + DISPLAY_NAME`. Guaranteed from API 29 (this app's
-     *    floor) and the non-deprecated replacement for `DATA`, so it is the one to prefer.
+     * 1. [Song.relativeKey] — `VOLUME_NAME + RELATIVE_PATH + DISPLAY_NAME`. Guaranteed from API 29
+     *    (this app's floor) and the non-deprecated replacement for `DATA`, so it is the one to
+     *    prefer. Volume-qualified, so it does not collide across storage volumes.
      * 2. [Song.filePath] — the `DATA` path. Second rung rather than first because providers may
-     *    withhold it, but it is fully qualified when present and is what the tag reader already
-     *    relies on.
+     *    withhold it, but it is an absolute path including the mount point — therefore already
+     *    volume-qualified — and is what the tag reader already relies on.
      * 3. [Song.uri] — a genuine last resort, and the only rung that embeds `_ID`. An entry keyed
      *    here does NOT survive a rescan; see the report's R3-C1. It is still better than throwing
      *    or keying on null, and with rung 1 available from the minSdk it should be unreachable in
@@ -90,8 +91,11 @@ class LocalSource @Inject constructor(
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.DATE_MODIFIED,
             MediaStore.Audio.Media.DATA, // file path for the tag reader; nullable on API 29+
-            // The non-deprecated location pair (API 29+). Together they compose the rescan-stable
-            // playlist key, which DATA cannot be relied on to provide.
+            // The non-deprecated location triple (API 29+). Together they compose the
+            // rescan-stable playlist key, which DATA cannot be relied on to provide. VOLUME_NAME
+            // is required, not optional: RELATIVE_PATH is volume-relative and this query spans
+            // volumes, so without it two files at the same path on internal and SD collide.
+            MediaStore.Audio.Media.VOLUME_NAME,
             MediaStore.Audio.Media.RELATIVE_PATH,
             MediaStore.Audio.Media.DISPLAY_NAME,
         )
@@ -117,6 +121,7 @@ class LocalSource @Inject constructor(
             // Guarded like ALBUM_ARTIST: these are contractually present from API 29, but OEM
             // providers have historically dropped columns, and a missing one must degrade the key
             // rather than throw mid-enumeration.
+            val volumeIx = c.getColumnIndex(MediaStore.Audio.Media.VOLUME_NAME)
             val relPathIx = c.getColumnIndex(MediaStore.Audio.Media.RELATIVE_PATH)
             val displayIx = c.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
             while (c.moveToNext()) {
@@ -127,6 +132,7 @@ class LocalSource @Inject constructor(
                     uri = ContentUris.withAppendedId(base, id).toString(),
                     filePath = if (c.isNull(dataIx)) null else c.getString(dataIx),
                     relativeKey = composeRelativeKey(
+                        volumeName = if (volumeIx >= 0) c.getString(volumeIx) else null,
                         relativePath = if (relPathIx >= 0) c.getString(relPathIx) else null,
                         displayName = if (displayIx >= 0) c.getString(displayIx) else null,
                     ),
@@ -163,25 +169,46 @@ class LocalSource @Inject constructor(
     }
 
     companion object {
+        /** Separates the volume from the volume-relative path. See [composeRelativeKey]. */
+        private const val VOLUME_SEPARATOR = ":"
+
         /**
-         * Compose `RELATIVE_PATH` + `DISPLAY_NAME` into one volume-relative key, e.g.
-         * `Music/Beck/` + `Lost Cause.mp3` → `Music/Beck/Lost Cause.mp3`.
+         * Compose `VOLUME_NAME` + `RELATIVE_PATH` + `DISPLAY_NAME` into one fully-qualified key,
+         * e.g. `external_primary` + `Music/Beck/` + `Lost Cause.mp3` →
+         * `external_primary:Music/Beck/Lost Cause.mp3`.
+         *
+         * **The volume is not decoration.** `RELATIVE_PATH` is *volume-relative*, while
+         * [listSongs] queries `EXTERNAL_CONTENT_URI` — `VOLUME_EXTERNAL`, which spans primary
+         * storage and removable SD on API 29+. A user with `Music/a.mp3` on internal storage and a
+         * copy at `Music/a.mp3` on an SD card would otherwise produce one key for two distinct
+         * rows. `PlaylistRepository.resolve` builds `associateBy { stableKey(it) }`, which silently
+         * keeps the last colliding row, so rung 1 could return the wrong file — and then write the
+         * wrong `songId` back, corrupting the cache permanently on a *read* path, where the user
+         * never took an action they could associate with the damage.
          *
          * `RELATIVE_PATH` conventionally carries a trailing separator and may carry a leading one,
          * so both ends are trimmed and exactly one separator is inserted — otherwise the same file
          * could key as `Music/Beck//Lost.mp3` on one device and `Music/Beck/Lost.mp3` on another,
          * and a playlist would stop resolving after a provider changed its mind about the slash.
          *
-         * Returns null unless BOTH parts are present. A bare display name is deliberately NOT a
-         * key: `EXTERNAL_CONTENT_URI` spans volumes on API 29+, so `Lost.mp3` alone would collide
-         * across directories and could resolve an entry to the wrong file — worse than falling
-         * through to the fully-qualified `DATA` path on the next rung.
+         * Returns null unless ALL THREE parts are present, so the caller falls through to the
+         * `DATA` path — which is an absolute path including the mount point, and therefore already
+         * volume-qualified. Emitting a partial key would defeat the point: an unqualified key is
+         * precisely the thing that collides, so it must never be the fallback.
+         *
+         * `VOLUME_NAME` is lowercase alphanumeric with `_`/`-` (`external_primary`, `1234-5678`)
+         * and never contains [VOLUME_SEPARATOR], so volume and path cannot alias into each other.
          */
-        internal fun composeRelativeKey(relativePath: String?, displayName: String?): String? {
+        internal fun composeRelativeKey(
+            volumeName: String?,
+            relativePath: String?,
+            displayName: String?,
+        ): String? {
+            val volume = volumeName?.trim().orEmpty()
             val name = displayName?.trim().orEmpty()
             val dir = relativePath?.trim()?.trim('/').orEmpty()
-            if (name.isEmpty() || dir.isEmpty()) return null
-            return "$dir/$name"
+            if (volume.isEmpty() || name.isEmpty() || dir.isEmpty()) return null
+            return "$volume$VOLUME_SEPARATOR$dir/$name"
         }
     }
 }

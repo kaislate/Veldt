@@ -356,18 +356,18 @@ class PlaylistRepositoryTest {
      */
     @Test fun `an entry keyed without a DATA path still survives an id reissue`() = runTest {
         val pl = repo.create("Mix")
-        rescanLibraryAs(songWithoutDataPath(3, "Music/a.mp3", "Alpha"))
-        repo.addSongs(pl, listOf(songWithoutDataPath(3, "Music/a.mp3", "Alpha")))
+        rescanLibraryAs(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha"))
+        repo.addSongs(pl, listOf(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha")))
 
         val entry = dao.getEntries(pl).single()
-        assertEquals("Music/a.mp3", entry.sourceKey)
+        assertEquals("external_primary:Music/a.mp3", entry.sourceKey)
         assertNotEquals(
             "an entry with no DATA path must not fall back to the id-bearing uri",
             "content://media/external/audio/media/3",
             entry.sourceKey,
         )
 
-        rescanLibraryAs(songWithoutDataPath(7, "Music/a.mp3", "Alpha"))
+        rescanLibraryAs(songWithoutDataPath(7, "external_primary:Music/a.mp3", "Alpha"))
 
         val track = repo.resolve(pl).single()
         assertNotNull("a DATA-less entry must survive a rescan too", track.song)
@@ -390,15 +390,64 @@ class PlaylistRepositoryTest {
         val realRepo = PlaylistRepository(dao, songDao, real) { ++clock }
         val pl = realRepo.create("Mix")
 
-        rescanLibraryAs(songWithoutDataPath(3, "Music/a.mp3", "Alpha"))
-        realRepo.addSongs(pl, listOf(songWithoutDataPath(3, "Music/a.mp3", "Alpha")))
-        assertEquals("Music/a.mp3", dao.getEntries(pl).single().sourceKey)
+        rescanLibraryAs(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha"))
+        realRepo.addSongs(pl, listOf(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha")))
+        assertEquals("external_primary:Music/a.mp3", dao.getEntries(pl).single().sourceKey)
 
-        rescanLibraryAs(songWithoutDataPath(7, "Music/a.mp3", "Alpha"))
+        rescanLibraryAs(songWithoutDataPath(7, "external_primary:Music/a.mp3", "Alpha"))
 
         val track = realRepo.resolve(pl).single()
         assertNotNull(track.song)
         assertEquals(7L, track.song?.id)
+    }
+
+    /**
+     * The cross-volume collision, end to end, with the damage it actually does.
+     *
+     * `RELATIVE_PATH` is volume-relative but `listSongs` queries `VOLUME_EXTERNAL`, which spans
+     * internal storage and removable SD on API 29+. Two genuinely different files can sit at
+     * `Music/a.mp3` on each.
+     *
+     * Keys are built through the REAL [LocalSource.composeRelativeKey] rather than hardcoded, so
+     * this test sees a regression in the composer — that is what makes it, and not just a
+     * key-equality assertion, the control for the volume qualifier.
+     *
+     * Drop the qualifier and both rows key alike; `resolve`'s `associateBy` keeps the last
+     * (`SD Alpha`, ordered after `Internal Alpha` by title), so rung 1 returns the wrong file AND
+     * `corrections` writes the wrong `songId` back. The second assertion is the important one: the
+     * cache is corrupted on a READ path, so the user never took an action they could connect to it.
+     */
+    @Test fun `resolve does not confuse the same relative path on two storage volumes`() = runTest {
+        val real = com.kaislate.veldtplayer.data.library.LocalSource(
+            ApplicationProvider.getApplicationContext()
+        )
+        val realRepo = PlaylistRepository(dao, songDao, real) { ++clock }
+        val pl = realRepo.create("Mix")
+
+        fun onVolume(id: Long, volume: String, title: String) = song(
+            id = id,
+            path = null, // DATA withheld, so the volume-qualified key is the only thing standing
+            title = title,
+            relativeKey = com.kaislate.veldtplayer.data.library.LocalSource.composeRelativeKey(
+                volumeName = volume, relativePath = "Music/", displayName = "a.mp3",
+            ),
+        )
+
+        val internal = onVolume(3, "external_primary", "Internal Alpha")
+        val sdCard = onVolume(9, "1234-5678", "SD Alpha")
+        rescanLibraryAs(internal, sdCard)
+
+        realRepo.addSongs(pl, listOf(internal))
+        assertEquals(3L, dao.getEntries(pl).single().songId)
+
+        val track = realRepo.resolve(pl).single()
+        assertEquals("resolve returned the file from the wrong volume", "Internal Alpha", track.song?.title)
+        assertEquals(3L, track.song?.id)
+        assertEquals(
+            "a wrong match corrupts the songId cache permanently, on a read path",
+            3L,
+            dao.getEntries(pl).single().songId,
+        )
     }
 
     /**
