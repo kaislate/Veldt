@@ -65,6 +65,40 @@ class PlaylistDaoTest {
         assertEquals("T0", got.sourceTitle)
     }
 
+    // The resolved half of the cache. Without this, a schema that always read songId back as
+    // null would satisfy every other test — and writing songId is Task 2's entire job.
+    @Test fun `both resolved and unresolved songIds round-trip side by side`() = runTest {
+        val pl = dao.insertPlaylist(PlaylistEntity(0, "Mix", 1L, 1L))
+        dao.insertEntries(
+            listOf(entry(pl, 0, "found.mp3", songId = 4242L), entry(pl, 1, "missing.mp3"))
+        )
+        val got = dao.observeEntries(pl).first()
+        assertEquals(listOf(4242L, null), got.map { it.songId })
+    }
+
+    // Every other test uses a single playlist, so none of them can tell "entries for this
+    // playlist" apart from "all entries". Mutating the predicate to (playlistId = :id OR 1=1)
+    // must fail here.
+    @Test fun `entry queries are scoped to their own playlist`() = runTest {
+        val gym = dao.insertPlaylist(PlaylistEntity(0, "Gym", 1L, 1L))
+        val chill = dao.insertPlaylist(PlaylistEntity(0, "Chill", 1L, 1L))
+        dao.insertEntries(listOf(entry(gym, 0, "g1"), entry(gym, 1, "g2")))
+        dao.insertEntries(listOf(entry(chill, 0, "c1")))
+
+        // (a) each playlist observes only its own entries
+        assertEquals(listOf("g1", "g2"), dao.observeEntries(gym).first().map { it.sourceKey })
+        assertEquals(listOf("c1"), dao.observeEntries(chill).first().map { it.sourceKey })
+
+        // (b) replacing one playlist's sequence leaves the other untouched
+        dao.replaceEntries(gym, listOf(entry(gym, 0, "g3")))
+        assertEquals(listOf("g3"), dao.observeEntries(gym).first().map { it.sourceKey })
+        assertEquals(listOf("c1"), dao.observeEntries(chill).first().map { it.sourceKey })
+
+        // and deleting one playlist does not cascade into the other
+        dao.deletePlaylist(gym)
+        assertEquals(listOf("c1"), dao.observeEntries(chill).first().map { it.sourceKey })
+    }
+
     @Test fun `playlists are observable and renameable`() = runTest {
         val pl = dao.insertPlaylist(PlaylistEntity(0, "Mix", 1L, 1L))
         dao.rename(pl, "Renamed", 2L)
@@ -74,7 +108,10 @@ class PlaylistDaoTest {
         assertEquals(2L, got.updatedAt)
     }
 
-    @Test fun `replaceEntries swaps the whole sequence atomically`() = runTest {
+    // Named for what it actually asserts. replaceEntries IS @Transaction, but atomicity is not
+    // observable from in-process single-threaded test code — stripping @Transaction leaves this
+    // green — so the name must not claim a guard this test does not provide.
+    @Test fun `replaceEntries swaps the whole sequence`() = runTest {
         val pl = dao.insertPlaylist(PlaylistEntity(0, "Mix", 1L, 1L))
         dao.insertEntries(listOf(entry(pl, 0, "a"), entry(pl, 1, "b")))
         dao.replaceEntries(pl, listOf(entry(pl, 0, "b"), entry(pl, 1, "a")))
