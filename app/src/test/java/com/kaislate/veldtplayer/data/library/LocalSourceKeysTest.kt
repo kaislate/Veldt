@@ -157,6 +157,29 @@ class LocalSourceKeysTest {
     }
 
     /**
+     * The knock-on of narrowing the trim in round 4, asserted rather than narrated.
+     *
+     * A whitespace-ONLY directory or filename is now ACCEPTED as a key, where the broad trim used
+     * to reject it. That is the correct direction — such names are legal on ext4/f2fs, the composer
+     * runs symmetrically on the add and resolve sides, and over-acceptance costs an unresolved
+     * (blank) entry rather than a WRONG match.
+     *
+     * Pinned because the alternative is silent: a later reader re-adding a defensive
+     * `if (dir.isBlank() || name.isBlank()) return null` would reinstate the round-4 collision for
+     * padded-only names, and every other case in this class uses "", "/" or a non-blank padded
+     * name — so the whole suite would still pass.
+     */
+    @Test fun `a whitespace-only directory or filename is a key, not a rejection`() {
+        assertNotNull(key("external_primary", "   ", "Lost.mp3"))
+        assertNotNull(key("external_primary", "Music/", "  "))
+        // And they stay DISTINCT from their non-blank neighbours.
+        assertNotEquals(
+            key("external_primary", "   ", "Lost.mp3"),
+            key("external_primary", "Music", "Lost.mp3"),
+        )
+    }
+
+    /**
      * THE round-4 defect, and the fourth instance of this task's recurring bug class.
      *
      * Leading and trailing spaces in filenames are LEGAL on ext4/f2fs, which is what backs internal
