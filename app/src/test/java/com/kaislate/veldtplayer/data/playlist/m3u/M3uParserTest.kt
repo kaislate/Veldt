@@ -83,6 +83,18 @@ class M3uParserTest {
         assertEquals("B", e.title)
     }
 
+    // The CR handling is `removeSuffix`, not a global `replace`, and this is the only test that can
+    // tell the two apart: every other `\r` in this file is a line terminator, so a global replace
+    // would satisfy all of them. Both paths below end in a CRLF terminator that must go, and the
+    // first carries an interior `\r` that must stay — a legal, if unusual, POSIX filename byte.
+    // Under a global replace the two collapse onto one another, which is the whole point.
+    @Test fun `an interior carriage return is part of the path and does not collapse`() {
+        assertEquals(
+            listOf("a\rb.mp3", "ab.mp3"),
+            M3uParser.parse("a\rb.mp3\r\nab.mp3\r\n").map { it.path },
+        )
+    }
+
     @Test fun `a malformed EXTINF duration degrades to null rather than throwing`() {
         val e = M3uParser.parse("#EXTINF:notanumber,A - B\nx.mp3").single()
         assertNull(e.durationSec)
