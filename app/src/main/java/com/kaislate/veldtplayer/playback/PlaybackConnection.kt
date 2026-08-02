@@ -16,6 +16,7 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
+import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.data.library.MusicRepository
 import com.kaislate.veldtplayer.data.library.displayAlbum
 import com.kaislate.veldtplayer.data.library.displayArtist
@@ -267,6 +268,10 @@ class PlaybackConnection @Inject constructor(
                 .setTitle(song.displayTitle())
                 .setArtist(song.displayArtist())
                 .setAlbumTitle(song.displayAlbum())
+                // NOT the audio uri, and not the deprecated albumart:// path — see
+                // [VeldtArtUri]. This is what gives the notification, the lock screen and
+                // the pill a cover at all; before it, every one of them was blank.
+                .setArtworkUri(VeldtArtUri.of(song.toSongArt()))
                 .build()
         )
         .build()

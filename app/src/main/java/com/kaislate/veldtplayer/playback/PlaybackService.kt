@@ -8,6 +8,7 @@ import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.kaislate.veldtplayer.MainActivity
@@ -24,6 +25,7 @@ class PlaybackService : MediaLibraryService() {
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
+    private var bitmapLoader: VeldtBitmapLoader? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -39,10 +41,23 @@ class PlaybackService : MediaLibraryService() {
             .build()
         player = exo
 
+        // Without this Media3 uses DataSourceBitmapLoader, which would open whatever
+        // `artworkUri` says and hand the bytes to BitmapFactory — so the ONLY artwork uri
+        // that could ever work is one no default loader understands. See [VeldtArtUri].
+        //
+        // CacheBitmapLoader is what lets the session and the bus adapter share one decode:
+        // both ask for the current track's cover, and it holds the last request. (The
+        // session would wrap the loader in one anyway; wrapping here puts the adapter
+        // inside the same cache instead of outside it.)
+        val loader = VeldtBitmapLoader(this)
+        bitmapLoader = loader
+        val sessionLoader = CacheBitmapLoader(loader)
+
         session = MediaLibrarySession.Builder(this, exo, LibraryCallback())
             .setSessionActivity(appLaunchIntent())
+            .setBitmapLoader(sessionLoader)
             .build()
-        busAdapter = PlayerBusAdapter(exo, packageName).also { it.attach() }
+        busAdapter = PlayerBusAdapter(exo, packageName, sessionLoader).also { it.attach() }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
@@ -59,9 +74,15 @@ class PlaybackService : MediaLibraryService() {
         MediaSessionBus.reset()
         session?.release()
         player?.release()
+        // Cancels any art load still walking the ladder. Safe in any order relative to the
+        // reset above only because `detach()` already invalidated the adapter's in-flight
+        // request: release completes those futures exceptionally, which still runs their
+        // listeners.
+        bitmapLoader?.release()
         session = null
         player = null
         busAdapter = null
+        bitmapLoader = null
         super.onDestroy()
     }
 
