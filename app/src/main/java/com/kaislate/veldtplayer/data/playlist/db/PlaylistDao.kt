@@ -110,7 +110,16 @@ interface PlaylistDao {
 
     /**
      * Swap a playlist's whole sequence in one transaction, so a reorder can never be observed
-     * half-written. Entry ids are not preserved — identity is `(sourceId, sourceKey)`.
+     * half-written.
+     *
+     * **Entry ids ARE preserved, and callers depend on it.** `@Insert` with a non-zero primary
+     * key keeps that key, and [PlaylistRepository.move] passes the existing rows straight
+     * through — so a drag does not invalidate the entry id the UI is holding for a subsequent
+     * remove. Regenerating ids here would break remove-after-drag while every test stayed
+     * green, because nothing else in the schema notices.
+     *
+     * `(sourceId, sourceKey)` is the identity for MATCHING an entry against the library; the
+     * row id is its identity for addressing it. They are different questions.
      */
     @Transaction
     suspend fun replaceEntries(playlistId: Long, entries: List<PlaylistEntryEntity>) {

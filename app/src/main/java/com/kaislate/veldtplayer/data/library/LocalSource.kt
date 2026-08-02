@@ -265,6 +265,13 @@ class LocalSource @Inject constructor(
             // volume name we may use. Falling through to the absolute DATA path is the right
             // answer, and this is one line rather than a KDoc claim nothing checks.
             if (volume.contains(VOLUME_SEPARATOR)) return null
+            // The twin of the guard above, and it exists for the same reason. The injectivity
+            // proof leans on "the LAST '/' is unambiguously the directory boundary", which holds
+            // only while a filename contains no '/'. That is true today — '/' is illegal in a
+            // POSIX filename and MediaProvider sanitises supplied display names — but it was
+            // equally true of ':' in VOLUME_NAME right up until it was hardened. Without this,
+            // ("Music/Beck", "Lost.mp3") and ("Music", "Beck/Lost.mp3") produce one key.
+            if (name.contains('/')) return null
             return "$volume$VOLUME_SEPARATOR$dir/$name"
         }
     }

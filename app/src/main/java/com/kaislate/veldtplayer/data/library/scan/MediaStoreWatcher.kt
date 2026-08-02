@@ -140,6 +140,13 @@ class MediaStoreWatcher(
         }.onFailure {
             // Some OEM providers raise instead of returning; degrade to "no live updates".
             Log.w(TAG, "could not observe MediaStore; live library updates are off", it)
+            // Close the channel so this flow COMPLETES and `job` clears. Without it the flow
+            // parks at awaitClose with no observer while `job` stays non-null, so the
+            // `if (job != null) return` guard in start() turns every later sync() into a
+            // no-op — and "degrade to no live updates" silently becomes "for the rest of the
+            // process lifetime, with no way back". A transient provider failure at boot would
+            // cost the feature until the user force-stopped the app.
+            close()
         }.isSuccess
 
         awaitClose {

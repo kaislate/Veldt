@@ -222,6 +222,22 @@ class LocalSourceKeysTest {
         assertNull(key(":", "Music/", "a.mp3"))
     }
 
+    /**
+     * The twin of the test above, for the directory boundary rather than the volume boundary.
+     *
+     * The injectivity proof holds only while a filename contains no `/` — without the guard,
+     * `("Music/Beck", "Lost.mp3")` and `("Music", "Beck/Lost.mp3")` name two genuinely
+     * different files and produce ONE key. Asserted as the pair rather than as two nulls, so
+     * that if the guard is ever removed the failure message is the collapse itself.
+     */
+    @Test fun `a slash in the filename cannot forge a directory boundary`() {
+        assertNull(key("external_primary", "Music/Beck/", "Lost.mp3/evil"))
+        assertNotEquals(
+            key("external_primary", "Music/Beck/", "Lost.mp3"),
+            key("external_primary", "Music/", "Beck/Lost.mp3"),
+        )
+    }
+
     /** Two different files in the same folder must not collapse onto one key. */
     @Test fun `composeRelativeKey distinguishes files within a folder and folders across files`() {
         assertNotEquals(

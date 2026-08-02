@@ -25,8 +25,8 @@ android {
         applicationId = "com.kaislate.veldtplayer"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-p1.1"
+        versionCode = 4
+        versionName = "0.4.0-p1.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
