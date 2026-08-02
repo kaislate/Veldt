@@ -147,8 +147,30 @@ class LocalEntryResolverTest {
      * rungs merely happened not to overlap) or copy-paste one rung's prefix constant onto another
      * and this test names both colliding rows and the key they collided on.
      *
+     * **Exactly what this can and cannot detect, because getting this wrong is how it failed once
+     * already.** A wrong prefix is caught only when two rows share a *body*, so the table needs a
+     * shared-body pair for every pair of rungs whose body spaces overlap — and "overlap" means what
+     * is legal on ext4, not what looks plausible:
+     *
+     *  - r1 bodies are raw paths, i.e. arbitrary strings, so r1 pairs with everything;
+     *  - r2, r3 and r4 bodies are all folded paths and overlap freely, *except* r3 vs r4: a suffix
+     *    body always contains a `/` and a filename body never can, so that one pair needs no row;
+     *  - r5 bodies contain colons and may contain slashes (`ac/dc`), so they overlap r1, r2, r3
+     *    and r4 — this is the set that was missing, and the suite was 33/33 GREEN under
+     *    `P_TAGS = "r4:"` until the colon-bearing rows below were added.
+     *
+     * A shared body needs a row on **both** sides to collide. That is not a pedantic point: adding
+     * only the r3 row left `P_SUFFIX = "r5:"` *and* `P_TAGS = "r3:"` both green, which is why
+     * `tags ac/dc + x` exists alongside `suffix 5:ac/dc:x` rather than instead of it.
+     *
+     * All twenty prefix transpositions were swept. Nineteen are now red here; the twentieth,
+     * r3↔r4, is unreachable and needs no row — a suffix body always contains a `/` and a filename
+     * body never can, so the two cannot alias even in principle.
+     *
      * The [MatchStep] coverage assertion is why the table cannot rot: add a rung to the enum and
-     * this fails until the table has a row for it.
+     * this fails until the table has a row for it. Note what that assertion does *not* do — it
+     * cannot know which body spaces a new rung overlaps, so adding a row is necessary and the
+     * argument above is what makes it sufficient.
      */
     @Test fun `every rung's key space is disjoint from every other`() {
         data class Row(val step: MatchStep, val label: String, val key: String)
@@ -166,10 +188,22 @@ class LocalEntryResolverTest {
             Row(MatchStep.NORMALISED, "normalised Music/a.mp3", LocalEntryResolver.normalisedKey("Music/a.mp3")),
             Row(MatchStep.NORMALISED, "normalised /x/a.mp3", LocalEntryResolver.normalisedKey("/x/a.mp3")),
             Row(MatchStep.NORMALISED, "normalised a.mp3", LocalEntryResolver.normalisedKey("a.mp3")),
+            // r2 vs r5, by the same argument as the r4 row below.
+            Row(MatchStep.NORMALISED, "normalised 4:beck:lost cause", LocalEntryResolver.normalisedKey("4:beck:lost cause")),
 
             Row(MatchStep.SUFFIX, "suffix Music/a.mp3", req(LocalEntryResolver.suffixKey("Music/a.mp3", 2))),
+            // A colon is legal in a path segment and a slash is legal in an artist name, so a
+            // suffix body and a tags body genuinely occupy the same space: this one is character
+            // for character `tagsKey("ac/dc", "x")`'s. Without it, transposing r3 and r5 is
+            // invisible here. (r3 vs r4 needs no such row: a suffix body always contains a `/` and
+            // a filename body never can.)
+            Row(MatchStep.SUFFIX, "suffix 5:ac/dc:x", req(LocalEntryResolver.suffixKey("5:ac/dc:x", 2))),
 
             Row(MatchStep.FILENAME, "filename a.mp3", req(LocalEntryResolver.filenameKey("a.mp3"))),
+            // Likewise for r4 vs r5 — this is `tagsKey("beck", "lost cause")`'s body, and a file
+            // may legally be named it. The suite was 33/33 GREEN under `P_TAGS = "r4:"` until this
+            // row existed; see the report's addendum.
+            Row(MatchStep.FILENAME, "filename 4:beck:lost cause", req(LocalEntryResolver.filenameKey("4:beck:lost cause"))),
 
             Row(MatchStep.TAGS, "tags Beck|Lost Cause", req(LocalEntryResolver.tagsKey("Beck", "Lost Cause"))),
             // Artist and title are user text and may contain any separator one might pick, so the
@@ -177,6 +211,10 @@ class LocalEntryResolverTest {
             // distinct tag sets that a delimiter-only key would merge.
             Row(MatchStep.TAGS, "tags a|b + c", req(LocalEntryResolver.tagsKey("a|b", "c"))),
             Row(MatchStep.TAGS, "tags a + b|c", req(LocalEntryResolver.tagsKey("a", "b|c"))),
+            // The other half of the r3 row above. A shared body only collides when BOTH rungs
+            // contribute a row for it: with only the suffix side present, transposing r3 and r5
+            // stayed green in both directions. AC/DC is spelt with a slash.
+            Row(MatchStep.TAGS, "tags ac/dc + x", req(LocalEntryResolver.tagsKey("ac/dc", "x"))),
         )
 
         assertEquals(
@@ -412,6 +450,25 @@ class LocalEntryResolverTest {
     }
 
     /**
+     * The same file path on internal storage and on an SD card is TWO files, and an `.m3u` line
+     * carries no volume to tell them apart. The volume is stripped when indexing — deliberately,
+     * since no playlist ever writes `external_primary:` — so both rows land in one bucket.
+     *
+     * That is the same collision Task 2 spent two fix rounds on, but the failure direction is
+     * inverted and that is the whole point of this test: there, `associateBy` silently kept the
+     * last row and the wrong `songId` was written back; here the bucket holds two, the rung is
+     * ambiguous, and the entry stays UNRESOLVED. A user with a copied library sees a greyed track
+     * rather than the wrong one playing.
+     */
+    @Test fun `the same relative path on two volumes is not guessed between`() {
+        val internal = song(relativeKey = "external_primary:Music/a.mp3", title = "Internal")
+        val sdCard = song(relativeKey = "1234-5678:Music/a.mp3", title = "SD")
+        val out = one("Music/a.mp3", listOf(internal, sdCard))
+        assertNull(out.song)
+        assertEquals(MatchStep.UNRESOLVED, out.step)
+    }
+
+    /**
      * A song carrying both keys is ONE candidate, not two. Counting it twice would make every
      * fully-populated row look ambiguous and the whole ladder would resolve nothing — the failure
      * mode that turns the safety rule into the bug.
@@ -463,6 +520,23 @@ class LocalEntryResolverTest {
         val out = one("../Music/a.mp3", listOf(relative, deeper))
         assertNull(out.song)
         assertEquals(MatchStep.UNRESOLVED, out.step)
+    }
+
+    /**
+     * The mirror of the case above: on an ABSOLUTE path an unpoppable `..` *is* swallowed, because
+     * `/..` is `/` on POSIX. Nothing is being guessed at — the path is fully determined — so unlike
+     * the relative case there is no weaker claim to fall back to.
+     *
+     * No real Android audio file lives at `/`, so this pins a boundary rather than a scenario. It
+     * is here because my first report claimed the behaviour was unobservable, which was simply
+     * false for a pure function: `step` tells the two apart (swallowed → NORMALISED, retained →
+     * FILENAME), and "I could not construct one" is the kind of claim this phase has been burned by.
+     */
+    @Test fun `an absolute path may climb above the root, which is the root`() {
+        val target = song(path = "/a.mp3")
+        val out = one("/../a.mp3", listOf(target))
+        assertEquals(target, out.song)
+        assertEquals(MatchStep.NORMALISED, out.step)
     }
 
     /**
