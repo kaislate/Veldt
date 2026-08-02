@@ -90,6 +90,25 @@ interface PlaylistDao {
     suspend fun updateResolvedSongId(entryId: Long, songId: Long?)
 
     /**
+     * Re-point entries at a fresh [PlaylistEntryEntity.sourceKey], in one transaction.
+     *
+     * This is the repair path for an entry whose key went stale — a file that MOVED while keeping
+     * its MediaStore `_ID`, so nothing about the id told anyone. Without it such an entry depends
+     * permanently on its cached [PlaylistEntryEntity.songId], and the next id reissue blanks it:
+     * precisely the failure the `(sourceId, sourceKey)` rung exists to prevent.
+     *
+     * Called only from `PlaylistRepository.resolve`, which is a READ. See its KDoc for why writing
+     * here does not spin the UI's `mapLatest`.
+     */
+    @Transaction
+    suspend fun updateResolvedSourceKeys(updates: Map<Long, String>) {
+        updates.forEach { (entryId, sourceKey) -> updateResolvedSourceKey(entryId, sourceKey) }
+    }
+
+    @Query("UPDATE playlist_entries SET sourceKey = :sourceKey WHERE id = :entryId")
+    suspend fun updateResolvedSourceKey(entryId: Long, sourceKey: String)
+
+    /**
      * Swap a playlist's whole sequence in one transaction, so a reorder can never be observed
      * half-written. Entry ids are not preserved — identity is `(sourceId, sourceKey)`.
      */

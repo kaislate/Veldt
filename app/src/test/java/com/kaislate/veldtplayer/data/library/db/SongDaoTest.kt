@@ -22,9 +22,15 @@ class SongDaoTest {
     private lateinit var db: VeldtDatabase
     private lateinit var dao: SongDao
 
-    private fun entity(id: Long, title: String, album: String = "Al", modified: Long = 100) =
+    private fun entity(
+        id: Long,
+        title: String,
+        album: String = "Al",
+        modified: Long = 100,
+        relativeKey: String? = null,
+    ) =
         SongEntity(
-            id = id, uri = "content://$id", filePath = null, relativeKey = null,
+            id = id, uri = "content://$id", filePath = null, relativeKey = relativeKey,
             title = title, artist = "A",
             album = album, albumArtist = null, trackNumber = null, discNumber = null, year = null,
             durationMs = 1000, dateModifiedSec = modified, hasEmbeddedArt = false,
@@ -52,9 +58,25 @@ class SongDaoTest {
         assertEquals("New", dao.getAllSongs().single().title)
     }
 
-    @Test fun getIndex_returnsIdAndDate() = runTest {
-        dao.upsertAll(listOf(entity(7, "x", modified = 555)))
-        assertEquals(IndexEntry(7, 555), dao.getIndex().single())
+    /**
+     * The projection is the diff's only input, so it has to carry the location too — see
+     * [IndexEntry]. A non-null `relativeKey` is used deliberately: with null on both sides this
+     * assertion would pass identically whether or not the column is in the SELECT.
+     */
+    @Test fun getIndex_returnsIdDateAndRelativeKey() = runTest {
+        dao.upsertAll(
+            listOf(entity(7, "x", modified = 555, relativeKey = "external_primary:Music/x.mp3"))
+        )
+        assertEquals(
+            IndexEntry(7, 555, "external_primary:Music/x.mp3"),
+            dao.getIndex().single(),
+        )
+    }
+
+    /** A provider that withholds the location columns still projects, as null, not as a crash. */
+    @Test fun getIndex_toleratesANullRelativeKey() = runTest {
+        dao.upsertAll(listOf(entity(8, "y", modified = 1, relativeKey = null)))
+        assertEquals(IndexEntry(8, 1, null), dao.getIndex().single())
     }
 
     @Test fun searchAndAlbumQuery_work() = runTest {

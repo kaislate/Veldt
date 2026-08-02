@@ -58,6 +58,35 @@ class PlaylistRepositoryTest {
         override suspend fun search(query: String): List<Song> = emptyList()
     }
 
+    /**
+     * A [PlaylistDao] that counts the two write-backs [PlaylistRepository.resolve] performs.
+     *
+     * `resolve` is a READ that writes, and its one UI consumer (`PlaylistViewModel`) re-enters it
+     * from a `mapLatest` over a flow that includes `observeEntries` — so every write re-triggers the
+     * very call that made it. Convergence is therefore not a nice-to-have, it is the difference
+     * between a settled screen and an endless re-resolve. Counting the writes is the only way to
+     * assert it: a test that merely called `resolve` twice and checked the output would look
+     * identical whether the loop quiesced or spun forever.
+     */
+    private class CountingDao(private val delegate: PlaylistDao) : PlaylistDao by delegate {
+        var idWrites = 0
+            private set
+        var keyWrites = 0
+            private set
+
+        override suspend fun updateResolvedSongIds(updates: Map<Long, Long?>) {
+            idWrites += updates.size
+            delegate.updateResolvedSongIds(updates)
+        }
+
+        override suspend fun updateResolvedSourceKeys(updates: Map<Long, String>) {
+            keyWrites += updates.size
+            delegate.updateResolvedSourceKeys(updates)
+        }
+
+        fun reset() { idWrites = 0; keyWrites = 0 }
+    }
+
     private lateinit var db: VeldtDatabase
     private lateinit var dao: PlaylistDao
     private lateinit var songDao: SongDao
@@ -577,6 +606,207 @@ class PlaylistRepositoryTest {
 
     @Test fun `resolve on an empty playlist returns an empty list`() = runTest {
         assertEquals(emptyList<PlaylistTrack>(), repo.resolve(repo.create("Mix")))
+    }
+
+    // ---- resolve: repairing a key that went stale under a preserved id ------------------------
+
+    private val here = "external_primary:Music/a.mp3"
+    private val there = "external_primary:Podcasts/a.mp3"
+
+    /**
+     * A moved file keeps its MediaStore `_ID`, so the scan re-upserts the SAME row with a new
+     * location. Rung 1 misses on the entry's old key; rung 2 carries it home on the cached id.
+     *
+     * The entry's `sourceKey` must be re-pointed at the new location. Left stale it is inert — the
+     * entry now hangs entirely off a cached id, which is the one thing the ladder was built not to
+     * depend on. See the interleaving test below for what that costs.
+     */
+    @Test fun `resolve rewrites a stale source key when the cached id still finds the file`() =
+        runTest {
+            val pl = repo.create("Mix")
+            rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
+            repo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
+            assertEquals(here, dao.getEntries(pl).single().sourceKey)
+
+            // the file moved. Same id, same mtime — only the location changed.
+            rescanLibraryAs(songWithoutDataPath(7, there, "Alpha"))
+
+            val track = repo.resolve(pl).single()
+            assertEquals(7L, track.song?.id)
+            assertEquals("the stored key must be re-pointed at where the file now is", there,
+                dao.getEntries(pl).single().sourceKey)
+            // and the returned entry reflects the repair, not the stale read it started from
+            assertEquals(there, track.entry.sourceKey)
+        }
+
+    /**
+     * **The interleaving the whole of Step 3 exists for.** Steps 1–2 alone do not survive it.
+     *
+     * 1. The file moves. Its id is preserved, so `resolve` reaches it via rung 2 and — before this
+     *    change — wrote nothing, because a rung-2 hit is looked up BY `entry.songId` and therefore
+     *    always agrees with it. The key stayed stale forever.
+     * 2. Later the id is reissued: a remount, a MediaStore rebuild. Precisely the scenario rung 1
+     *    was written for.
+     *
+     * With the key repaired at step 1 the entry rides step 2 out on rung 1. Without it, rung 1
+     * misses on the old location and rung 2 chases an id that no longer exists — the entry goes
+     * permanently blank, and no user action anywhere is connected to it.
+     */
+    @Test fun `an entry that moved then had its id reissued still resolves`() = runTest {
+        val pl = repo.create("Mix")
+        rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
+        repo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
+
+        // (1) the move: id preserved, location changed
+        rescanLibraryAs(songWithoutDataPath(7, there, "Alpha"))
+        assertEquals(7L, repo.resolve(pl).single().song?.id)
+
+        // (2) the id reissue: same file, same location, brand-new id, and 7 is simply gone
+        rescanLibraryAs(songWithoutDataPath(21, there, "Alpha"))
+
+        val track = repo.resolve(pl).single()
+        assertNotNull(
+            "a move followed by an id reissue must not blank the entry",
+            track.song,
+        )
+        assertEquals(21L, track.song?.id)
+        assertEquals("Alpha", track.song?.title)
+        assertEquals(21L, dao.getEntries(pl).single().songId)
+    }
+
+    /**
+     * The convergence property, counted rather than asserted in prose.
+     *
+     * `resolve` is re-entered by `PlaylistViewModel`'s `mapLatest` on its own writes, so a write
+     * condition that can fire twice on unchanged input is an infinite recomposition loop. The
+     * repair writes `stableKey(song)` for a song taken from the very map rung 1 searched, so the
+     * next pass hits rung 1 and cannot fire again.
+     */
+    @Test fun `resolve quiesces after repairing a moved entry - it writes exactly once`() =
+        runTest {
+            val counting = CountingDao(dao)
+            val convergingRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+            val pl = convergingRepo.create("Mix")
+            rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
+            convergingRepo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
+            rescanLibraryAs(songWithoutDataPath(7, there, "Alpha"))
+
+            counting.reset()
+            convergingRepo.resolve(pl)
+            assertEquals("the repair pass writes the key once", 1, counting.keyWrites)
+            assertEquals("a rung-2 hit never disagrees on the id", 0, counting.idWrites)
+
+            counting.reset()
+            convergingRepo.resolve(pl)
+            assertEquals("a second resolve on unchanged input must write nothing", 0, counting.keyWrites)
+            assertEquals(0, counting.idWrites)
+
+            // a third pass, because a two-state oscillation would show a zero on the second
+            counting.reset()
+            convergingRepo.resolve(pl)
+            assertEquals(0, counting.keyWrites + counting.idWrites)
+        }
+
+    /**
+     * Convergence in the nastier case: two library rows collide on one `stableKey`, so
+     * `associateBy` keeps the last and rung 1 answers with a row that is NOT the one rung 2 found.
+     *
+     * The KDoc claims this settles in two extra bounces rather than oscillating — pass 1 writes the
+     * key, pass 2 writes the id it now disagrees with, pass 3 writes nothing. This counts it.
+     */
+    @Test fun `resolve still quiesces when two library rows collide on one key`() = runTest {
+        val counting = CountingDao(dao)
+        val convergingRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val pl = convergingRepo.create("Mix")
+        rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
+        convergingRepo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
+
+        // the file moved onto a key another row already occupies; getAllSongs orders by title, so
+        // associateBy keeps "Zulu" — deliberately not the row rung 2 will find.
+        rescanLibraryAs(
+            songWithoutDataPath(7, there, "Alpha"),
+            songWithoutDataPath(9, there, "Zulu"),
+        )
+
+        counting.reset()
+        convergingRepo.resolve(pl)
+        assertEquals(1, counting.keyWrites)
+
+        counting.reset()
+        val second = convergingRepo.resolve(pl)
+        assertEquals("the key is not rewritten once rung 1 hits", 0, counting.keyWrites)
+        assertEquals("rung 1 now answers with the colliding row, so the id is corrected once", 1, counting.idWrites)
+        assertEquals("Zulu", second.single().song?.title)
+
+        counting.reset()
+        convergingRepo.resolve(pl)
+        assertEquals("and then it is settled", 0, counting.keyWrites + counting.idWrites)
+    }
+
+    /**
+     * The write must be scoped to "rung 1 missed". An entry that resolves on its own key is
+     * already correct; rewriting it would be a write on every read, which is the endless
+     * re-resolve this class's KDoc warns about.
+     */
+    @Test fun `resolve does not rewrite the key of an entry that matched on rung 1`() = runTest {
+        val counting = CountingDao(dao)
+        val quietRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val pl = quietRepo.create("Mix")
+        rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
+        quietRepo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
+
+        counting.reset()
+        quietRepo.resolve(pl)
+        assertEquals(0, counting.keyWrites)
+        assertEquals(0, counting.idWrites)
+        assertEquals(here, dao.getEntries(pl).single().sourceKey)
+    }
+
+    /**
+     * An `.m3u` import's unmatched entry keeps the durable text it was imported with. It has no
+     * `songId`, so neither rung can hit — and inventing a key for it would destroy the one thing
+     * that could ever match the file it names.
+     */
+    @Test fun `resolve leaves an unresolved entry's imported key alone`() = runTest {
+        val counting = CountingDao(dao)
+        val quietRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val pl = quietRepo.create("Mix")
+        quietRepo.addEntries(
+            pl,
+            listOf(NewPlaylistEntry("/sdcard/Music/never-scanned.mp3", null, "T", "A", "Al")),
+        )
+        rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
+
+        counting.reset()
+        val track = quietRepo.resolve(pl).single()
+        assertNull(track.song)
+        assertEquals(0, counting.keyWrites)
+        assertEquals(
+            "/sdcard/Music/never-scanned.mp3",
+            dao.getEntries(pl).single().sourceKey,
+        )
+    }
+
+    /** Global Constraint 2 again: the repair is scoped to entries this source owns. */
+    @Test fun `resolve never rewrites the key of another source's entry`() = runTest {
+        val counting = CountingDao(dao)
+        val quietRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val pl = quietRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "remote", sourceKey = "remote://track/1", songId = 7L,
+                    sourceTitle = "Remote Alpha", sourceArtist = "R", sourceAlbum = "R",
+                )
+            )
+        )
+        rescanLibraryAs(songWithoutDataPath(7, there, "Alpha"))
+
+        counting.reset()
+        assertNull(quietRepo.resolve(pl).single().song)
+        assertEquals(0, counting.keyWrites)
+        assertEquals("remote://track/1", dao.getEntries(pl).single().sourceKey)
     }
 
     @Test fun `resolve is scoped to its own playlist`() = runTest {

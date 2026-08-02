@@ -192,7 +192,19 @@ class PlaylistRepository(
      * 2. the cached [PlaylistEntryEntity.songId] — only for entries owned by this source, so a
      *    future second source's ids can never collide into a local match.
      *
-     * When rung 1 hits and the cached id disagrees, the corrected id is written back.
+     * Two corrections are written back, and they are deliberately not the same one:
+     * - rung 1 hit, cached id disagrees ⇒ write the corrected `songId`.
+     * - rung 1 **missed** and rung 2 hit ⇒ write a fresh `sourceKey` = [LibrarySource.stableKey] of
+     *   the song the id found.
+     *
+     * The second exists because a rung-2 hit is looked up *by* `entry.songId`, so `song.id` always
+     * equals `entry.songId` and the first correction can never fire for it. That is the file-MOVED
+     * case: the row keeps its MediaStore `_ID`, the scan re-upserts it with a new location (see
+     * [com.kaislate.veldtplayer.data.library.scan.ScanDiffer]), rung 1 misses on the old key, rung 2
+     * carries it — and without a write-back the entry's key stays stale FOREVER. It would then hang
+     * entirely off the cached id, and the next id reissue (a remount, a MediaStore rebuild — the
+     * exact case rung 1 exists for) would blank it. Writing the key restores rung 1 as the load
+     * bearing rung.
      *
      * A stale id that resolves to nothing is deliberately left alone rather than nulled: an empty
      * library (unmounted volume, scan not yet run) would otherwise wipe every fallback in the
@@ -202,11 +214,32 @@ class PlaylistRepository(
      *
      * **This method writes, and its one UI consumer re-enters it on its own writes.**
      * `PlaylistViewModel` calls it from a `mapLatest` over a flow that includes `observeEntries`,
-     * so a write-back re-triggers the very flow that called it. That converges only because the
-     * correction map is populated under `song.id != entry.songId`: the second pass finds the ids
-     * already agreeing, writes nothing, and the loop quiesces after one extra bounce. Widening
-     * that guard — writing back unconditionally, or touching `updatedAt` here — turns the same
-     * call site into an endless re-resolve.
+     * so a write-back re-triggers the very flow that called it. Widening a guard — writing back
+     * unconditionally, or touching `updatedAt` here — turns the same call site into an endless
+     * re-resolve. **Both** write conditions are therefore self-extinguishing against an unchanged
+     * `songs` table, and `PlaylistRepositoryTest` counts the writes rather than trusting this prose:
+     *
+     * - `songId`: populated under `song.id != entry.songId`. The pass that writes it makes the ids
+     *   agree, so the next pass writes nothing.
+     * - `sourceKey`: populated under "rung 1 missed and rung 2 hit", and guarded on
+     *   `freshKey != entry.sourceKey`. **That guard is what terminates it**, and it terminates it
+     *   because `freshKey` is a function of `song` ALONE and never of `entry.sourceKey`: whatever it
+     *   computes on the repair pass it computes again on the next, finds it already stored, and
+     *   writes nothing. A `freshKey` derived from the entry's own key could oscillate; do not make
+     *   one.
+     *
+     * Separately — and this is the *point* of the repair rather than its safety property — the value
+     * written is `stableKey(song)` for a `song` **taken from the very map rung 1 searched**, so
+     * `byKey[entry.sourceKey]` is non-null by construction afterwards and rung 1 becomes load
+     * bearing again. That is the difference between repairing the entry and merely moving its
+     * staleness somewhere new. A repair that rung 1 would still miss leaves the entry hanging off
+     * its cached id exactly as before, and `resolve still quiesces when two library rows collide on
+     * one key` is the test that can tell the two apart (a mutant writing an unfindable key is caught
+     * there, not by the single-entry quiescence test — the guard above hides it).
+     *
+     * If two songs collide on one key, `associateBy` keeps the last and rung 1 returns that one —
+     * still a hit, so the key is not rewritten; one further `songId` correction settles it. Bounded
+     * at two extra bounces, never unbounded.
      */
     suspend fun resolve(playlistId: Long): List<PlaylistTrack> {
         val entries = dao.getEntries(playlistId)
@@ -219,19 +252,33 @@ class PlaylistRepository(
         val byId = songs.associateBy { it.id }
 
         val corrections = LinkedHashMap<Long, Long?>()
+        val keyCorrections = LinkedHashMap<Long, String>()
         val tracks = entries.map { entry ->
             val mine = entry.sourceId == source.id
-            val song = when {
-                !mine -> null
-                else -> byKey[entry.sourceKey] ?: entry.songId?.let { byId[it] }
-            }
+            // Rung 1 and rung 2 are kept apart, not collapsed into one elvis, because WHICH rung
+            // answered is itself the signal: only a rung-2-after-rung-1-missed hit means the key
+            // went stale under a preserved id.
+            val byKeyHit = if (mine) byKey[entry.sourceKey] else null
+            val song = byKeyHit ?: if (mine) entry.songId?.let { byId[it] } else null
+
             if (song != null && song.id != entry.songId) corrections[entry.id] = song.id
+            // The file moved but kept its id. Two things are load bearing here and they are NOT
+            // the same thing (see the KDoc): the inequality guard is what makes this terminate,
+            // and `stableKey(song)` — a key of a row already in `byKey` — is what makes rung 1 hit
+            // again afterwards instead of the entry staying pinned to its cached id.
+            val freshKey = if (byKeyHit == null && song != null) source.stableKey(song) else null
+            if (freshKey != null && freshKey != entry.sourceKey) keyCorrections[entry.id] = freshKey
+
             PlaylistTrack(
-                entry = if (song != null) entry.copy(songId = song.id) else entry,
+                entry = entry.copy(
+                    songId = song?.id ?: entry.songId,
+                    sourceKey = freshKey ?: entry.sourceKey,
+                ),
                 song = song,
             )
         }
         if (corrections.isNotEmpty()) dao.updateResolvedSongIds(corrections)
+        if (keyCorrections.isNotEmpty()) dao.updateResolvedSourceKeys(keyCorrections)
         return tracks
     }
 }

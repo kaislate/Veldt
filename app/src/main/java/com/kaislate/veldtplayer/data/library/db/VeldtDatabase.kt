@@ -14,11 +14,17 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 // whitespace out of the directory and filename parts, so " a.mp3" no longer keys as "a.mp3".
 //
 // v4 and v5 change stored VALUES, not column shapes. The bump is what discards the old-format
-// rows, and it is required rather than cosmetic: nothing rewrites an existing
-// playlist_entries.sourceKey, and songs.relativeKey goes stale for every row the scan diff does
-// not touch (the diff keys on dateModifiedSec, which a format change does not move). Without a
-// bump the defect would survive only on upgraded devices — worse to diagnose than one that is
-// uniform.
+// rows, and it was required rather than cosmetic at the time: nothing rewrote an existing
+// playlist_entries.sourceKey, and songs.relativeKey went stale for every row the scan diff did
+// not touch (the diff keyed on dateModifiedSec alone, which a format change does not move).
+// Without a bump the defect would have survived only on upgraded devices — worse to diagnose than
+// one that is uniform.
+//
+// Both halves of that are now self-healing, which is why v5 is the last bump this reason produces:
+// ScanDiffer also compares songs.relativeKey, so a format change re-upserts every row; and
+// PlaylistRepository.resolve rewrites a stale playlist_entries.sourceKey whenever the cached songId
+// still finds the track. A future key-format change is a behaviour change to review on its merits,
+// not an automatic version bump.
 //
 // The app is pre-release with zero users, so the builder's destructive migration is the correct
 // upgrade path; no Migration is written (Global Constraint 7).
