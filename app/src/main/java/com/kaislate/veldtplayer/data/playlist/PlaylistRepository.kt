@@ -28,6 +28,31 @@ data class PlaylistTrack(
 )
 
 /**
+ * One track about to be appended to a playlist, already reduced to what the table stores.
+ *
+ * This exists because [PlaylistRepository.addSongs] cannot express the case an `.m3u` import
+ * produces most of: a track the playlist names that **is not in the library**. That entry has no
+ * [Song] to take an identity or a caption from, and it must still be stored — dropping it would
+ * silently shrink the playlist the user just imported. So identity and display are passed in
+ * separately rather than derived from a `Song`.
+ *
+ * [sourceKey] is the caller's stable identity for the track. For a resolved track that is
+ * [com.kaislate.veldtplayer.data.library.LibrarySource.stableKey]; for an unresolved one it is
+ * whatever durable text the import had — the playlist's own path — which is not a `stableKey` and
+ * will usually match none, but can only ever match the file it names.
+ *
+ * [songId] is the resolution cache and is null for an unresolved entry. [sourceId] is never
+ * supplied here: it comes from the repository's own source (spec §3.1.1).
+ */
+data class NewPlaylistEntry(
+    val sourceKey: String,
+    val songId: Long?,
+    val title: String,
+    val artist: String,
+    val album: String,
+)
+
+/**
  * Playlist CRUD, ordering and re-resolution (spec §3.1).
  *
  * **The positions invariant.** Every playlist's entries carry `position = 0..n-1`, dense and
@@ -88,21 +113,48 @@ class PlaylistRepository(
      * id a rescan reissues. The display strings are denormalised at add time so the entry still
      * says something after the song leaves the library.
      */
-    suspend fun addSongs(playlistId: Long, songs: List<Song>) {
-        if (songs.isEmpty()) return
+    suspend fun addSongs(playlistId: Long, songs: List<Song>) = addEntries(
+        playlistId,
+        songs.map {
+            NewPlaylistEntry(
+                sourceKey = source.stableKey(it),
+                songId = it.id,
+                title = it.title,
+                artist = it.artist,
+                album = it.album,
+            )
+        },
+    )
+
+    /**
+     * Append [entries] to the end of the playlist, in the order given, resolved or not.
+     *
+     * **The only append path.** [addSongs] delegates here rather than duplicating the arithmetic,
+     * because the dense `0..n-1` invariant is enforced by this class and by nothing at schema level
+     * — there is deliberately no unique index on `(playlistId, position)`, since one would abort a
+     * shift-by-one reorder mid-transaction. A caller that reaches for [PlaylistDao.insertEntries]
+     * directly is choosing its own positions and will get them wrong; that is what this method is
+     * for.
+     *
+     * An entry with a null [NewPlaylistEntry.songId] is stored exactly like a resolved one. It is
+     * the import's unmatched track, it renders greyed under its captured title, and it is a
+     * first-class row: `import` returning "43 of 47" must leave 47 rows behind, not 43.
+     */
+    suspend fun addEntries(playlistId: Long, entries: List<NewPlaylistEntry>) {
+        if (entries.isEmpty()) return
         val start = dao.maxPosition(playlistId) + 1
         dao.insertEntries(
-            songs.mapIndexed { i, song ->
+            entries.mapIndexed { i, entry ->
                 PlaylistEntryEntity(
                     id = 0,
                     playlistId = playlistId,
                     position = start + i,
                     sourceId = source.id,
-                    sourceKey = source.stableKey(song),
-                    songId = song.id,
-                    sourceTitle = song.title,
-                    sourceArtist = song.artist,
-                    sourceAlbum = song.album,
+                    sourceKey = entry.sourceKey,
+                    songId = entry.songId,
+                    sourceTitle = entry.title,
+                    sourceArtist = entry.artist,
+                    sourceAlbum = entry.album,
                 )
             }
         )
