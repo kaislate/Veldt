@@ -107,6 +107,10 @@ dependencies {
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.room.testing)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Real WorkManager under Robolectric. The single-flight property (unique work under
+    // ExistingWorkPolicy.KEEP) is WorkManager's semantics, not ours — a hand-written fake
+    // asserting it would be asserting its own model, so the real scheduler is used instead.
+    testImplementation(libs.androidx.work.testing)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
