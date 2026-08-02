@@ -59,9 +59,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.data.library.model.Song
-import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.paletteWash
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
@@ -502,13 +500,12 @@ internal fun playlistStackTint(scheme: ColorScheme, accent: Color, near: Boolean
 }
 
 /**
- * **Task 7 seam.** The artwork that stands for a whole playlist.
+ * The artwork that stands for a whole playlist — **the one path**, for both surfaces.
  *
- * Today it draws the first cover, which is honest but plain. Task 7 replaces the BODY of this one
- * function with `PlaylistMosaic(covers, modifier)` — the callers already hand it the full,
- * album-distinct, capped list from [PlaylistPresentation.coversOf], and both the stack on this
- * screen and the full-bleed header on the detail screen pick the change up at once. Nothing else
- * has to move.
+ * The callers hand it the full, album-distinct, capped list from
+ * [PlaylistPresentation.coversOf]; [PlaylistMosaic] decides how many of those covers to draw and
+ * where each one goes. This function stays as the single seam so the stacked emblem on this
+ * screen and the full-bleed header on the detail screen can never drift into two mosaics.
  */
 @Composable
 internal fun PlaylistCoverArt(
@@ -517,8 +514,8 @@ internal fun PlaylistCoverArt(
     initial: Char,
     modifier: Modifier = Modifier,
 ) {
-    ArtImage(
-        art = covers.firstOrNull()?.toSongArt(),
+    PlaylistMosaic(
+        covers = covers,
         palette = palette,
         initial = initial,
         modifier = modifier,
