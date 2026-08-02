@@ -104,6 +104,7 @@ private const val NO_MATCH_GLYPH = '?'
 @Composable
 fun SearchScreen(
     vm: BrowseViewModel,
+    playlistVm: PlaylistViewModel,
     onBack: () -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenArtist: (String) -> Unit,
@@ -125,6 +126,16 @@ fun SearchScreen(
     val scanning by vm.scanning.collectAsStateWithLifecycle()
     val reduced = rememberReducedMotion()
     val palette = ColorExtractor.extract(null)
+
+    // Search results are a browse surface too, and the long press has to be here for the same
+    // reason it is on the songs tab: a gesture that works on four lists and not the fifth is
+    // indistinguishable from a gesture that does not work.
+    var pendingAddition by remember { mutableStateOf<PlaylistAddition?>(null) }
+    AddToPlaylistHost(
+        vm = playlistVm,
+        addition = pendingAddition,
+        onDismiss = { pendingAddition = null },
+    )
 
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
@@ -279,6 +290,7 @@ fun SearchScreen(
                             palette = palette,
                             onClick = { vm.play(songs, index) },
                             modifier = Modifier.staggeredEntrance(index, reduced),
+                            onLongClick = { pendingAddition = PlaylistAdditions.ofSong(song) },
                         )
                     }
                 }

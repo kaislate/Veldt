@@ -14,15 +14,19 @@ import com.kaislate.veldtplayer.playback.PlaybackConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.random.Random
 
 /**
  * The playlists tab and one playlist's page.
@@ -160,6 +164,55 @@ class PlaylistViewModel @Inject constructor(
         _importOutcome.value = ImportOutcome.Failed(ImportFailure.PICKER_UNAVAILABLE)
     }
 
+    // ------------------------------------------------------------------------------- messages
+
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+
+    /**
+     * One-shot confirmations: "Added 12 tracks to “Road Trip”", "Added 36 tracks to the queue".
+     *
+     * A SharedFlow and not a StateFlow, unlike [importOutcome], and the difference is deliberate.
+     * An import report is the only record of which tracks did not arrive and must survive until it
+     * is read; an append confirmation is an acknowledgement of something the user just did on
+     * purpose, and holding it as state would re-show it on every recomposition and every return to
+     * the screen. `extraBufferCapacity` so `tryEmit` from a non-suspending caller cannot drop one.
+     */
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
+
+    // ------------------------------------------------------------------------------- creating
+
+    /**
+     * Create a playlist and, if the user got here from a browse surface, fill it in the same
+     * breath.
+     *
+     * The two halves are ONE operation on purpose. Task 6 declined to ship a create affordance
+     * precisely because a playlist that can only be born empty is a dead end, and a create that
+     * returned before adding would leave the same dead end open for as long as the add took —
+     * including forever, if it failed.
+     */
+    fun create(name: String, addition: PlaylistAddition = PlaylistAddition.NOTHING) {
+        val cleaned = PlaylistNaming.sanitize(name) ?: return
+        viewModelScope.launch {
+            val id = playlists.create(cleaned)
+            if (!addition.isEmpty) playlists.addSongs(id, addition.songs)
+            _messages.tryEmit(PlaylistAdditions.createdMessage(cleaned, addition))
+        }
+    }
+
+    /**
+     * Add a browse surface's selection to an existing playlist.
+     *
+     * [name] is passed rather than looked up because the caller has the row the user tapped, and
+     * re-reading the name here would be a second read of a table that may already have changed.
+     */
+    fun addTo(playlistId: Long, name: String, addition: PlaylistAddition) {
+        if (addition.isEmpty) return
+        viewModelScope.launch {
+            playlists.addSongs(playlistId, addition.songs)
+            _messages.tryEmit(PlaylistAdditions.addedMessage(name, addition))
+        }
+    }
+
     // ------------------------------------------------------------------------------- mutations
 
     /** Renames, unless the user cleared the field — see [PlaylistNaming.sanitize]. */
@@ -198,5 +251,38 @@ class PlaylistViewModel @Inject constructor(
     fun play(rows: List<PlaylistTrackRow>, index: Int) {
         val target = PlaylistPresentation.playTarget(rows, index) ?: return
         connection.playFrom(target.queue, target.startIndex)
+    }
+
+    /** The whole playlist from the top. */
+    @MainThread
+    fun playAll(rows: List<PlaylistTrackRow>) {
+        val target = PlaylistPresentation.playAllTarget(rows) ?: return
+        connection.playFrom(target.queue, target.startIndex)
+    }
+
+    /**
+     * The whole playlist, shuffled.
+     *
+     * [random] is a parameter with a default rather than a field, so the shuffle a test asks for is
+     * the same call the screen makes — see [PlaylistPresentation.shuffleTarget], which is where the
+     * property that unresolved entries cannot reach the queue is actually pinned.
+     */
+    @MainThread
+    fun shuffle(rows: List<PlaylistTrackRow>, random: Random = Random.Default) {
+        val target = PlaylistPresentation.shuffleTarget(rows, random) ?: return
+        connection.playFrom(target.queue, target.startIndex)
+    }
+
+    /**
+     * Append the playlist's playable tracks to whatever is queued, and say how many that was.
+     *
+     * The queue AND the message come from one [PlaylistPresentation.actionsOf] call, so the number
+     * the user reads is by construction the number of tracks that were handed to the player.
+     */
+    @MainThread
+    fun appendToQueue(rows: List<PlaylistTrackRow>) {
+        val actions = PlaylistPresentation.actionsOf(rows)
+        if (actions.queue.isNotEmpty()) connection.addToQueue(actions.queue)
+        _messages.tryEmit(actions.appendedMessage)
     }
 }

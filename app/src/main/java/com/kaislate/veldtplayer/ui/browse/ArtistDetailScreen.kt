@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.ui.browse
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,13 +19,16 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +61,7 @@ private val PORTRAIT_SIZE = 96.dp
 @Composable
 fun ArtistDetailScreen(
     vm: BrowseViewModel,
+    playlistVm: PlaylistViewModel,
     artistKey: String,
     onBack: () -> Unit,
     onOpenAlbum: (String) -> Unit,
@@ -89,6 +94,13 @@ fun ArtistDetailScreen(
         }
         return
     }
+
+    var pendingAddition by remember { mutableStateOf<PlaylistAddition?>(null) }
+    AddToPlaylistHost(
+        vm = playlistVm,
+        addition = pendingAddition,
+        onDismiss = { pendingAddition = null },
+    )
 
     val name = songs.first().displayArtist()
     // The portrait the Artists row drew, reached by the same order-independent rule, so the
@@ -135,8 +147,23 @@ fun ArtistDetailScreen(
     ) {
         item(key = "header") {
             Column {
-                IconButton(onClick = onBack, modifier = Modifier.padding(start = 4.dp)) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack, modifier = Modifier.padding(start = 4.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    // The whole catalogue, in the order this page lists it. No scrim disc here,
+                    // unlike the album page: this header sits on the surface colour, not on
+                    // artwork, so a bare icon is legible and a black disc would be an ornament.
+                    IconButton(
+                        onClick = { pendingAddition = PlaylistAdditions.ofArtist(songs) },
+                        modifier = Modifier.padding(end = 4.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.PlaylistAdd,
+                            contentDescription = "Add every $name track to a playlist",
+                        )
+                    }
                 }
                 Row(
                     modifier = Modifier
@@ -196,7 +223,12 @@ fun ArtistDetailScreen(
 
         itemsIndexed(songs, key = { _, song -> song.id }) { index, song ->
             // Play-in-context over the artist's whole catalogue, in the order shown.
-            SongRow(song = song, palette = palette, onClick = { vm.play(songs, index) })
+            SongRow(
+                song = song,
+                palette = palette,
+                onClick = { vm.play(songs, index) },
+                onLongClick = { pendingAddition = PlaylistAdditions.ofSong(song) },
+            )
         }
     }
 }

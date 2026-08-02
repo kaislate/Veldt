@@ -20,6 +20,8 @@ import com.kaislate.veldtplayer.data.playlist.m3u.PlaylistImporter
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -273,6 +275,92 @@ class PlaylistViewModelTest {
         vm.removeEntry(row.entryId)
 
         awaitTitles(id, emptyList())
+    }
+
+    // ------------------------------------------------------- creating and filling from browse
+
+    /**
+     * The whole point of Task 10: a playlist that exists without an `.m3u` file behind it, with
+     * tracks in it. Task 6 declined to ship a create affordance precisely because this could not
+     * be done.
+     *
+     * Asserted on the ROWS, not just on the playlist existing — a create that returned before the
+     * add would leave the same empty dead end and would satisfy a name-only assertion.
+     */
+    @Test fun `a playlist created from a browse surface arrives with its tracks in it`() = runTest {
+        val album = listOf(song("/x/Music/a.mp3", title = "A"), song("/x/Music/b.mp3", title = "B"))
+        seedLibrary(*album.toTypedArray())
+
+        val message = awaitMessage { vm.create("Road Trip", PlaylistAdditions.ofAlbum(album)) }
+
+        assertEquals("Created “Road Trip” with 2 tracks", message)
+        val id = playlists.observe().first().single().id
+        awaitTitles(id, listOf("A", "B"))
+    }
+
+    /** The tab's own "New playlist" makes an empty one, and says so without reporting a failure. */
+    @Test fun `a playlist created with nothing is still created`() = runTest {
+        val message = awaitMessage { vm.create("Road Trip") }
+
+        assertEquals("Created “Road Trip”", message)
+        assertEquals(listOf("Road Trip"), cards().map { it.name })
+    }
+
+    /** [PlaylistNaming.sanitize] decides, and it decides the same thing here as in the dialog. */
+    @Test fun `a blank name creates nothing at all`() = runTest {
+        vm.create("   ")
+
+        assertEquals(PlaylistsUiState.Empty, PlaylistPresentation.listStateOf(cards()))
+    }
+
+    /**
+     * Adding APPENDS. Replacing would be the same one-word mistake `QueueBuilder.append` guards
+     * against, and a user who filed a second record into a playlist would silently lose the first.
+     */
+    @Test fun `adding to an existing playlist appends rather than replacing`() = runTest {
+        val first = song("/x/Music/a.mp3", title = "A")
+        val second = song("/x/Music/b.mp3", title = "B")
+        seedLibrary(first, second)
+        val id = playlists.create("Road Trip")
+        playlists.addSongs(id, listOf(first))
+
+        val message = awaitMessage {
+            vm.addTo(id, "Road Trip", PlaylistAdditions.ofSong(second))
+        }
+
+        assertEquals("Added 1 track to “Road Trip”", message)
+        awaitTitles(id, listOf("A", "B"))
+    }
+
+    /**
+     * **The honest count, on the production path.** The playlist LISTS three tracks and can queue
+     * two, and the message the user is shown has to say two — this is the assertion that fails if
+     * the view model ever counts the rows it was handed instead of the queue it built.
+     */
+    @Test fun `appending a playlist reports the count it can actually queue`() = runTest {
+        seedLibrary(song("/x/Music/a.mp3", title = "A"), song("/x/Music/b.mp3", title = "B"))
+        serve(DOC, "/x/Music/a.mp3\n/x/Music/gone.mp3\n/x/Music/b.mp3\n")
+        val id = (importAndAwait(DOC) as ImportOutcome.Done).result.playlistId
+        val rows = (vm.detail(id).first() as PlaylistDetailUiState.Ready).rows
+        assertEquals("the playlist must still LIST all three", 3, rows.size)
+
+        val message = awaitMessage { vm.appendToQueue(rows) }
+
+        assertEquals("Added 2 tracks to the queue · 1 isn't in your library", message)
+    }
+
+    /**
+     * Subscribe, then act, then wait.
+     *
+     * [PlaylistViewModel.messages] is a SharedFlow with no replay — a confirmation nobody is
+     * listening for is gone — so the collector has to be registered BEFORE the action runs.
+     * `Dispatchers.Main` is the unconfined test dispatcher here, so `async` runs eagerly up to the
+     * point where `first()` has subscribed and only then returns.
+     */
+    private suspend fun awaitMessage(action: () -> Unit): String = coroutineScope {
+        val message = async(Dispatchers.Main) { vm.messages.first() }
+        action()
+        message.await()
     }
 
     /**

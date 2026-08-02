@@ -18,6 +18,7 @@ import java.io.ByteArrayOutputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 /**
  * Every decision the playlist screens make, as pure functions.
@@ -99,6 +100,35 @@ sealed interface PlaylistDetailUiState {
 
 /** A queue and the position in it to start at — see [PlaylistPresentation.playTarget]. */
 data class PlayTarget(val queue: List<Song>, val startIndex: Int)
+
+/**
+ * What the three whole-playlist actions — play, shuffle, add-to-queue — operate on and what they
+ * are allowed to SAY about it.
+ *
+ * One value rather than a queue here and a count there, because the entire failure mode this type
+ * exists to prevent is the two disagreeing. A playlist of 40 rows, four of which resolve to
+ * nothing, can queue 36 tracks and no more; a button captioned "Shuffle 40 tracks" over a queue of
+ * 36 is an off-by-N nobody notices until the playlist ends early. So [queue] and every string that
+ * quotes a number are produced by the same call, from the same list, in
+ * [PlaylistPresentation.actionsOf] — the count is never taken at a call site.
+ *
+ * [queue] holds RESOLVED tracks only. An unresolved entry has no [Song] at all, so it is not that
+ * it is filtered out here: there is nothing that could be put in a queue. [missingCount] is how
+ * many were left behind, and it is surfaced rather than swallowed for the same reason the tab's
+ * caption surfaces it.
+ */
+data class PlaylistActions(
+    val queue: List<Song>,
+    val missingCount: Int,
+    /** False when nothing in the playlist can be played — the buttons are drawn dead, not absent. */
+    val enabled: Boolean,
+    /** "Shuffle 36 tracks" — the queue's count, never the row count. */
+    val shuffleDescription: String,
+    /** "Add 36 tracks to the queue" — likewise. */
+    val appendDescription: String,
+    /** What the user is told AFTER appending: "Added 36 tracks to the queue · 4 aren't in your library". */
+    val appendedMessage: String,
+)
 
 // ------------------------------------------------------------------------------------ importing
 
@@ -245,6 +275,88 @@ object PlaylistPresentation {
             queue = rows.mapNotNull { it.song },
             startIndex = rows.take(index).count { it.song != null },
         )
+    }
+
+    // ---------------------------------------------------------------- play, shuffle, append all
+
+    /**
+     * The playlist's queue and the copy that describes it — **one decision, one call**.
+     *
+     * Every number the header quotes comes out of this function rather than out of the composable
+     * that draws it. Task 6's stack tint was wrong by construction because the deciding part sat at
+     * the CALL SITE, outside anything a test could reach, and `rows.size` is exactly the expression
+     * a call site reaches for when it wants "how many tracks does this playlist have". It has an
+     * honest answer — [PlaylistCard.trackCount] — and it is the wrong number for a button that is
+     * about to hand a queue to the player.
+     */
+    fun actionsOf(rows: List<PlaylistTrackRow>): PlaylistActions {
+        // The ONE definition of "what this playlist can play". playAllTarget and shuffleTarget both
+        // go through it, so no third notion of the queue can appear.
+        val queue = rows.mapNotNull { it.song }
+        val missing = rows.size - queue.size
+        return PlaylistActions(
+            queue = queue,
+            missingCount = missing,
+            enabled = queue.isNotEmpty(),
+            shuffleDescription = if (queue.isEmpty()) {
+                NOTHING_TO_PLAY
+            } else {
+                "Shuffle ${countOf(queue.size, "track")}"
+            },
+            appendDescription = if (queue.isEmpty()) {
+                NOTHING_TO_PLAY
+            } else {
+                "Add ${countOf(queue.size, "track")} to the queue"
+            },
+            appendedMessage = appendedMessage(queue.size, missing),
+        )
+    }
+
+    /** What a dead action says instead of a count. */
+    const val NOTHING_TO_PLAY = "Nothing here can be played"
+
+    /**
+     * The confirmation an append leaves behind.
+     *
+     * Appending is the one action with no visible result of its own — the current track keeps
+     * playing and the new tracks are somewhere below the fold — so the message IS the feedback,
+     * and it has to be true. [added] is the queue's size and [skipped] the entries that resolve to
+     * nothing; a playlist that contributes 36 of its 40 rows says both numbers rather than
+     * reporting the 40 it lists or the 36 it queued as though they were the same thing.
+     */
+    fun appendedMessage(added: Int, skipped: Int): String = when {
+        added <= 0 && skipped <= 0 -> "There's nothing in this playlist to queue"
+        added <= 0 -> "None of these tracks are in your library"
+        skipped <= 0 -> "Added ${countOf(added, "track")} to the queue"
+        skipped == 1 -> "Added ${countOf(added, "track")} to the queue · 1 isn't in your library"
+        else -> "Added ${countOf(added, "track")} to the queue · $skipped aren't in your library"
+    }
+
+    /** The whole playlist from the top, or null when none of it can be played. */
+    fun playAllTarget(rows: List<PlaylistTrackRow>): PlayTarget? {
+        val queue = actionsOf(rows).queue
+        if (queue.isEmpty()) return null
+        return PlayTarget(queue = queue, startIndex = 0)
+    }
+
+    /**
+     * The whole playlist, shuffled — **the RESOLVED queue is what gets shuffled, not the rows.**
+     *
+     * Shuffling the display list and mapping afterwards happens to produce the same multiset, so it
+     * looks equivalent and is not: any variant that shuffles indices, or takes a slice, or carries
+     * a display index into the player, is off by the number of unresolved entries above it. Going
+     * through [actionsOf] means the shuffled thing is by construction the thing that will be
+     * played.
+     *
+     * [random] is a parameter so the property is provable on the JVM. The player's own
+     * `shuffleModeEnabled` is deliberately NOT touched: that flag is a mode the user owns from the
+     * now-playing screen, and flipping it from a playlist header would silently change how every
+     * queue after this one behaves.
+     */
+    fun shuffleTarget(rows: List<PlaylistTrackRow>, random: Random): PlayTarget? {
+        val queue = actionsOf(rows).queue
+        if (queue.isEmpty()) return null
+        return PlayTarget(queue = queue.shuffled(random), startIndex = 0)
     }
 
     /**
@@ -397,6 +509,39 @@ object PlaylistNaming {
     /** What an unnameable document becomes. Never blank: a nameless row is unusable. */
     const val FALLBACK = "Imported playlist"
 
+    /** What a playlist the user starts from nothing is called before they type anything. */
+    const val NEW_PLAYLIST = "New playlist"
+
+    /**
+     * The name to PREFILL a "New playlist" field with: [NEW_PLAYLIST], or the first free number
+     * after it.
+     *
+     * Three rows all reading "New playlist" is a list the user cannot navigate — they are
+     * indistinguishable, so the only way to find the one they just made is to open all three. The
+     * numbering therefore has to be genuinely collision-free, which means asking [existing] rather
+     * than counting playlists: a user with "New playlist" and "New playlist 3" gets
+     * "New playlist 2", and deleting one frees its number again.
+     *
+     * The comparison is trimmed and case-insensitive because "new playlist" and "New playlist" are
+     * the same row to a reader, and offering the second when the first exists would produce exactly
+     * the pair of rows this function exists to prevent.
+     *
+     * **Only the SUGGESTION is made unique.** A name the user then types is stored as typed, even
+     * if it collides: two playlists honestly called "Mix" is the user's business, and silently
+     * renaming their input to "Mix 2" would be a worse surprise than a duplicate. Uniqueness is a
+     * property of the default, not of the table.
+     */
+    fun suggestedName(existing: List<String>): String {
+        val taken = existing.mapTo(HashSet()) { it.trim().lowercase() }
+        if (NEW_PLAYLIST.lowercase() !in taken) return NEW_PLAYLIST
+        // Starts at 2, so the second playlist is "New playlist 2" and not "New playlist 1" beside
+        // an unnumbered first. Bounded by construction: at most one candidate per taken name can be
+        // rejected, so the loop ends by taken.size + 2 at the latest.
+        var n = 2
+        while ("${NEW_PLAYLIST.lowercase()} $n" in taken) n++
+        return "$NEW_PLAYLIST $n"
+    }
+
     /**
      * The playlist's name: the provider's own `DISPLAY_NAME` when it gave one, else whatever the
      * uri can be made to yield.
@@ -485,6 +630,90 @@ object PlaylistNaming {
         }
         return String(out.toByteArray(), Charsets.UTF_8)
     }
+}
+
+/**
+ * What a browse surface is offering to put into a playlist, and what to call it.
+ *
+ * The three entry points contribute genuinely different things — a song row contributes itself, an
+ * album its whole record in track order, an artist their whole catalogue in the order the page
+ * lists them — but only ONE of those differences is a decision: which display name stands for the
+ * selection. A song is its title, a record is its album tag, an artist is their artist tag, and all
+ * three go through [DisplayNames] rather than being read raw, so a `<unknown>` album cannot end up
+ * in a sheet header reading `Add 12 tracks from “<unknown>”`.
+ *
+ * [songs] is carried in the ORDER THE SCREEN SHOWED, because that is the order the tracks will land
+ * in the playlist and the user has just been looking at it.
+ */
+data class PlaylistAddition(val subject: String, val songs: List<Song>) {
+
+    val isEmpty: Boolean get() = songs.isEmpty()
+
+    companion object {
+        /** Nothing at all — what the playlists tab "creates with" when it makes an empty one. */
+        val NOTHING = PlaylistAddition("", emptyList())
+    }
+}
+
+/**
+ * The words the add-to-playlist flow is made of.
+ *
+ * Every count comes off the [PlaylistAddition] itself rather than being passed in beside it. That
+ * is not tidiness: `addedMessage(name, someCountFromSomewhere)` is precisely the shape that lets a
+ * screen report the size of the list it was DISPLAYING while a different list was written, and it
+ * is the same defect as a playlist header quoting its row count over a shorter queue.
+ */
+object PlaylistAdditions {
+
+    fun ofSong(song: Song): PlaylistAddition =
+        PlaylistAddition(subject = song.displayTitle(), songs = listOf(song))
+
+    /** A whole record. The subject is the ALBUM tag, not the tapped track's title. */
+    fun ofAlbum(songs: List<Song>): PlaylistAddition = PlaylistAddition(
+        subject = songs.firstOrNull()?.displayAlbum() ?: DisplayNames.UNKNOWN_ALBUM,
+        songs = songs,
+    )
+
+    /** A whole catalogue. The subject is the ARTIST tag. */
+    fun ofArtist(songs: List<Song>): PlaylistAddition = PlaylistAddition(
+        subject = songs.firstOrNull()?.displayArtist() ?: DisplayNames.UNKNOWN_ARTIST,
+        songs = songs,
+    )
+
+    /**
+     * The sheet's own headline: what is about to be added, named and counted.
+     *
+     * One track is named and not counted — "Add 1 track from “Lost Cause”" tells the user nothing
+     * they did not just tap. More than one is counted AND named, because the number is the only
+     * part a user can check before committing.
+     */
+    fun sheetTitle(addition: PlaylistAddition): String = when (addition.songs.size) {
+        0 -> "Nothing to add"
+        1 -> "Add “${addition.subject}”"
+        else -> "Add ${countOf(addition.songs.size, "track")} from “${addition.subject}”"
+    }
+
+    /** "Added 12 tracks to “Road Trip”". */
+    fun addedMessage(playlistName: String, addition: PlaylistAddition): String =
+        if (addition.isEmpty) {
+            "Nothing was added to “$playlistName”"
+        } else {
+            "Added ${countOf(addition.songs.size, "track")} to “$playlistName”"
+        }
+
+    /**
+     * "Created “Road Trip” with 12 tracks" — or just "Created “Road Trip”" for an empty one.
+     *
+     * Two sentences rather than one with a "0 tracks" in it, because the playlists tab's own
+     * "New playlist" genuinely creates an empty playlist and telling that user their playlist has
+     * no tracks reads as a failure report for something that worked.
+     */
+    fun createdMessage(playlistName: String, addition: PlaylistAddition): String =
+        if (addition.isEmpty) {
+            "Created “$playlistName”"
+        } else {
+            "Created “$playlistName” with ${countOf(addition.songs.size, "track")}"
+        }
 }
 
 /** The file's own name, whichever separator the platform that wrote the path used. */

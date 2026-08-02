@@ -191,6 +191,35 @@ class PlaybackConnection @Inject constructor(
         }
     }
 
+    /**
+     * Appends [songs] after whatever is already queued, starting playback only if nothing was
+     * (spec §3.2). No-op for an empty list.
+     *
+     * The decision is [QueueBuilder.append]'s, not this method's: everything below the plan needs a
+     * live `MediaController` and is therefore unreachable from the JVM suite, so nothing that could
+     * be got wrong is allowed to live down here. What is left is which of two Media3 calls to make.
+     */
+    @MainThread
+    fun addToQueue(songs: List<Song>) {
+        val plan = QueueBuilder.append(_queue.value, songs) ?: return
+        _queue.value = plan.songs
+        if (plan.startPlayback) {
+            // A fresh queue, so the same reset playFrom does: a counter left high by a previous
+            // all-undecodable queue would otherwise suppress skip-on for this one.
+            consecutiveErrors = 0
+            withController { c ->
+                c.setMediaItems(plan.songs.map(::toMediaItem), 0, 0L)
+                c.prepare()
+                c.play()
+            }
+        } else {
+            // Appended at the END rather than at an index computed from _queue, which the
+            // publish() TODO already notes can lag the controller's real timeline. addMediaItems
+            // with no index cannot be out of range; an index taken from a stale queue can.
+            withController { c -> c.addMediaItems(songs.map(::toMediaItem)) }
+        }
+    }
+
     @MainThread
     fun toggle() = withController { if (it.isPlaying) it.pause() else it.play() }
 

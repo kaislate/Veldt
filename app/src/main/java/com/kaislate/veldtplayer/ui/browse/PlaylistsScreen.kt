@@ -27,8 +27,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
@@ -60,6 +62,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.library.model.Song
+import com.kaislate.veldtplayer.ui.components.ArtPlaceholder
 import com.kaislate.veldtplayer.ui.components.paletteWash
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
@@ -135,6 +138,11 @@ fun PlaylistsScreen(
     // survives the row scrolling out from under it.
     var renaming by remember { mutableStateOf<PlaylistCard?>(null) }
     var deleting by remember { mutableStateOf<PlaylistCard?>(null) }
+    var creating by remember { mutableStateOf(false) }
+
+    // The names already taken, so the "New playlist" field opens on one that is free. Read off the
+    // SAME state the list is drawn from, so the suggestion cannot disagree with what is on screen.
+    val existingNames = (state as? PlaylistsUiState.Ready)?.cards?.map { it.name }.orEmpty()
 
     when (val current = state) {
         PlaylistsUiState.Loading -> PlaylistsLoading(
@@ -145,15 +153,30 @@ fun PlaylistsScreen(
             modifier = modifier,
         )
 
-        PlaylistsUiState.Empty -> EmptyState(
+        // BrowseMessage rather than EmptyState, which offers exactly one button. There are two
+        // ways to end up with a playlist and they are not interchangeable: starting an empty one
+        // and filling it from the library is the path most users have, importing an `.m3u` is the
+        // path of someone who already owns a playlist. Hiding either behind the other on the one
+        // screen that exists to say "you have none" would leave that user with no route at all.
+        PlaylistsUiState.Empty -> BrowseMessage(
             palette = palette,
             title = "No playlists yet",
-            body = "Import an .m3u or .m3u8 file and Veldt will keep every track it names — " +
-                "including the ones that aren't on this device yet.",
-            actionLabel = if (importing) "Importing…" else "Import a playlist",
-            onAction = openPicker,
+            body = "Start one and add songs from anywhere in your library — or import an .m3u " +
+                "or .m3u8 file, and Veldt will keep every track it names, including the ones " +
+                "that aren't on this device yet.",
             contentPadding = contentPadding,
             modifier = modifier,
+            emblem = {
+                ArtPlaceholder(initial = '♪', palette = palette, modifier = Modifier.fillMaxSize())
+            },
+            footer = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { creating = true }) { Text("New playlist") }
+                    TextButton(onClick = openPicker, enabled = !importing) {
+                        Text(if (importing) "Importing…" else "Import a playlist")
+                    }
+                }
+            },
         )
 
         is PlaylistsUiState.Ready -> {
@@ -171,6 +194,13 @@ fun PlaylistsScreen(
                     bottom = contentPadding.calculateBottomPadding() + LIST_AIR,
                 ),
             ) {
+                // FIRST, above import. Creating is the affordance that makes the other four
+                // things on this screen reachable — a playlist you can add songs to is what the
+                // song rows, album pages and artist pages now point at — and it is the one a user
+                // with no `.m3u` file anywhere on the device can actually use.
+                item(key = "new") {
+                    NewPlaylistInvitation(palette = palette, onClick = { creating = true })
+                }
                 item(key = "import") {
                     ImportInvitation(
                         palette = palette,
@@ -192,9 +222,28 @@ fun PlaylistsScreen(
         }
     }
 
+    if (creating) {
+        NameDialog(
+            title = "New playlist",
+            confirmLabel = "Create",
+            // Prefilled and pre-selected-for-overwrite by the field itself: the point of the
+            // suggestion is that a user who just wants a playlist can tap Create twice, and a user
+            // who has a name in mind types over it. PlaylistNaming.suggestedName is what stops
+            // three taps producing three rows called "New playlist".
+            initial = PlaylistNaming.suggestedName(existingNames),
+            onDismiss = { creating = false },
+            onConfirm = { name ->
+                vm.create(name)
+                creating = false
+            },
+        )
+    }
+
     renaming?.let { card ->
-        RenameDialog(
-            card = card,
+        NameDialog(
+            title = "Rename playlist",
+            confirmLabel = "Save",
+            initial = card.name,
             onDismiss = { renaming = null },
             onConfirm = { name ->
                 vm.rename(card.id, name)
@@ -266,6 +315,64 @@ internal fun PlaylistsLoading(
 }
 
 /**
+ * The create row: an **empty stack**, dashed where the cover would be.
+ *
+ * Deliberately the tab's own emblem rather than a plus in a circle. A new playlist is a record the
+ * user is about to make, so it is drawn as the same object every row below it is — two receding
+ * cards with nothing yet in front of them — and the row reads as a gap in the collection rather
+ * than as a button that wandered into a list. It also tells the two invitations apart at a glance:
+ * this one is a stack, [ImportInvitation] is a single slot, because a file is not a record.
+ */
+@Composable
+private fun NewPlaylistInvitation(
+    palette: DominantColors,
+    onClick: () -> Unit,
+) {
+    InvitationRow(
+        title = "New playlist",
+        subtitle = "Start an empty one and add songs as you go",
+        leadingWidth = STACK_WIDTH,
+        onClick = onClick,
+        leading = { NewPlaylistStack(palette = palette) },
+    )
+}
+
+/**
+ * The emblem of a playlist that does not exist yet: [PlaylistStack] with an empty slot in front.
+ *
+ * Shared with `AddToPlaylistSheet`, so "New playlist" looks the same wherever it is offered and
+ * the picker sheet is recognisably this tab rather than a generic list of names.
+ */
+@Composable
+internal fun NewPlaylistStack(
+    palette: DominantColors,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier.size(width = STACK_WIDTH, height = COVER_SIZE),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        RecedingCard(
+            color = playlistStackTint(MaterialTheme.colorScheme, palette.accent, near = false),
+            offsetX = STACK_STEP * 2,
+            inset = 8.dp,
+        )
+        RecedingCard(
+            color = playlistStackTint(MaterialTheme.colorScheme, palette.accent, near = true),
+            offsetX = STACK_STEP,
+            inset = 4.dp,
+        )
+        DashedSlot(modifier = Modifier.size(COVER_SIZE)) {
+            Icon(
+                Icons.Filled.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
  * The import row: a dashed outline where a cover would be.
  *
  * Dashed rather than filled on purpose — it reads as a slot waiting for something instead of as a
@@ -278,65 +385,90 @@ private fun ImportInvitation(
     importing: Boolean,
     onClick: () -> Unit,
 ) {
-    val outline = MaterialTheme.colorScheme.outline
+    InvitationRow(
+        title = if (importing) "Importing…" else "Import a playlist",
+        subtitle = "Choose an .m3u or .m3u8 file",
+        // Lined up with a playlist row's text, which starts past the whole stack rather than past
+        // this single tile.
+        leadingWidth = STACK_WIDTH,
+        enabled = !importing,
+        onClick = onClick,
+        leading = {
+            DashedSlot(modifier = Modifier.size(COVER_SIZE)) {
+                if (importing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp,
+                        color = palette.accent,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.FileOpen,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+    )
+}
+
+/**
+ * The shared shape of both invitations, so the two rows at the top of the tab cannot drift apart
+ * in height, inset or type — they sit directly above each other and any difference reads as a bug.
+ */
+@Composable
+private fun InvitationRow(
+    title: String,
+    subtitle: String,
+    leadingWidth: Dp,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    leading: @Composable () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = SIDE_MARGIN, vertical = 6.dp)
             .clip(ROW_SHAPE)
-            .clickable(enabled = !importing, onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            modifier = Modifier
-                .size(COVER_SIZE)
-                .drawBehind {
-                    drawRoundRect(
-                        color = outline,
-                        cornerRadius = CornerRadius(12.dp.toPx()),
-                        style = Stroke(
-                            width = 1.5.dp.toPx(),
-                            pathEffect = PathEffect.dashPathEffect(
-                                floatArrayOf(10.dp.toPx(), 8.dp.toPx()),
-                            ),
-                        ),
-                    )
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            if (importing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(22.dp),
-                    strokeWidth = 2.dp,
-                    color = palette.accent,
-                )
-            } else {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Column(
-            Modifier
-                .weight(1f)
-                // Lined up with a playlist row's text, which starts past the whole stack rather
-                // than past this single tile.
-                .padding(start = STACK_WIDTH - COVER_SIZE + 12.dp),
-        ) {
+            modifier = Modifier.size(width = leadingWidth, height = COVER_SIZE),
+            contentAlignment = Alignment.CenterStart,
+        ) { leading() }
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(text = title, style = MaterialTheme.typography.titleMedium)
             Text(
-                text = if (importing) "Importing…" else "Import a playlist",
-                style = MaterialTheme.typography.titleMedium,
-            )
-            Text(
-                text = "Choose an .m3u or .m3u8 file",
+                text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
+}
+
+/** A dashed outline where a cover would go — "something belongs here and does not yet". */
+@Composable
+private fun DashedSlot(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val outline = MaterialTheme.colorScheme.outline
+    Box(
+        modifier = modifier.drawBehind {
+            drawRoundRect(
+                color = outline,
+                cornerRadius = CornerRadius(12.dp.toPx()),
+                style = Stroke(
+                    width = 1.5.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 8.dp.toPx())),
+                ),
+            )
+        },
+        contentAlignment = Alignment.Center,
+    ) { content() }
 }
 
 /** One playlist: the stacked emblem, the name, the count, and an overflow. */
@@ -421,7 +553,7 @@ private fun PlaylistStackRow(
  * an idiom that survives in one colour scheme is a bare list with wide left gutters in the other.
  */
 @Composable
-private fun PlaylistStack(
+internal fun PlaylistStack(
     card: PlaylistCard,
     palette: DominantColors,
     modifier: Modifier = Modifier,
@@ -524,16 +656,26 @@ internal fun PlaylistCoverArt(
 
 // ------------------------------------------------------------------------------------ dialogs
 
+/**
+ * The ONE name field — create and rename are the same dialog with two labels.
+ *
+ * Two copies would be two places for the sanitize guard to be forgotten, and the create side is
+ * the one that can be dismissed with a blank field and still be expected to do nothing.
+ * `remember(initial)` re-seeds when the dialog is opened on a different playlist, so a rename does
+ * not open on the name of the row that was tapped before it.
+ */
 @Composable
-private fun RenameDialog(
-    card: PlaylistCard,
+internal fun NameDialog(
+    title: String,
+    confirmLabel: String,
+    initial: String,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
 ) {
-    var text by remember(card.id) { mutableStateOf(card.name) }
+    var text by remember(initial) { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Rename playlist") },
+        title = { Text(title) },
         text = {
             OutlinedTextField(
                 value = text,
@@ -549,7 +691,7 @@ private fun RenameDialog(
             TextButton(
                 onClick = { onConfirm(text) },
                 enabled = PlaylistNaming.sanitize(text) != null,
-            ) { Text("Save") }
+            ) { Text(confirmLabel) }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

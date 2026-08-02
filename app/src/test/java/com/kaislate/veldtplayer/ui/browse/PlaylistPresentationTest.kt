@@ -18,6 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.FileNotFoundException
 import java.io.IOException
+import kotlin.random.Random
 
 /**
  * The playlist screens' decisions, pinned where the composables cannot be.
@@ -185,6 +186,144 @@ class PlaylistPresentationTest {
         val rows = PlaylistPresentation.rowsOf(listOf(resolved(1, 0, song())))
         assertNull(PlaylistPresentation.playTarget(rows, index = 9))
         assertNull(PlaylistPresentation.playTarget(emptyList(), index = 0))
+    }
+
+    // ------------------------------------------- play, shuffle and append the whole playlist
+
+    /** Five rows, two of which resolve to nothing — the only shape that can catch an off-by-N. */
+    private fun mixedRows(): List<PlaylistTrackRow> = PlaylistPresentation.rowsOf(
+        listOf(
+            resolved(1, 0, song(title = "A")),
+            unresolved(2, 1),
+            resolved(3, 2, song(title = "B")),
+            unresolved(4, 3),
+            resolved(5, 4, song(title = "C")),
+        ),
+    )
+
+    /**
+     * An unresolved entry has no [Song] at all, so it can never be handed to the player. Asserted
+     * on WHICH tracks are in the queue and in what order — a size assertion alone would pass for a
+     * queue that padded itself back up to five by repeating something.
+     */
+    @Test fun `the queue an action gets holds only the tracks that resolve, in order`() {
+        val actions = PlaylistPresentation.actionsOf(mixedRows())
+        assertEquals(listOf("A", "B", "C"), actions.queue.map { it.title })
+        assertEquals(2, actions.missingCount)
+        assertTrue(actions.enabled)
+    }
+
+    /**
+     * **The rule this task turns on.** The playlist LISTS five tracks and can play three, and every
+     * string that quotes a number has to say three. Literals, not `queue.size`: comparing the copy
+     * against the very list it was built from agrees with itself for any list at all.
+     */
+    @Test fun `every count the actions quote is the queue's, never the row count`() {
+        val actions = PlaylistPresentation.actionsOf(mixedRows())
+        assertEquals("Shuffle 3 tracks", actions.shuffleDescription)
+        assertEquals("Add 3 tracks to the queue", actions.appendDescription)
+        assertEquals(
+            "Added 3 tracks to the queue · 2 aren't in your library",
+            actions.appendedMessage,
+        )
+    }
+
+    @Test fun `a playlist that is missing nothing does not mention missing tracks`() {
+        val actions = PlaylistPresentation.actionsOf(
+            PlaylistPresentation.rowsOf(
+                listOf(resolved(1, 0, song()), resolved(2, 1, song()), resolved(3, 2, song())),
+            ),
+        )
+        assertEquals("Added 3 tracks to the queue", actions.appendedMessage)
+        assertEquals(0, actions.missingCount)
+    }
+
+    @Test fun `one missing track reads as one, not as 1 aren't`() {
+        val actions = PlaylistPresentation.actionsOf(
+            PlaylistPresentation.rowsOf(listOf(resolved(1, 0, song()), unresolved(2, 1))),
+        )
+        assertEquals(
+            "Added 1 track to the queue · 1 isn't in your library",
+            actions.appendedMessage,
+        )
+    }
+
+    /**
+     * Empty and all-missing are two different sentences. Telling a user whose playlist holds four
+     * tracks that "there's nothing in this playlist" is the collapse-two-inputs defect again: their
+     * playlist is full, and what they need to know is that none of it is on the device.
+     */
+    @Test fun `an all-missing playlist is not reported as an empty one`() {
+        val allMissing = PlaylistPresentation.actionsOf(
+            PlaylistPresentation.rowsOf((0L until 4L).map { unresolved(it + 1, it.toInt()) }),
+        )
+        val empty = PlaylistPresentation.actionsOf(emptyList())
+
+        assertEquals("None of these tracks are in your library", allMissing.appendedMessage)
+        assertEquals("There's nothing in this playlist to queue", empty.appendedMessage)
+        assertFalse(allMissing.enabled)
+        assertFalse(empty.enabled)
+        assertEquals("Nothing here can be played", allMissing.shuffleDescription)
+        assertEquals("Nothing here can be played", empty.appendDescription)
+    }
+
+    @Test fun `a playlist with nothing playable cannot be played or shuffled at all`() {
+        val rows = PlaylistPresentation.rowsOf((0L until 4L).map { unresolved(it + 1, it.toInt()) })
+        assertNull(PlaylistPresentation.playAllTarget(rows))
+        assertNull(PlaylistPresentation.shuffleTarget(rows, Random(1)))
+        assertNull(PlaylistPresentation.playAllTarget(emptyList()))
+        assertNull(PlaylistPresentation.shuffleTarget(emptyList(), Random(1)))
+    }
+
+    /** Play-all starts on the first track that RESOLVES, which is not always the first row. */
+    @Test fun `playing the whole playlist starts on the first track that resolves`() {
+        val rows = PlaylistPresentation.rowsOf(
+            listOf(unresolved(1, 0), resolved(2, 1, song(title = "A")), resolved(3, 2, song(title = "B"))),
+        )
+        val target = PlaylistPresentation.playAllTarget(rows)!!
+        assertEquals(listOf("A", "B"), target.queue.map { it.title })
+        assertEquals(0, target.startIndex)
+        assertEquals("A", target.queue[target.startIndex].title)
+    }
+
+    /**
+     * Shuffle shuffles the QUEUE. Whatever order comes out, it is a permutation of exactly the
+     * tracks that resolve — never four of five, never a repeat standing in for a missing row — and
+     * playback starts at the top of it.
+     */
+    @Test fun `shuffle permutes the resolved queue and starts at its top`() {
+        val rows = mixedRows()
+        (0 until 40).forEach { seed ->
+            val target = PlaylistPresentation.shuffleTarget(rows, Random(seed))!!
+            assertEquals("seed $seed", 0, target.startIndex)
+            assertEquals(
+                "seed $seed queued something that does not resolve",
+                listOf("A", "B", "C"),
+                target.queue.map { it.title }.sorted(),
+            )
+        }
+    }
+
+    /**
+     * And it genuinely shuffles. A `shuffleTarget` that forgot to shuffle would satisfy every
+     * assertion above — the playlist order is a permutation of itself — so the property that
+     * distinguishes it is that different seeds produce different orders.
+     */
+    @Test fun `shuffle actually reorders rather than returning the playlist order`() {
+        val rows = PlaylistPresentation.rowsOf(
+            (0 until 8).map { resolved(it + 1L, it, song(title = "Track $it")) },
+        )
+        val playlistOrder = (0 until 8).map { "Track $it" }
+        val orders = (0 until 40)
+            .map { seed -> PlaylistPresentation.shuffleTarget(rows, Random(seed))!!.queue.map { it.title } }
+        assertTrue(
+            "40 seeds produced one order — nothing is being shuffled",
+            orders.toSet().size > 1,
+        )
+        assertTrue(
+            "no seed moved anything off the playlist order",
+            orders.any { it != playlistOrder },
+        )
     }
 
     // --------------------------------------------------------------------------- the tab's list
@@ -510,6 +649,148 @@ class PlaylistPresentationTest {
     @Test fun `a blank rename is refused rather than silently renaming to a fallback`() {
         assertNull(PlaylistNaming.sanitize("   "))
         assertEquals("Mix", PlaylistNaming.sanitize("  Mix  "))
+    }
+
+    // ---------------------------------------------------------------- naming a new playlist
+
+    /**
+     * Five taps, five names — asserted as a LITERAL sequence, not merely as five distinct strings.
+     * "Distinct" alone is satisfied by any numbering at all, including one that jumps or that
+     * counts rows; the sequence is what says which names a user actually sees.
+     */
+    @Test fun `each new playlist is suggested a name of its own`() {
+        val names = mutableListOf<String>()
+        repeat(5) { names += PlaylistNaming.suggestedName(names) }
+        assertEquals(
+            listOf(
+                "New playlist",
+                "New playlist 2",
+                "New playlist 3",
+                "New playlist 4",
+                "New playlist 5",
+            ),
+            names,
+        )
+        assertEquals("every suggestion must be free", 5, names.toSet().size)
+    }
+
+    /** The literal, for the same reason as COVER_LIMIT: the constant cannot check itself. */
+    @Test fun `the first new playlist is called New playlist`() {
+        assertEquals("New playlist", PlaylistNaming.NEW_PLAYLIST)
+        assertEquals("New playlist", PlaylistNaming.suggestedName(emptyList()))
+    }
+
+    /**
+     * The FIRST free number, not one past the highest. A user who deleted "New playlist 2" gets it
+     * back rather than being handed 4 because 3 happens to exist.
+     */
+    @Test fun `the suggestion takes the first free number`() {
+        assertEquals(
+            "New playlist 2",
+            PlaylistNaming.suggestedName(listOf("New playlist", "New playlist 3")),
+        )
+        assertEquals("New playlist", PlaylistNaming.suggestedName(listOf("New playlist 2")))
+    }
+
+    /** Two rows a reader cannot tell apart are one name, whatever their bytes say. */
+    @Test fun `a name differing only in case or padding is the same name`() {
+        assertEquals("New playlist 2", PlaylistNaming.suggestedName(listOf("new PLAYLIST")))
+        assertEquals("New playlist 2", PlaylistNaming.suggestedName(listOf("  New playlist  ")))
+    }
+
+    /** Unrelated playlists never push the number along. */
+    @Test fun `other playlists do not consume numbers`() {
+        assertEquals("New playlist", PlaylistNaming.suggestedName(listOf("Road Trip", "Mix")))
+    }
+
+    // -------------------------------------------------------------------- adding from browse
+
+    @Test fun `a song row contributes itself, named by its title`() {
+        val track = song(title = "Lost Cause", album = "Sea Change")
+        val addition = PlaylistAdditions.ofSong(track)
+        assertEquals("Lost Cause", addition.subject)
+        assertEquals(listOf(track.id), addition.songs.map { it.id })
+    }
+
+    /** A record contributes every track, in the order the page listed them — not sorted again. */
+    @Test fun `an album contributes its whole record in the order shown`() {
+        val tracks = listOf(
+            song(title = "Third", album = "Odelay"),
+            song(title = "First", album = "Odelay"),
+            song(title = "Second", album = "Odelay"),
+        )
+        val addition = PlaylistAdditions.ofAlbum(tracks)
+        assertEquals("Odelay", addition.subject)
+        assertEquals(listOf("Third", "First", "Second"), addition.songs.map { it.title })
+    }
+
+    @Test fun `an artist contributes their whole catalogue, named by the artist`() {
+        val tracks = listOf(
+            song(title = "One", artist = "Beck", album = "Odelay"),
+            song(title = "Two", artist = "Beck", album = "Sea Change"),
+        )
+        val addition = PlaylistAdditions.ofArtist(tracks)
+        assertEquals("Beck", addition.subject)
+        assertEquals(2, addition.songs.size)
+    }
+
+    /**
+     * MediaStore's sentinel must not reach a sheet header. This is the tag that slipped past every
+     * `isBlank()` in the app once already.
+     */
+    @Test fun `an untagged selection is named, never shown as the MediaStore sentinel`() {
+        assertEquals(
+            "Unknown album",
+            PlaylistAdditions.ofAlbum(listOf(song(album = "<unknown>"))).subject,
+        )
+        assertEquals(
+            "Unknown artist",
+            PlaylistAdditions.ofArtist(listOf(song(artist = "   "))).subject,
+        )
+        assertEquals("Unknown title", PlaylistAdditions.ofSong(song(title = "")).subject)
+    }
+
+    @Test fun `an empty selection knows it is empty`() {
+        assertTrue(PlaylistAdditions.ofAlbum(emptyList()).isEmpty)
+        assertTrue(PlaylistAddition.NOTHING.isEmpty)
+        assertFalse(PlaylistAdditions.ofSong(song()).isEmpty)
+    }
+
+    /** One track is named; several are named AND counted, because the count is the checkable part. */
+    @Test fun `the sheet names one track and counts several`() {
+        assertEquals(
+            "Add “Lost Cause”",
+            PlaylistAdditions.sheetTitle(PlaylistAdditions.ofSong(song(title = "Lost Cause"))),
+        )
+        val album = PlaylistAdditions.ofAlbum((0 until 12).map { song(album = "Odelay") })
+        assertEquals("Add 12 tracks from “Odelay”", PlaylistAdditions.sheetTitle(album))
+    }
+
+    /**
+     * The count is taken off the addition itself. A signature that accepted a number beside the
+     * name is what lets a screen report the size of the list it was DISPLAYING while a different
+     * list was written.
+     */
+    @Test fun `the added message counts the tracks that were actually added`() {
+        val album = PlaylistAdditions.ofAlbum((0 until 12).map { song(album = "Odelay") })
+        assertEquals("Added 12 tracks to “Road Trip”", PlaylistAdditions.addedMessage("Road Trip", album))
+        assertEquals(
+            "Added 1 track to “Road Trip”",
+            PlaylistAdditions.addedMessage("Road Trip", PlaylistAdditions.ofSong(song())),
+        )
+    }
+
+    /** An empty playlist created on purpose is not a failed add — two events, two sentences. */
+    @Test fun `creating with tracks and creating an empty one are different sentences`() {
+        val album = PlaylistAdditions.ofAlbum((0 until 12).map { song(album = "Odelay") })
+        assertEquals(
+            "Created “Road Trip” with 12 tracks",
+            PlaylistAdditions.createdMessage("Road Trip", album),
+        )
+        assertEquals(
+            "Created “Road Trip”",
+            PlaylistAdditions.createdMessage("Road Trip", PlaylistAddition.NOTHING),
+        )
     }
 
     // ------------------------------------------------------------------------------- reorder

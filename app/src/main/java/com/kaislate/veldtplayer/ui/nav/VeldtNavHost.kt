@@ -107,6 +107,15 @@ fun VeldtNavHost() {
             vm.errors.collect { message -> snackbarHostState.showSnackbar(message) }
         }
 
+        // Playlist confirmations — "Added 12 tracks to “Road Trip”", "Added 36 tracks to the
+        // queue" — go to the SAME snackbar host as playback errors, collected here rather than in
+        // each screen. The add-to-playlist sheet is reachable from four surfaces and the append
+        // action from a fifth; four collectors would be four chances for one screen to swallow the
+        // only feedback an append ever produces.
+        LaunchedEffect(Unit) {
+            plVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
         // Populate the library on open when access is already granted. WorkManager's
         // KEEP policy dedupes concurrent scans.
         LaunchedEffect(audioGranted) { if (audioGranted) vm.scan() }
@@ -225,7 +234,7 @@ fun VeldtNavHost() {
                         veldtDestination(
                             Destinations.SONGS, audioGranted, audioBlocked, requestAudio, padding,
                         ) {
-                            SongsScreen(vm = vm, contentPadding = padding)
+                            SongsScreen(vm = vm, playlistVm = plVm, contentPadding = padding)
                         }
                         veldtDestination(
                             Destinations.ALBUMS, audioGranted, audioBlocked, requestAudio, padding,
@@ -282,6 +291,7 @@ fun VeldtNavHost() {
                         ) {
                             SearchScreen(
                                 vm = vm,
+                                playlistVm = plVm,
                                 onBack = { navController.popBackStack() },
                                 onOpenAlbum = { key ->
                                     navController.navigate(Destinations.albumDetail(key))
@@ -297,6 +307,7 @@ fun VeldtNavHost() {
                         ) { entry ->
                             AlbumDetailScreen(
                                 vm = vm,
+                                playlistVm = plVm,
                                 albumKey = entry.arguments?.getString(Destinations.ARG_KEY).orEmpty(),
                                 onBack = { navController.popBackStack() },
                                 contentPadding = padding,
@@ -307,6 +318,7 @@ fun VeldtNavHost() {
                         ) { entry ->
                             ArtistDetailScreen(
                                 vm = vm,
+                                playlistVm = plVm,
                                 artistKey = entry.arguments?.getString(Destinations.ARG_KEY).orEmpty(),
                                 onBack = { navController.popBackStack() },
                                 onOpenAlbum = { key ->

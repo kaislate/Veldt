@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -28,10 +29,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MusicOff
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -159,6 +165,11 @@ private fun PlaylistDetailContent(
 ) {
     val listState = rememberLazyListState()
     val rows = state.rows
+
+    // The queue AND every number quoted about it, from one call. Not `rows.size` at the call site:
+    // a playlist of 40 rows with four unresolved can queue 36, and a header that says 40 over a
+    // queue of 36 is an off-by-N nobody notices until the playlist ends early.
+    val actions = remember(rows) { PlaylistPresentation.actionsOf(rows) }
 
     // ---- drag state -------------------------------------------------------------------------
     // The entry index the drag started on, -1 when nothing is being dragged. Kept as the ENTRY
@@ -302,6 +313,13 @@ private fun PlaylistDetailContent(
                         maxLines = 1,
                         modifier = Modifier.padding(top = 4.dp),
                     )
+                    PlaylistActionRow(
+                        actions = actions,
+                        onPlay = { vm.playAll(rows) },
+                        onShuffle = { vm.shuffle(rows) },
+                        onAppend = { vm.appendToQueue(rows) },
+                        modifier = Modifier.padding(top = 14.dp),
+                    )
                 }
             }
 
@@ -391,6 +409,72 @@ private fun PlaylistDetailContent(
                 Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back",
                 tint = Color.White,
+            )
+        }
+    }
+}
+
+/**
+ * Play, shuffle and add-to-queue — the three whole-playlist actions spec §3.2 asks for.
+ *
+ * Play and Shuffle are given equal weight rather than a primary button with shuffle hidden in an
+ * overflow: for a playlist, shuffling is not the secondary way to start it. Both are pill-shaped
+ * and carry the palette, so the row reads as part of the header artwork rather than as a Material
+ * button bar dropped onto it.
+ *
+ * **Every count in here comes from [PlaylistActions]**, which took it from the queue. The buttons
+ * do not see the row list at all, so there is no `rows.size` within reach of this composable — the
+ * mistake is unavailable rather than merely avoided.
+ */
+@Composable
+private fun PlaylistActionRow(
+    actions: PlaylistActions,
+    onPlay: () -> Unit,
+    onShuffle: () -> Unit,
+    onAppend: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Button(
+            onClick = onPlay,
+            // Dead, not absent. A playlist whose every track is missing still HAS these actions;
+            // removing them would leave the user wondering where the buttons went, while a
+            // disabled one plus the greyed rows below it says why.
+            enabled = actions.enabled,
+            // A pill, not the default rounded rectangle — but the COLOURS are the theme's own
+            // roles, deliberately not `palette.accent`. Browse surfaces carry the neutral palette,
+            // whose accent is a mid grey; a grey container with a hand-picked label colour is the
+            // exact shape of the defect `playlistStackTint` exists to document, and it cannot be
+            // right in both schemes at once.
+            shape = CircleShape,
+        ) {
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("Play", modifier = Modifier.padding(start = 6.dp))
+        }
+        FilledTonalButton(
+            onClick = onShuffle,
+            enabled = actions.enabled,
+            shape = CircleShape,
+            // The count lives in the description rather than in the label: "Shuffle" is what the
+            // button DOES and "Shuffle 36 tracks" is what it is about to do, and a screen reader
+            // user is the one who cannot see the greyed rows that explain the difference.
+            modifier = Modifier.semantics { contentDescription = actions.shuffleDescription },
+        ) {
+            Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text("Shuffle", modifier = Modifier.padding(start = 6.dp))
+        }
+        IconButton(
+            onClick = onAppend,
+            enabled = actions.enabled,
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.QueueMusic,
+                contentDescription = actions.appendDescription,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
