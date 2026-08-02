@@ -5,22 +5,16 @@ package com.kaislate.veldtplayer.playback
 
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
 import android.os.Looper
 import androidx.annotation.MainThread
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
-import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.data.library.MusicRepository
-import com.kaislate.veldtplayer.data.library.displayAlbum
-import com.kaislate.veldtplayer.data.library.displayArtist
-import com.kaislate.veldtplayer.data.library.displayTitle
 import com.kaislate.veldtplayer.data.library.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -255,26 +249,9 @@ class PlaybackConnection @Inject constructor(
     }
 
     /** Goes through [MusicRepository.playableUri] rather than [Song.uri] directly, so the
-     *  `LibrarySource` resolution seam stays intact for non-local sources. */
-    private fun toMediaItem(song: Song): MediaItem = MediaItem.Builder()
-        .setMediaId(song.id.toString())
-        .setUri(Uri.parse(repo.playableUri(song)))
-        // Through DisplayNames, like every other surface. This metadata is what the
-        // notification, the lock screen and Android Auto render, so a raw tag here means
-        // the one place the user cannot correct is also the one place still showing
-        // "<unknown>" — or, once that is cleaned to blank, showing nothing at all.
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(song.displayTitle())
-                .setArtist(song.displayArtist())
-                .setAlbumTitle(song.displayAlbum())
-                // NOT the audio uri, and not the deprecated albumart:// path — see
-                // [VeldtArtUri]. This is what gives the notification, the lock screen and
-                // the pill a cover at all; before it, every one of them was blank.
-                .setArtworkUri(VeldtArtUri.of(song.toSongArt()))
-                .build()
-        )
-        .build()
+     *  `LibrarySource` resolution seam stays intact for non-local sources. The item itself
+     *  is built by [sessionMediaItem], which is where its contents are asserted. */
+    private fun toMediaItem(song: Song): MediaItem = sessionMediaItem(song, repo.playableUri(song))
 
     @MainThread
     private fun publish() {
