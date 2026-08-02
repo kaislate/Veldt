@@ -44,11 +44,21 @@ class VeldtBitmapLoader(
 
     /**
      * The production wiring. [ArtDecode.FULL] because this art lands on the lock screen at
-     * something close to full width — and because sharing the FULL decode means the bitmap
-     * the pill shows is pixel-identical to the one the app shows.
+     * something close to full width — no divisor is applied to it at all.
+     *
+     * The ceiling is a different thing from the divisor and is not a quality decision: this
+     * bitmap is retained for the whole track by `CacheBitmapLoader` AND by
+     * `MediaSessionBus.albumArt`, and `MediaSessionBus.showsSamePicture` walks every pixel of
+     * it on each push. Uncapped, a 3000x3000 embedded cover is ~34 MB of ARGB_8888 — ~18% of
+     * the heap cap on the 2 GB device this app targets, with two of them in flight across a
+     * track change. [AlbumArtFetcher.SESSION_MAX_PX] is the same size the thumbnail rung is
+     * already bounded to, so this only closes the gap between the two rungs.
      */
     constructor(context: Context) : this(
-        loadArt = { art -> AlbumArtFetcher(art, context, ArtDecode.FULL).fetchBitmap() }
+        loadArt = { art ->
+            AlbumArtFetcher(art, context, ArtDecode.FULL, AlbumArtFetcher.SESSION_MAX_PX)
+                .fetchBitmap()
+        }
     )
 
     /**
