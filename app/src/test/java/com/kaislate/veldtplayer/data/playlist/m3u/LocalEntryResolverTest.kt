@@ -558,6 +558,124 @@ class LocalEntryResolverTest {
         assertEquals(MatchStep.NORMALISED, out.step)
     }
 
+    // ---------------------------------------------------------------- file: URIs
+
+    /**
+     * The shape VLC, Rhythmbox and Windows Media Player write. Asserted with its step, because
+     * `FILENAME` would also have found this song and would prove nothing about the scheme handling.
+     */
+    @Test fun `a file uri resolves to the path it names`() {
+        val target = song(path = "/storage/emulated/0/Music/Beck/Lost.mp3")
+        val out = one("file:///storage/emulated/0/Music/Beck/Lost.mp3", listOf(target))
+        assertEquals(target, out.song)
+        assertEquals(MatchStep.NORMALISED, out.step)
+    }
+
+    /**
+     * **The load-bearing pair.** `%` is a perfectly ordinary character in a filename, so a bare
+     * path containing `a%20b.mp3` names a file called exactly that — while the same text inside a
+     * `file:` URI names `a b.mp3`. Decoding unconditionally merges the two.
+     *
+     * The second entry is deliberately *relative*, so it cannot be answered by the byte-exact rung:
+     * against an absolute entry, `EXACT` would return the literal song first and the test would
+     * stay green under a resolver that percent-decoded everything.
+     */
+    @Test fun `percent escapes are decoded in a file uri and left literal in a bare path`() {
+        val spaced = song(path = "/x/Music/a b.mp3")
+        val literal = song(path = "/x/Music/a%20b.mp3")
+        val out = resolve(
+            listOf("file:///x/Music/a%20b.mp3", "Music/a%20b.mp3"),
+            listOf(spaced, literal),
+        )
+        assertEquals(listOf(spaced, literal), out.map { it.song })
+        assertEquals(listOf(MatchStep.NORMALISED, MatchStep.SUFFIX), out.map { it.step })
+    }
+
+    /**
+     * `+` is a space only in form encoding, which a URI path is not. `Sunn O)))+.mp3` and
+     * `Sunn O))) .mp3` are two files, and `java.net.URLDecoder` would merge them — which is why
+     * the decoder here is hand-rolled.
+     */
+    @Test fun `a plus sign in a file uri is a plus sign, not a space`() {
+        val plus = song(path = "/x/a+b.mp3")
+        val spaced = song(path = "/x/a b.mp3")
+        val out = resolve(listOf("file:///x/a+b.mp3", "file:///x/a%20b.mp3"), listOf(plus, spaced))
+        assertEquals(listOf(plus, spaced), out.map { it.song })
+    }
+
+    /**
+     * An escaped separator must not become a separator, and an escaped `..` must not become a
+     * parent reference. Both would hand back a confident `NORMALISED` match — the ladder's
+     * second-strongest claim — for a path the URI's author explicitly said was something else.
+     *
+     * This is subtler than "decode after the split", which is what I implemented first and which is
+     * **not sufficient**: the key functions join the segments back with `/`, so a decoded `a/b.mp3`
+     * sitting inside one segment produces exactly the key of the real two-segment path. Both
+     * entries are asserted together because the two escapes fail through different mechanisms and a
+     * fix for one does not imply a fix for the other.
+     *
+     * **The steps are the assertion, not the songs.** The second entry reaches `/a.mp3` either way
+     * — via `FILENAME`, the weakest path rung, which is what an unrecognised path is *supposed* to
+     * fall to. Applying the escape would promote it to `NORMALISED`, a confident claim built out of
+     * a segment the URI said was a name; nothing about the returned song can see the difference.
+     */
+    @Test fun `an escape that would manufacture path structure is not applied`() {
+        val nested = song(path = "/x/a/b.mp3")
+        val parent = song(path = "/a.mp3")
+        val out = resolve(
+            listOf("file:///x/a%2Fb.mp3", "file:///x/%2E%2E/a.mp3"),
+            listOf(nested, parent),
+        )
+        assertEquals(listOf(null, parent), out.map { it.song })
+        assertEquals(listOf(MatchStep.UNRESOLVED, MatchStep.FILENAME), out.map { it.step })
+    }
+
+    /**
+     * Consecutive escapes are one UTF-8 run, not one character each. Paired with a lone Latin-1-era
+     * `%F6`, which is *not* valid UTF-8 and must therefore be left unmatched rather than guessed:
+     * the two entries name the same track and only one of them says so in the encoding the URI
+     * spec requires.
+     */
+    @Test fun `multi byte escapes decode as one utf8 character, and a lone high byte is not guessed`() {
+        val target = song(path = "/x/Björk.mp3")
+        val out = resolve(
+            listOf("file:///x/Bj%C3%B6rk.mp3", "file:///x/Bj%F6rk.mp3"),
+            listOf(target),
+        )
+        assertEquals(listOf(target, null), out.map { it.song })
+    }
+
+    /** A `%` that does not begin a well-formed escape is a `%`, and both files are real. */
+    @Test fun `a malformed escape stays literal while a well formed one decodes`() {
+        val encoded = song(path = "/x/100%.mp3")
+        val literal = song(path = "/x/100%zz.mp3")
+        val out = resolve(
+            listOf("file:///x/100%25.mp3", "file:///x/100%zz.mp3"),
+            listOf(encoded, literal),
+        )
+        assertEquals(listOf(encoded, literal), out.map { it.song })
+    }
+
+    /**
+     * Only an empty or `localhost` authority means "this device". `file://server/…` names a host
+     * this app cannot read; it falls back to being read as a path — where the weaker rungs may
+     * still find something — rather than being claimed as the local file, which is the ladder's
+     * worst outcome. The three steps are the assertion: same song, three different strengths of
+     * claim.
+     */
+    @Test fun `only an empty or localhost authority makes a line a local file uri`() {
+        val target = song(path = "/x/a.mp3")
+        val out = resolve(
+            listOf("file:///x/a.mp3", "file://localhost/x/a.mp3", "file://server/x/a.mp3"),
+            listOf(target),
+        )
+        assertEquals(listOf(target, target, target), out.map { it.song })
+        assertEquals(
+            listOf(MatchStep.NORMALISED, MatchStep.NORMALISED, MatchStep.SUFFIX),
+            out.map { it.step },
+        )
+    }
+
     // ---------------------------------------------------------------- shape of the output
 
     /**
