@@ -110,7 +110,21 @@ data class PlayTarget(val queue: List<Song>, val startIndex: Int)
  * file again, and an [UNREADABLE] file never will be. Collapsing them into one "import failed"
  * message is the defect class this phase keeps producing, so the wording is pinned per cause.
  */
-enum class ImportFailure { PERMISSION_LAPSED, MISSING_FILE, UNREADABLE, UNEXPECTED }
+enum class ImportFailure {
+    PERMISSION_LAPSED,
+    MISSING_FILE,
+    UNREADABLE,
+
+    /**
+     * There is no document picker on this device, so no file was ever chosen.
+     *
+     * Its own cause rather than [UNEXPECTED], because it is the one failure with **no retry**:
+     * offering "Pick a file" here re-launches the picker that just threw, forever, and the copy
+     * would talk about "that file" when the user never got as far as choosing one.
+     */
+    PICKER_UNAVAILABLE,
+    UNEXPECTED,
+}
 
 /** The result of an attempted import, success or failure, held until the user dismisses it. */
 sealed interface ImportOutcome {
@@ -339,6 +353,7 @@ object PlaylistImportReport {
         ImportFailure.PERMISSION_LAPSED -> "Veldt lost access to that file"
         ImportFailure.MISSING_FILE -> "That file isn't there any more"
         ImportFailure.UNREADABLE -> "That file couldn't be read"
+        ImportFailure.PICKER_UNAVAILABLE -> "This device has no file picker"
         ImportFailure.UNEXPECTED -> "Something went wrong importing that file"
     }
 
@@ -352,10 +367,22 @@ object PlaylistImportReport {
         ImportFailure.UNREADABLE ->
             "It may be far too large for a playlist, or the app it came from stopped responding. " +
                 "Nothing was imported."
+        ImportFailure.PICKER_UNAVAILABLE ->
+            "Veldt asks Android to show a file picker, and this build of Android has none " +
+                "installed. Installing a Files or Documents app will let Veldt import playlists."
         ImportFailure.UNEXPECTED ->
             "Nothing was imported. If it happens again with the same file, it is probably not a " +
                 "playlist Veldt can read."
     }
+
+    /**
+     * Whether offering to pick a file again could possibly help.
+     *
+     * False for exactly one cause, and the distinction is not cosmetic: with no picker installed,
+     * a "Pick a file" button re-launches the thing that just threw and lands the user back on this
+     * same dialog, forever. A button that cannot work should not be drawn.
+     */
+    fun retryable(failure: ImportFailure): Boolean = failure != ImportFailure.PICKER_UNAVAILABLE
 }
 
 /**

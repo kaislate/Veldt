@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -49,7 +50,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,6 +79,15 @@ private val ROW_SHAPE = RoundedCornerShape(18.dp)
 
 /** How far each receding card in the stack sits behind the one in front of it. */
 private val STACK_STEP = 12.dp
+
+/**
+ * How much palette colour each receding card takes on over its container role.
+ *
+ * The NEAR card takes more, so the stack still recedes when the palette is strongly coloured —
+ * with the tints equal, the two would differ only by the container step, which is small.
+ */
+internal const val NEAR_CARD_TINT = 0.18f
+internal const val FAR_CARD_TINT = 0.10f
 
 /**
  * The playlists tab.
@@ -127,7 +139,13 @@ fun PlaylistsScreen(
     var deleting by remember { mutableStateOf<PlaylistCard?>(null) }
 
     when (val current = state) {
-        PlaylistsUiState.Loading -> PlaylistsLoading(palette, contentPadding, modifier)
+        PlaylistsUiState.Loading -> PlaylistsLoading(
+            palette = palette,
+            contentPadding = contentPadding,
+            title = "Gathering your playlists…",
+            body = "Veldt is matching each playlist against the music on this device.",
+            modifier = modifier,
+        )
 
         PlaylistsUiState.Empty -> EmptyState(
             palette = palette,
@@ -220,17 +238,24 @@ fun PlaylistsScreen(
  * A real state rather than a blank frame: resolving twenty playlists against a large library is
  * not instant, and rendering "No playlists yet" over it would be the same lie P1.3 told about a
  * library mid-scan.
+ *
+ * The copy is a PARAMETER because both callers are not the same sentence. The tab is opening a
+ * list; the detail screen is opening one playlist, and reusing the tab's wording had it say
+ * "Gathering your playlists… matching each playlist against the music on this device" while the
+ * user waited for exactly one. Sharing the layout is the point; sharing the words was a bug.
  */
 @Composable
 internal fun PlaylistsLoading(
     palette: DominantColors,
     contentPadding: PaddingValues,
+    title: String,
+    body: String,
     modifier: Modifier = Modifier,
 ) {
     BrowseMessage(
         palette = palette,
-        title = "Gathering your playlists…",
-        body = "Veldt is matching each playlist against the music on this device.",
+        title = title,
+        body = body,
         contentPadding = contentPadding,
         modifier = modifier,
         emblem = {
@@ -392,6 +417,10 @@ private fun PlaylistStackRow(
  * cover rather than around it. They are palette-tinted rather than a second and third piece of
  * artwork: three covers fanned out at this size is mud, and the mosaic (Task 7) is where several
  * covers get to be legible.
+ *
+ * Their colour is built from the theme's own container ROLES, not from an alpha over whatever
+ * happens to be behind them — see [playlistStackTint]. This is the signature idiom of the tab, and
+ * an idiom that survives in one colour scheme is a bare list with wide left gutters in the other.
  */
 @Composable
 private fun PlaylistStack(
@@ -403,9 +432,19 @@ private fun PlaylistStack(
         modifier = modifier.size(width = STACK_WIDTH, height = COVER_SIZE),
         contentAlignment = Alignment.CenterStart,
     ) {
-        // Farthest back, faintest, smallest. Only its trailing edge is ever visible.
-        RecedingCard(palette, offsetX = STACK_STEP * 2, inset = 8.dp, alpha = 0.20f)
-        RecedingCard(palette, offsetX = STACK_STEP, inset = 4.dp, alpha = 0.38f)
+        // Farthest back, faintest, smallest. Only its trailing edge is ever visible, and it is the
+        // SMALLER container step so that it reads as further away than the one in front of it — in
+        // either scheme, since the roles invert together.
+        RecedingCard(
+            color = playlistStackTint(MaterialTheme.colorScheme, palette.accent, near = false),
+            offsetX = STACK_STEP * 2,
+            inset = 8.dp,
+        )
+        RecedingCard(
+            color = playlistStackTint(MaterialTheme.colorScheme, palette.accent, near = true),
+            offsetX = STACK_STEP,
+            inset = 4.dp,
+        )
         PlaylistCoverArt(
             covers = card.covers,
             palette = palette,
@@ -417,10 +456,9 @@ private fun PlaylistStack(
 
 @Composable
 private fun RecedingCard(
-    palette: DominantColors,
+    color: Color,
     offsetX: Dp,
     inset: Dp,
-    alpha: Float,
 ) {
     Box(
         Modifier
@@ -428,8 +466,39 @@ private fun RecedingCard(
             .padding(vertical = inset)
             .size(width = COVER_SIZE, height = COVER_SIZE - inset * 2)
             .clip(COVER_SHAPE)
-            .background(palette.accent.copy(alpha = alpha)),
+            .background(color),
     )
+}
+
+/**
+ * The colour of one receding card in a playlist's stack — **opaque, and derived from the theme.**
+ *
+ * The first version of this was `palette.accent.copy(alpha = 0.20f)` painted straight onto the
+ * list, which is wrong by construction rather than merely untested. Browse surfaces use the
+ * NEUTRAL palette (`ColorExtractor.extract(null)`), whose accent is the grey `#8A8A93`; grey at
+ * 20% over a dark ground is a visible step, and the same grey at 20% over a light one is
+ * approximately the light ground. The stack — the whole reason this tab is not a bare list —
+ * would have quietly degraded into a list with oddly wide left gutters the moment the app follows
+ * the system theme, and no amount of device verification fixes a colour that cannot be right in
+ * both.
+ *
+ * So [base] is a Material CONTAINER ROLE, which is defined to be a step away from `surface` in
+ * whichever scheme is active — lighter in dark, darker in light — and the palette [accent] is
+ * composited **over** it rather than replacing it. The result is opaque: it can never dissolve
+ * into what is behind it, whatever that is. The identity is still the palette's, which is what
+ * Task 7's per-playlist colour will ride on.
+ *
+ * `PlaylistStackTintTest` asserts the contrast against `surface` in `lightColorScheme()` AND
+ * `darkColorScheme()`, so the property is checked rather than promised.
+ */
+internal fun playlistStackTint(scheme: ColorScheme, accent: Color, near: Boolean): Color {
+    // The ROLE CHOICE lives in here, not at the call site. Left in the composable it would have
+    // been the one part of this decision no test could reach — and swapping a container role for
+    // `surface` is exactly the edit that reintroduces the original defect while every assertion
+    // about tints and opacity stays green.
+    val base = if (near) scheme.surfaceContainerHighest else scheme.surfaceContainerHigh
+    val tintAlpha = if (near) NEAR_CARD_TINT else FAR_CARD_TINT
+    return accent.copy(alpha = tintAlpha).compositeOver(base)
 }
 
 /**
@@ -566,15 +635,28 @@ private fun ImportReportDialog(
             dismissButton = { TextButton(onClick = onDismiss) { Text("Done") } },
         )
 
-        is ImportOutcome.Failed -> AlertDialog(
-            onDismissRequest = onDismiss,
-            title = { Text(PlaylistImportReport.failureHeadline(outcome.failure)) },
-            text = { Text(PlaylistImportReport.failureDetail(outcome.failure)) },
-            // The remedy for the commonest cause — a lapsed grant — is to pick the file again,
-            // so the affirmative button IS that, not an "OK" that leaves the user where they
-            // started.
-            confirmButton = { TextButton(onClick = onRetry) { Text("Pick a file") } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Not now") } },
-        )
+        is ImportOutcome.Failed -> {
+            val retryable = PlaylistImportReport.retryable(outcome.failure)
+            AlertDialog(
+                onDismissRequest = onDismiss,
+                title = { Text(PlaylistImportReport.failureHeadline(outcome.failure)) },
+                text = { Text(PlaylistImportReport.failureDetail(outcome.failure)) },
+                // The remedy for the commonest cause — a lapsed grant — is to pick the file
+                // again, so the affirmative button IS that, not an "OK" that leaves the user
+                // where they started. But when there is no picker at all, that button relaunches
+                // the thing that just failed and returns here forever, so it is not drawn: the
+                // dialog is then a single dismiss.
+                confirmButton = {
+                    if (retryable) {
+                        TextButton(onClick = onRetry) { Text("Pick a file") }
+                    } else {
+                        TextButton(onClick = onDismiss) { Text("OK") }
+                    }
+                },
+                dismissButton = {
+                    if (retryable) TextButton(onClick = onDismiss) { Text("Not now") }
+                },
+            )
+        }
     }
 }

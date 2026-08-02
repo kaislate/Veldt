@@ -202,6 +202,17 @@ class PlaylistViewModelTest {
         assertEquals(listOf("list"), cards().map { it.name })
     }
 
+    /**
+     * No file was ever chosen, so this must not arrive as the generic cause whose copy talks about
+     * "that file" and whose button offers to try the picker again.
+     */
+    @Test fun `a device with no file picker reports its own cause`() = runTest {
+        vm.reportPickerUnavailable()
+
+        assertEquals(ImportOutcome.Failed(ImportFailure.PICKER_UNAVAILABLE), vm.importOutcome.value)
+        assertFalse(PlaylistImportReport.retryable(ImportFailure.PICKER_UNAVAILABLE))
+    }
+
     @Test fun `the report is held until it is dismissed`() = runTest {
         serve(DOC, "/x/Music/a.mp3")
 

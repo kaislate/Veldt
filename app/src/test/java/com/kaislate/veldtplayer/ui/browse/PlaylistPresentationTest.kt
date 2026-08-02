@@ -108,11 +108,23 @@ class PlaylistPresentationTest {
         assertTrue("expected the artist in '${row.subtitle}'", row.subtitle.contains("Beck"))
     }
 
+    /**
+     * The note itself is pinned to a LITERAL, here and below.
+     *
+     * `subtitle.contains(MISSING_NOTE)` reads like an assertion and is not one: set the constant
+     * to `""` and every string in the world contains it. Same shape as the `HEADER_ITEM_COUNT`
+     * tautology and the `COVER_LIMIT` one — the constant compared against the code that applies
+     * it can only ever agree with itself.
+     */
+    @Test fun `the missing note is the sentence an unplayable row explains itself with`() {
+        assertEquals("Not in your library", PlaylistPresentation.MISSING_NOTE)
+    }
+
     @Test fun `an unresolved row says why it cannot be played`() {
         val row = PlaylistPresentation.rowOf(unresolved(1, 0))
         assertTrue(
             "expected the explanation in '${row.subtitle}'",
-            row.subtitle.contains(PlaylistPresentation.MISSING_NOTE),
+            row.subtitle.contains("Not in your library"),
         )
         assertFalse(row.playable)
     }
@@ -123,7 +135,7 @@ class PlaylistPresentationTest {
      */
     @Test fun `an unresolved row with no captured artist is still explained`() {
         val row = PlaylistPresentation.rowOf(unresolved(1, 0, artist = "   "))
-        assertEquals(PlaylistPresentation.MISSING_NOTE, row.subtitle)
+        assertEquals("Not in your library", row.subtitle)
     }
 
     /** The library's tags win for a resolved row — the same rule every other list follows. */
@@ -226,12 +238,22 @@ class PlaylistPresentationTest {
         assertEquals(2, covers.size)
     }
 
-    @Test fun `covers are capped so the mosaic is offered a bounded list`() {
+    /**
+     * FOUR, the literal, not `COVER_LIMIT`.
+     *
+     * Asserting the constant against the function that applies it passed for every value from 4
+     * to 20 — a reviewer mutated it to 6 and the whole suite stayed green. Spec §3.3 says the
+     * mosaic is "the first four covers", so four is a spec'd number, and it is about to be
+     * consumed by Task 7's slot layout, which has a 4-up case.
+     */
+    @Test fun `covers are capped at the four the mosaic slots`() {
+        assertEquals(4, PlaylistPresentation.COVER_LIMIT)
         val tracks = (0 until 20).map { resolved(it + 1L, it, song(album = "Album $it")) }
-        assertEquals(
-            PlaylistPresentation.COVER_LIMIT,
-            PlaylistPresentation.coversOf(tracks).size,
-        )
+        val covers = PlaylistPresentation.coversOf(tracks)
+        assertEquals(4, covers.size)
+        // And it is the FIRST four, in playlist order — a cap that took the last four, or an
+        // arbitrary four, would also have size 4.
+        assertEquals(listOf("Album 0", "Album 1", "Album 2", "Album 3"), covers.map { it.album })
     }
 
     /** Loading is the flow's initial value; an answered-but-empty library is a different screen. */
@@ -375,12 +397,36 @@ class PlaylistPresentationTest {
      * leave a user told to "pick the file again" about a file that is simply too big.
      */
     @Test fun `every failure cause has its own wording`() {
+        // The count is a literal too. `entries.size` against `entries.map{}.toSet().size` is the
+        // distinctness claim and is worth making — but on its own it would also pass for an enum
+        // that lost a case, which is how a cause silently stops being distinguishable.
+        assertEquals(5, ImportFailure.entries.size)
         val headlines = ImportFailure.entries.map(PlaylistImportReport::failureHeadline)
         val details = ImportFailure.entries.map(PlaylistImportReport::failureDetail)
-        assertEquals(ImportFailure.entries.size, headlines.toSet().size)
-        assertEquals(ImportFailure.entries.size, details.toSet().size)
+        assertEquals(5, headlines.toSet().size)
+        assertEquals(5, details.toSet().size)
         assertTrue(headlines.none { it.isBlank() })
         assertTrue(details.none { it.isBlank() })
+    }
+
+    /**
+     * The one failure with no remedy. Offering "Pick a file" when there is no picker relaunches
+     * the thing that just threw and lands the user back on this dialog, forever — and the copy
+     * must not talk about "that file", because none was ever chosen.
+     */
+    @Test fun `a missing picker is its own cause, is not retryable, and blames no file`() {
+        assertFalse(PlaylistImportReport.retryable(ImportFailure.PICKER_UNAVAILABLE))
+        val headline = PlaylistImportReport.failureHeadline(ImportFailure.PICKER_UNAVAILABLE)
+        val detail = PlaylistImportReport.failureDetail(ImportFailure.PICKER_UNAVAILABLE)
+        assertFalse("'$headline' must not blame a file", headline.contains("file", ignoreCase = true) &&
+            headline.contains("that file", ignoreCase = true))
+        assertTrue("'$detail' should say what would fix it", detail.contains("Files or Documents"))
+    }
+
+    @Test fun `every other cause is worth retrying`() {
+        ImportFailure.entries
+            .filter { it != ImportFailure.PICKER_UNAVAILABLE }
+            .forEach { assertTrue("$it should be retryable", PlaylistImportReport.retryable(it)) }
     }
 
     /** The one remedy that actually works for a lapsed grant is picking the file again. */
@@ -444,8 +490,12 @@ class PlaylistPresentationTest {
     }
 
     @Test fun `an unnameable document still gets a name`() {
+        // The literal, for the same reason as COVER_LIMIT and MISSING_NOTE: comparing FALLBACK
+        // against the function that returns FALLBACK holds for every value it could ever have,
+        // including the empty string a nameless row cannot survive.
+        assertEquals("Imported playlist", PlaylistNaming.FALLBACK)
         assertEquals(
-            PlaylistNaming.FALLBACK,
+            "Imported playlist",
             PlaylistNaming.fromDocumentUri("content://com.example.provider/document/"),
         )
     }

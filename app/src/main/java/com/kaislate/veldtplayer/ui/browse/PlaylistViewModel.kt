@@ -151,9 +151,13 @@ class PlaylistViewModel @Inject constructor(
      * Rare, but not impossible — a stripped AOSP build with no `DocumentsUI` throws
      * `ActivityNotFoundException` out of `launch()`, on the UI thread, where it is a crash. It is
      * reported through the same surface as every other import failure rather than a second one.
+     *
+     * Its OWN cause, not [ImportFailure.UNEXPECTED]. No file was ever chosen, so copy about "that
+     * file" is a lie — and it is the one failure whose retry can never succeed, which is why
+     * [PlaylistImportReport.retryable] singles it out.
      */
     fun reportPickerUnavailable() {
-        _importOutcome.value = ImportOutcome.Failed(ImportFailure.UNEXPECTED)
+        _importOutcome.value = ImportOutcome.Failed(ImportFailure.PICKER_UNAVAILABLE)
     }
 
     // ------------------------------------------------------------------------------- mutations

@@ -115,8 +115,15 @@ fun PlaylistDetailScreen(
     val palette = ColorExtractor.extract(null)
 
     when (val current = state) {
-        PlaylistDetailUiState.Loading ->
-            PlaylistsLoading(palette, contentPadding, modifier)
+        PlaylistDetailUiState.Loading -> PlaylistsLoading(
+            palette = palette,
+            contentPadding = contentPadding,
+            // Singular, and about THIS playlist. The tab's plural copy read "matching each
+            // playlist against the music on this device" while one was opening.
+            title = "Opening this playlist…",
+            body = "Veldt is matching its tracks against the music on this device.",
+            modifier = modifier,
+        )
 
         PlaylistDetailUiState.Missing -> EmptyState(
             palette = palette,
@@ -242,6 +249,12 @@ private fun PlaylistDetailContent(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
+            // NO TOP contentPadding, and the drag depends on it. `dragAnchorTopPx` is taken
+            // from LazyListItemInfo.offset, which is measured from the start of the CONTENT — so
+            // a top content padding would shift every row's true viewport position by that much
+            // and bias the auto-scroll edge test by the same amount. The header item already
+            // supplies all the top air this screen wants; if that ever changes, the anchor has to
+            // gain the padding back.
             contentPadding = PaddingValues(
                 bottom = contentPadding.calculateBottomPadding() + LIST_AIR,
             ),

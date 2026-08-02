@@ -199,6 +199,14 @@ class PlaylistRepository(
      * playlist on a single sweep, and there would be nothing to restore it from.
      *
      * Entries that resolve to nothing are still returned, in position order, with `song = null`.
+     *
+     * **This method writes, and its one UI consumer re-enters it on its own writes.**
+     * `PlaylistViewModel` calls it from a `mapLatest` over a flow that includes `observeEntries`,
+     * so a write-back re-triggers the very flow that called it. That converges only because the
+     * correction map is populated under `song.id != entry.songId`: the second pass finds the ids
+     * already agreeing, writes nothing, and the loop quiesces after one extra bounce. Widening
+     * that guard — writing back unconditionally, or touching `updatedAt` here — turns the same
+     * call site into an endless re-resolve.
      */
     suspend fun resolve(playlistId: Long): List<PlaylistTrack> {
         val entries = dao.getEntries(playlistId)
