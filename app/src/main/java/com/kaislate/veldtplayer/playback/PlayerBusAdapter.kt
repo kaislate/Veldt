@@ -12,6 +12,7 @@ import androidx.media3.common.util.BitmapLoader
 import androidx.media3.common.MediaMetadata as Media3Metadata
 import com.google.common.util.concurrent.MoreExecutors
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Mirrors the internal Media3 [Player] state into the shared [MediaSessionBus]
@@ -98,8 +99,18 @@ internal class BusArtPublisher(private val loader: BitmapLoader) {
      * its bump is a load for a track that is no longer playing: publishing it would put the
      * PREVIOUS track's cover on the pill, which is the same stranded-cover failure the
      * `allowNull` below exists to prevent, arriving by a different route.
+     *
+     * **Atomic because the two sides of the guard run on different threads.** It is written
+     * only from the main looper ([publish], [detach]), but it is READ in the future listener,
+     * and that listener does not run on the main looper in the case that matters. Media3
+     * wraps this loader in a `CacheBitmapLoader`, so a cache HIT completes on the caller's
+     * thread — but every cache MISS, which is the first load of every track, is completed by
+     * `VeldtBitmapLoader`'s coroutine on `Dispatchers.IO`, and `directExecutor` then runs the
+     * listener on THAT thread. A plain `Int` gives the IO thread no happens-before edge to
+     * the main thread's write, so it may read a stale generation, pass the check, and publish
+     * the previous track's cover — the exact failure the guard exists to prevent.
      */
-    private var generation = 0
+    private val generation = AtomicInteger(0)
 
     private var lastUri: Uri? = null
     private var lastData: ByteArray? = null
@@ -118,13 +129,13 @@ internal class BusArtPublisher(private val loader: BitmapLoader) {
         lastData = metadata.artworkData
         published = true
 
-        val generationAtRequest = ++generation
+        val generationAtRequest = generation.incrementAndGet()
         // Null means the metadata carries neither artwork bytes nor an artwork uri: this
         // track genuinely has no cover, and there is nothing to wait for.
         val future = loader.loadBitmapFromMetadata(metadata) ?: return publishArt(null)
         future.addListener(
             {
-                if (generationAtRequest != generation) return@addListener
+                if (generationAtRequest != generation.get()) return@addListener
                 // An exceptional completion is this loader's way of saying "no cover" — see
                 // [VeldtBitmapLoader]. Either way the answer is null, not "keep the old one".
                 publishArt(runCatching { future.get() }.getOrNull())
@@ -135,7 +146,7 @@ internal class BusArtPublisher(private val loader: BitmapLoader) {
 
     /** Invalidates everything in flight. */
     fun detach() {
-        generation++
+        generation.incrementAndGet()
     }
 
     /**
