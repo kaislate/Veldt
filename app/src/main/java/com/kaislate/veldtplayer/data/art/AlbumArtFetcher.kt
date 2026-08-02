@@ -35,37 +35,50 @@ class AlbumArtFetcher(
     private val sample: Int,
 ) : Fetcher {
 
-    override suspend fun fetch(): FetchResult? = withContext(Dispatchers.IO) {
+    override suspend fun fetch(): FetchResult? {
+        // null -> Coil reports error state -> ArtImage renders the themed placeholder
+        val bitmap = fetchBitmap() ?: return null
+        return DrawableResult(
+            drawable = BitmapDrawable(context.resources, bitmap),
+            // Always false, including for a sampled decode, and that is deliberate.
+            //
+            // The flag exists for ONE consumer: `MemoryCacheService.isSizeValid`
+            // rejects a cached bitmap when `multiplier > 1.0 && isSampled` — i.e.
+            // when a request needs a bigger image than the cache holds. Compose
+            // requests are `Precision.INEXACT`, so that gate is the only one that
+            // runs. A sampled entry is ~32px against a full-screen request, so
+            // flagging it truthfully makes EVERY lookup of it miss: the entry is
+            // written and never read, and the backdrop re-decodes on every visit —
+            // a MediaStore IPC, or a full AudioFileIO parse of the music file.
+            //
+            // The protection the flag would give is already total: a sampled decode
+            // has its own base key AND its own MemoryCache.Key extras, so no
+            // full-size request can reach this entry to be under-served by it.
+            // Within a sampled key namespace every entry has the same sample, so
+            // the check has nothing left to protect against. See [ArtDecode].
+            isSampled = false,
+            dataSource = DataSource.DISK,
+        )
+    }
+
+    /**
+     * The ladder itself, without Coil's wrapper types.
+     *
+     * Split out so the media-session artwork path
+     * ([com.kaislate.veldtplayer.playback.VeldtBitmapLoader]) walks THIS ladder rather than
+     * growing a second one. Coil wants a [FetchResult]; a `BitmapLoader` wants a [Bitmap];
+     * both must agree on which source wins, or the notification and the app can disagree
+     * about what a track's cover is.
+     */
+    suspend fun fetchBitmap(): Bitmap? = withContext(Dispatchers.IO) {
         for (source in ArtSourcePlan.plan(data)) {
             val bitmap = when (source) {
                 is ArtSource.Thumbnail -> loadThumbnail(source.uri)
                 is ArtSource.Embedded -> loadEmbedded(source.filePath)
             }
-            if (bitmap != null) {
-                return@withContext DrawableResult(
-                    drawable = BitmapDrawable(context.resources, bitmap),
-                    // Always false, including for a sampled decode, and that is deliberate.
-                    //
-                    // The flag exists for ONE consumer: `MemoryCacheService.isSizeValid`
-                    // rejects a cached bitmap when `multiplier > 1.0 && isSampled` — i.e.
-                    // when a request needs a bigger image than the cache holds. Compose
-                    // requests are `Precision.INEXACT`, so that gate is the only one that
-                    // runs. A sampled entry is ~32px against a full-screen request, so
-                    // flagging it truthfully makes EVERY lookup of it miss: the entry is
-                    // written and never read, and the backdrop re-decodes on every visit —
-                    // a MediaStore IPC, or a full AudioFileIO parse of the music file.
-                    //
-                    // The protection the flag would give is already total: a sampled decode
-                    // has its own base key AND its own MemoryCache.Key extras, so no
-                    // full-size request can reach this entry to be under-served by it.
-                    // Within a sampled key namespace every entry has the same sample, so
-                    // the check has nothing left to protect against. See [ArtDecode].
-                    isSampled = false,
-                    dataSource = DataSource.DISK,
-                )
-            }
+            if (bitmap != null) return@withContext bitmap
         }
-        null // -> Coil reports error state -> ArtImage renders the themed placeholder
+        null
     }
 
     /**
