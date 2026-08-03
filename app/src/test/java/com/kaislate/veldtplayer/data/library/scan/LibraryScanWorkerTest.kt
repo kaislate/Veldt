@@ -125,7 +125,14 @@ class LibraryScanWorkerTest {
         relativeKey: String? = "external_primary:Music/$id.mp3",
         title: String = "T$id",
     ) = Song(
-        id = id,
+        // What the source ENUMERATED, so: no surrogate. `LocalSource.listSongs` emits exactly this,
+        // and the fake has to as well or the worker's whole reason for calling `upsertBySourceKey`
+        // rather than a bare REPLACE becomes untestable here — a fixture carrying its own id would
+        // be preserved by any write at all, including the churning one.
+        //
+        // [id] still varies per row, driving `externalId`, `uri` and `relativeKey`; it is simply not
+        // reused as the surrogate. `Song.UNSAVED` and `"ms-9001"` are unequal, as GC 14 requires.
+        id = Song.UNSAVED,
         sourceId = THIS_SOURCE,
         externalId = externalId,
         uri = "content://media/external/audio/media/$id",
@@ -258,5 +265,34 @@ class LibraryScanWorkerTest {
             "external_primary:Podcasts/a.mp3",
             db.songDao().getAllSongs().single { it.externalId == "ms-9001" }.relativeKey,
         )
+    }
+
+    /**
+     * **The anti-churn property that matters to a user, on the production path.**
+     *
+     * `SongDaoTest` proves `upsertBySourceKey` preserves a surrogate. Nothing proved the *worker*
+     * calls it — and the worker's write is the only place in the app where a scan can renumber the
+     * library. That call site is a decision (GC 10), so it gets a test rather than a comment.
+     *
+     * The row is seeded under the surrogate `41` — a number a previous scan assigned, deliberately
+     * unlike anything `AUTOINCREMENT` would reach here, so the assertion cannot pass by coincidence
+     * — and the source then re-enumerates the same track, changed, carrying [Song.UNSAVED] as a
+     * real enumeration does. `41` must survive, because that is the number
+     * `playlist_entries.songId` is holding.
+     *
+     * Asserted as the pair `(id, dateModifiedSec)`: the id alone would pass for a scan that wrote
+     * nothing at all, and the mtime alone is exactly what a churning REPLACE also gets right. The
+     * pair is the only form that says "the update landed AND the row is still the same row".
+     */
+    @Test fun `a rescan updates a changed row in place, keeping its surrogate id`() = runTest {
+        val track = song(1)
+        seed(track.toEntity().copy(id = 41L))
+        source.songs = listOf(track.copy(dateModifiedSec = 999L)) // re-tagged, re-enumerated
+
+        assertEquals(ListenableWorker.Result.success(), runScan())
+
+        assertEquals(listOf("ms-9001"), dao.upsertedExternalIds) // it really was re-upserted
+        val row = db.songDao().getAllSongs().single()
+        assertEquals(41L to 999L, row.id to row.dateModifiedSec)
     }
 }
