@@ -31,6 +31,12 @@ class SessionMediaItemTest {
         album: String = "Sea Change",
     ) = Song(
         id = id,
+        // Stated for the same reason `relativeKey` is: no default exists, so every site says what
+        // its identity situation is. `externalId` is deliberately NOT `id.toString()` — the Media3
+        // `mediaId` must be built from `Song.id`, and a fixture where the two agreed could not tell
+        // the two apart.
+        sourceId = "test-source",
+        externalId = "ms-${id + 9000}",
         uri = "content://media/external/audio/media/$id",
         filePath = "/storage/emulated/0/Music/$id.mp3",
         // Stated explicitly, not defaulted: `Song.relativeKey` deliberately has no default

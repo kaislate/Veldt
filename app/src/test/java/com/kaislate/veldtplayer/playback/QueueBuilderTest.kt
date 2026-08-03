@@ -14,6 +14,8 @@ class QueueBuilderTest {
 
     private fun song(id: Long) = Song(
         id = id,
+        sourceId = "test-source",
+        externalId = "ms-${id + 9000}",
         uri = "content://media/external/audio/media/$id",
         filePath = "/music/$id.mp3",
         relativeKey = "Music/$id.mp3",

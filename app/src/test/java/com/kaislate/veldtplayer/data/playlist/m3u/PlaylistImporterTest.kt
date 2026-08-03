@@ -93,6 +93,9 @@ class PlaylistImporterTest {
     ): Song = nextId++.let { id ->
         Song(
             id = id,
+            // The fake source's own id — these rows are what that source enumerated.
+            sourceId = "test-source",
+            externalId = "ms-${id + 9000}",
             uri = "content://media/external/audio/media/$id",
             filePath = path,
             relativeKey = relativeKey,

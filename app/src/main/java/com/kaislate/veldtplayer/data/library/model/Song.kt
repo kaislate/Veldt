@@ -6,7 +6,26 @@ package com.kaislate.veldtplayer.data.library.model
 /** Framework-free library domain models. `uri` is a String so pure code/tests
  *  never import android.net.Uri; the UI parses it at the play call site. */
 data class Song(
-    val id: Long,               // stable identity = MediaStore _ID
+    /**
+     * The app-internal `Long` handle for this track: the Room primary key, the Media3 `mediaId`,
+     * and the key playlist entries cache. It is opaque — **nothing may parse meaning out of it**.
+     * In particular it is not a MediaStore `_ID`, no `content://` uri may be derived from it, and
+     * it is never compared to an [externalId]. (It still happens to hold the MediaStore `_ID` for
+     * local rows as this is written, but that is an implementation accident on its way out: it
+     * becomes a Room-assigned surrogate, and any code written against the old meaning breaks
+     * silently rather than loudly when it does. Use [externalId] when you mean the source's id.)
+     */
+    val id: Long,
+    /** The owning [com.kaislate.veldtplayer.data.library.LibrarySource]'s `id`. Half of the
+     *  cross-source identity `(sourceId, externalId)`, which is what actually names a track. */
+    val sourceId: String,
+    /**
+     * The track's identity **as its own source names it** — for the local source the MediaStore
+     * `_ID` rendered as a string; for a server source, that server's GUID. Unique only within a
+     * [sourceId]: two sources may hand out the same string for different songs, which is exactly
+     * why the pair and not this field alone is the identity.
+     */
+    val externalId: String,
     val uri: String,            // content:// playable uri, as String
     val filePath: String?,      // MediaStore DATA path for tag reading; null for remote sources
     /**

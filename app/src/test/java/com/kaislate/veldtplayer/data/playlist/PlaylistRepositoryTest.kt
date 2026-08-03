@@ -118,6 +118,11 @@ class PlaylistRepositoryTest {
         relativeKey: String? = null,
     ) = Song(
         id = id,
+        // Deliberately neither FakeSource's default "local" nor the "not-local" the GC-2 test uses.
+        // `addSongs` must take entry.sourceId from the LibrarySource, never from the Song, so if it
+        // ever started reading this field that test would go red instead of agreeing by accident.
+        sourceId = "test-source",
+        externalId = "ms-${id + 9000}",
         uri = "content://media/external/audio/media/$id",
         filePath = path,
         relativeKey = relativeKey,

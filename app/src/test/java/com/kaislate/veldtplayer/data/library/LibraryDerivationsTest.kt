@@ -14,7 +14,8 @@ class LibraryDerivationsTest {
     private fun song(
         id: Long, title: String, artist: String, album: String, albumArtist: String? = null,
     ) = Song(
-        id = id, uri = "content://media/external/audio/media/$id", filePath = null, relativeKey = null,
+        id = id, sourceId = "test-source", externalId = "ms-${id + 9000}",
+        uri = "content://media/external/audio/media/$id", filePath = null, relativeKey = null,
         title = title, artist = artist, album = album, albumArtist = albumArtist,
         trackNumber = null, discNumber = null, year = null, durationMs = 1000,
         dateModifiedSec = 0, hasEmbeddedArt = false,

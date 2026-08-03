@@ -38,6 +38,11 @@ class LocalSourceKeysTest {
 
     private fun song(id: Long, filePath: String?, relativeKey: String? = null) = Song(
         id = id,
+        // Named "test-source", NOT LocalSource's own "local": nothing in `stableKey` may read the
+        // source dimension, and a fixture that agreed with the production literal would hide it if
+        // something started to.
+        sourceId = "test-source",
+        externalId = "ms-${id + 9000}",
         uri = "content://media/external/audio/media/$id",
         filePath = filePath,
         relativeKey = relativeKey,

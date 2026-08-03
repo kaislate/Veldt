@@ -17,7 +17,8 @@ import org.junit.Test
 class CoverTrackTest {
 
     private fun song(id: Long, hasEmbeddedArt: Boolean = false) = Song(
-        id = id, uri = "content://media/external/audio/media/$id", filePath = null, relativeKey = null,
+        id = id, sourceId = "test-source", externalId = "ms-${id + 9000}",
+        uri = "content://media/external/audio/media/$id", filePath = null, relativeKey = null,
         title = "t$id", artist = "A", album = "Alb", albumArtist = null,
         trackNumber = null, discNumber = null, year = null, durationMs = 1000,
         dateModifiedSec = 0, hasEmbeddedArt = hasEmbeddedArt,

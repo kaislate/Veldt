@@ -4,11 +4,30 @@
 package com.kaislate.veldtplayer.data.library.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "songs")
+/**
+ * The `songs` row.
+ *
+ * `(sourceId, externalId)` is the **real** identity of a track and is enforced unique here. [id] is
+ * the app-internal handle everything else in the app points at — still the MediaStore `_ID` at this
+ * version, a Room-assigned surrogate from v7 onward — and nothing may read meaning out of it.
+ *
+ * The index is a pair rather than `externalId` alone because source-native ids are only unique
+ * *within* a source: a Subsonic track `42` and a MediaStore `_ID` `42` are different songs and must
+ * be able to coexist as two rows.
+ */
+@Entity(
+    tableName = "songs",
+    indices = [Index(value = ["sourceId", "externalId"], unique = true)],
+)
 data class SongEntity(
     @PrimaryKey val id: Long,
+    /** See [com.kaislate.veldtplayer.data.library.model.Song.sourceId]. */
+    val sourceId: String,
+    /** See [com.kaislate.veldtplayer.data.library.model.Song.externalId]. */
+    val externalId: String,
     val uri: String,
     val filePath: String?,
     /** See [com.kaislate.veldtplayer.data.library.model.Song.relativeKey]. */
