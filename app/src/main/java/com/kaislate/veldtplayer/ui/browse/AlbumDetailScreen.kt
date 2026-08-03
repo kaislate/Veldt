@@ -20,13 +20,16 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,6 +75,7 @@ private const val PARALLAX = 0.5f
 @Composable
 fun AlbumDetailScreen(
     vm: BrowseViewModel,
+    playlistVm: PlaylistViewModel,
     albumKey: String,
     onBack: () -> Unit,
     contentPadding: PaddingValues,
@@ -118,6 +122,15 @@ fun AlbumDetailScreen(
     // match — so the guard would be a constant false. See rememberArtMorph.
     val artMorph = rememberArtMorph(albumArtKey(albumKey))
     val morphing = rememberArtMorphActive(artMorph)
+
+    // A whole record, or one track off it — see PlaylistAdditions for why those are two different
+    // subjects rather than one list with a different length.
+    var pendingAddition by remember { mutableStateOf<PlaylistAddition?>(null) }
+    AddToPlaylistHost(
+        vm = playlistVm,
+        addition = pendingAddition,
+        onDismiss = { pendingAddition = null },
+    )
 
     // Distance the list has travelled, in pixels, saturating once the header is off-screen.
     // Read inside a graphicsLayer block, so the whole parallax stays on the draw phase —
@@ -229,6 +242,7 @@ fun AlbumDetailScreen(
                     // showing through them.
                     modifier = Modifier.background(MaterialTheme.colorScheme.surface),
                     trackLabel = song.trackNumber?.toString() ?: "–",
+                    onLongClick = { pendingAddition = PlaylistAdditions.ofSong(song) },
                 )
             }
         }
@@ -250,6 +264,26 @@ fun AlbumDetailScreen(
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back",
+                tint = Color.White,
+            )
+        }
+
+        // The whole-record entry point, mirroring the back disc across the header. A single
+        // button rather than an overflow menu holding one item: a menu that always opens on
+        // exactly one choice is a second tap charged for nothing. The same scrim disc, for the
+        // same reason — the icon sits on artwork of unknowable brightness.
+        IconButton(
+            onClick = { pendingAddition = PlaylistAdditions.ofAlbum(songs) },
+            modifier = Modifier
+                .padding(top = contentPadding.calculateTopPadding())
+                .padding(8.dp)
+                .align(Alignment.TopEnd)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.32f)),
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.PlaylistAdd,
+                contentDescription = "Add $title to a playlist",
                 tint = Color.White,
             )
         }

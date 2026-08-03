@@ -5,11 +5,9 @@ package com.kaislate.veldtplayer.playback
 
 import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
 import android.os.Looper
 import androidx.annotation.MainThread
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
@@ -17,9 +15,6 @@ import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.kaislate.veldtplayer.data.library.MusicRepository
-import com.kaislate.veldtplayer.data.library.displayAlbum
-import com.kaislate.veldtplayer.data.library.displayArtist
-import com.kaislate.veldtplayer.data.library.displayTitle
 import com.kaislate.veldtplayer.data.library.model.Song
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -196,6 +191,35 @@ class PlaybackConnection @Inject constructor(
         }
     }
 
+    /**
+     * Appends [songs] after whatever is already queued, starting playback only if nothing was
+     * (spec §3.2). No-op for an empty list.
+     *
+     * The decision is [QueueBuilder.append]'s, not this method's: everything below the plan needs a
+     * live `MediaController` and is therefore unreachable from the JVM suite, so nothing that could
+     * be got wrong is allowed to live down here. What is left is which of two Media3 calls to make.
+     */
+    @MainThread
+    fun addToQueue(songs: List<Song>) {
+        val plan = QueueBuilder.append(_queue.value, songs) ?: return
+        _queue.value = plan.songs
+        if (plan.startPlayback) {
+            // A fresh queue, so the same reset playFrom does: a counter left high by a previous
+            // all-undecodable queue would otherwise suppress skip-on for this one.
+            consecutiveErrors = 0
+            withController { c ->
+                c.setMediaItems(plan.songs.map(::toMediaItem), 0, 0L)
+                c.prepare()
+                c.play()
+            }
+        } else {
+            // Appended at the END rather than at an index computed from _queue, which the
+            // publish() TODO already notes can lag the controller's real timeline. addMediaItems
+            // with no index cannot be out of range; an index taken from a stale queue can.
+            withController { c -> c.addMediaItems(songs.map(::toMediaItem)) }
+        }
+    }
+
     @MainThread
     fun toggle() = withController { if (it.isPlaying) it.pause() else it.play() }
 
@@ -254,22 +278,9 @@ class PlaybackConnection @Inject constructor(
     }
 
     /** Goes through [MusicRepository.playableUri] rather than [Song.uri] directly, so the
-     *  `LibrarySource` resolution seam stays intact for non-local sources. */
-    private fun toMediaItem(song: Song): MediaItem = MediaItem.Builder()
-        .setMediaId(song.id.toString())
-        .setUri(Uri.parse(repo.playableUri(song)))
-        // Through DisplayNames, like every other surface. This metadata is what the
-        // notification, the lock screen and Android Auto render, so a raw tag here means
-        // the one place the user cannot correct is also the one place still showing
-        // "<unknown>" — or, once that is cleaned to blank, showing nothing at all.
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(song.displayTitle())
-                .setArtist(song.displayArtist())
-                .setAlbumTitle(song.displayAlbum())
-                .build()
-        )
-        .build()
+     *  `LibrarySource` resolution seam stays intact for non-local sources. The item itself
+     *  is built by [sessionMediaItem], which is where its contents are asserted. */
+    private fun toMediaItem(song: Song): MediaItem = sessionMediaItem(song, repo.playableUri(song))
 
     @MainThread
     private fun publish() {

@@ -13,7 +13,7 @@ object Destinations {
     const val SONGS = "songs"
     const val ALBUMS = "albums"
     const val ARTISTS = "artists"
-    const val PLAYLISTS = "playlists" // reserved for P1.4; no destination registered yet
+    const val PLAYLISTS = "playlists"
     const val SEARCH = "search"
     const val NOW_PLAYING = "nowplaying"
 
@@ -21,6 +21,15 @@ object Destinations {
     const val ALBUM_DETAIL = "album/{$ARG_KEY}"
     const val ARTIST_DETAIL = "artist/{$ARG_KEY}"
 
+    /**
+     * A playlist is the one destination keyed by a ROW ID rather than a normalized name: two
+     * playlists may legitimately share a name, and renaming one must not change the destination
+     * the user is looking at.
+     */
+    const val ARG_ID = "id"
+    const val PLAYLIST_DETAIL = "playlist/{$ARG_ID}"
+
     fun albumDetail(key: String) = "album/${Uri.encode(key)}"
     fun artistDetail(key: String) = "artist/${Uri.encode(key)}"
+    fun playlistDetail(id: Long) = "playlist/$id"
 }

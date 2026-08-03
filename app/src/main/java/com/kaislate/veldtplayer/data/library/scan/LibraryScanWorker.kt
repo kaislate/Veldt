@@ -48,7 +48,7 @@ class LibraryScanWorker @AssistedInject constructor(
         val current = songDao.getIndex()
         val diff = ScanDiffer.diff(
             current = current,
-            scanned = scanned.map { IndexEntry(it.id, it.dateModifiedSec) },
+            scanned = scanned.map { IndexEntry(it.id, it.dateModifiedSec, it.relativeKey) },
         )
 
         val touchedIds = (diff.added + diff.changed).toHashSet()

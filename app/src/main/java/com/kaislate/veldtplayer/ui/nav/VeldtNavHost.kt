@@ -35,6 +35,9 @@ import com.kaislate.veldtplayer.ui.browse.ArtistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.ArtistsScreen
 import com.kaislate.veldtplayer.ui.browse.AudioAccessRequired
 import com.kaislate.veldtplayer.ui.browse.BrowseViewModel
+import com.kaislate.veldtplayer.ui.browse.PlaylistDetailScreen
+import com.kaislate.veldtplayer.ui.browse.PlaylistViewModel
+import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
 import com.kaislate.veldtplayer.ui.browse.SearchScreen
 import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.components.MiniPlayer
@@ -50,7 +53,12 @@ import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
  * The destinations that carry the app bar — the tabs, and only the tabs. Every other
  * destination draws its own header with a back affordance in it.
  */
-private val TAB_ROUTES = setOf(Destinations.SONGS, Destinations.ALBUMS, Destinations.ARTISTS)
+private val TAB_ROUTES = setOf(
+    Destinations.SONGS,
+    Destinations.ALBUMS,
+    Destinations.ARTISTS,
+    Destinations.PLAYLISTS,
+)
 
 /**
  * SharedTransitionLayout wraps the WHOLE SCAFFOLD so album art can morph continuously
@@ -90,9 +98,22 @@ fun VeldtNavHost() {
         // mini-player would hold two instances — two palette extractions, two position
         // collectors, and two surfaces free to disagree about the same track.
         val npVm: NowPlayingViewModel = hiltViewModel()
+        // Resolved HERE for the same reason: the tab and a playlist's page are two back-stack
+        // entries, and a per-entry instance would give them separate import reports — so a report
+        // raised on the tab would vanish the moment the user opened the playlist it describes.
+        val plVm: PlaylistViewModel = hiltViewModel()
 
         LaunchedEffect(Unit) {
             vm.errors.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
+        // Playlist confirmations — "Added 12 tracks to “Road Trip”", "Added 36 tracks to the
+        // queue" — go to the SAME snackbar host as playback errors, collected here rather than in
+        // each screen. The add-to-playlist sheet is reachable from four surfaces and the append
+        // action from a fifth; four collectors would be four chances for one screen to swallow the
+        // only feedback an append ever produces.
+        LaunchedEffect(Unit) {
+            plVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
         }
 
         // Populate the library on open when access is already granted. WorkManager's
@@ -213,7 +234,7 @@ fun VeldtNavHost() {
                         veldtDestination(
                             Destinations.SONGS, audioGranted, audioBlocked, requestAudio, padding,
                         ) {
-                            SongsScreen(vm = vm, contentPadding = padding)
+                            SongsScreen(vm = vm, playlistVm = plVm, contentPadding = padding)
                         }
                         veldtDestination(
                             Destinations.ALBUMS, audioGranted, audioBlocked, requestAudio, padding,
@@ -238,10 +259,39 @@ fun VeldtNavHost() {
                             )
                         }
                         veldtDestination(
+                            Destinations.PLAYLISTS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
+                            PlaylistsScreen(
+                                vm = plVm,
+                                onOpenPlaylist = { id ->
+                                    navController.navigate(Destinations.playlistDetail(id))
+                                },
+                                contentPadding = padding,
+                            )
+                        }
+                        veldtDestination(
+                            Destinations.PLAYLIST_DETAIL, audioGranted, audioBlocked, requestAudio, padding,
+                        ) { entry ->
+                            // The argument is declared as a string and parsed here rather than
+                            // typed as a NavType.LongType, because a restored back stack can hand
+                            // back anything at all and a malformed id must land on the screen's
+                            // own "playlist deleted" surface, not throw out of the nav graph.
+                            // -1 matches no row, which is exactly what a bad id should mean.
+                            val id = entry.arguments?.getString(Destinations.ARG_ID)
+                                ?.toLongOrNull() ?: -1L
+                            PlaylistDetailScreen(
+                                vm = plVm,
+                                playlistId = id,
+                                onBack = { navController.popBackStack() },
+                                contentPadding = padding,
+                            )
+                        }
+                        veldtDestination(
                             Destinations.SEARCH, audioGranted, audioBlocked, requestAudio, padding,
                         ) {
                             SearchScreen(
                                 vm = vm,
+                                playlistVm = plVm,
                                 onBack = { navController.popBackStack() },
                                 onOpenAlbum = { key ->
                                     navController.navigate(Destinations.albumDetail(key))
@@ -257,6 +307,7 @@ fun VeldtNavHost() {
                         ) { entry ->
                             AlbumDetailScreen(
                                 vm = vm,
+                                playlistVm = plVm,
                                 albumKey = entry.arguments?.getString(Destinations.ARG_KEY).orEmpty(),
                                 onBack = { navController.popBackStack() },
                                 contentPadding = padding,
@@ -267,6 +318,7 @@ fun VeldtNavHost() {
                         ) { entry ->
                             ArtistDetailScreen(
                                 vm = vm,
+                                playlistVm = plVm,
                                 artistKey = entry.arguments?.getString(Destinations.ARG_KEY).orEmpty(),
                                 onBack = { navController.popBackStack() },
                                 onOpenAlbum = { key ->

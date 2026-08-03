@@ -44,6 +44,7 @@ class SearchPipelineTest {
         id = title.hashCode().toLong(),
         uri = "content://media/external/audio/media/${title.hashCode()}",
         filePath = null,
+        relativeKey = null,
         title = title,
         artist = "The Beatles",
         album = "Help!",

@@ -12,12 +12,37 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
 import com.kaislate.veldtplayer.ui.nav.VeldtNavHost
 import com.kaislate.veldtplayer.ui.theme.VeldtTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    /**
+     * Process-scoped, not activity-scoped — the watcher keeps the library live while the app is
+     * in the background playing. This class only supplies the *moment* to re-evaluate whether it
+     * should be registered at all.
+     */
+    @Inject lateinit var mediaStoreWatcher: MediaStoreWatcher
+
+    /**
+     * Registration is re-stated on every resume rather than fired once on a grant, for the same
+     * reason `PermissionGate` re-reads the permission here: both directions of the change happen
+     * outside the app and outside any callback it owns — the user flipping audio access in
+     * Settings, and the system revoking it for an unused app. A one-shot "register on grant"
+     * would miss the revoke entirely, and would miss the grant too whenever it happened in
+     * Settings rather than in the in-app dialog.
+     *
+     * [MediaStoreWatcher.sync] is idempotent, so the ordinary case — resuming with the
+     * permission unchanged — costs a permission check and nothing else.
+     */
+    override fun onResume() {
+        super.onResume()
+        mediaStoreWatcher.sync()
+    }
     /**
      * **[enableEdgeToEdge] is what makes six screens' worth of inset work do anything below
      * API 35.**

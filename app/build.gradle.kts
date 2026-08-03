@@ -25,14 +25,15 @@ android {
         applicationId = "com.kaislate.veldtplayer"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-p1.1"
+        versionCode = 4
+        versionName = "0.4.0-p1.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -107,6 +108,10 @@ dependencies {
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.room.testing)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Real WorkManager under Robolectric. The single-flight property (unique work under
+    // ExistingWorkPolicy.KEEP) is WorkManager's semantics, not ours — a hand-written fake
+    // asserting it would be asserting its own model, so the real scheduler is used instead.
+    testImplementation(libs.androidx.work.testing)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

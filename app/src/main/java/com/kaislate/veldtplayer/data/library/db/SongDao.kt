@@ -38,7 +38,8 @@ interface SongDao {
     )
     fun observeSearch(pattern: String): Flow<List<SongEntity>>
 
-    @Query("SELECT id, dateModifiedSec FROM songs")
+    /** `relativeKey` is projected so the diff can see a move; see [IndexEntry]. */
+    @Query("SELECT id, dateModifiedSec, relativeKey FROM songs")
     suspend fun getIndex(): List<IndexEntry>
 
     @Query("DELETE FROM songs WHERE id IN (:ids)")

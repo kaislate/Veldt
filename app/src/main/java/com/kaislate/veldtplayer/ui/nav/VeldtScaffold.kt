@@ -36,8 +36,8 @@ data class NavItem(
 )
 
 /**
- * The Playlists slot is rendered DISABLED rather than omitted so that adding it in P1.4
- * changes a flag, not the bar's proportions — the layout never shifts under the user.
+ * The Playlists slot was rendered DISABLED through P1.3 so that turning it on in P1.4 changed a
+ * flag, not the bar's proportions — the layout never shifted under the user. Task 6 flipped it.
  */
 @Composable
 fun rememberNavItems(): List<NavItem> = remember {
@@ -45,7 +45,7 @@ fun rememberNavItems(): List<NavItem> = remember {
         NavItem(Destinations.SONGS, "Songs", Icons.Filled.MusicNote, enabled = true),
         NavItem(Destinations.ALBUMS, "Albums", Icons.Filled.Album, enabled = true),
         NavItem(Destinations.ARTISTS, "Artists", Icons.Filled.Person, enabled = true),
-        NavItem(Destinations.PLAYLISTS, "Playlists", Icons.AutoMirrored.Filled.QueueMusic, enabled = false),
+        NavItem(Destinations.PLAYLISTS, "Playlists", Icons.AutoMirrored.Filled.QueueMusic, enabled = true),
     )
 }
 

@@ -3,7 +3,9 @@
 
 package com.kaislate.veldtplayer.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -36,7 +38,15 @@ private val LEADING_SIZE = 48.dp
  * where every row's cover is the cover already filling the header: a dozen copies of one
  * image reads as noise, and the position on the record is the thing the eye is looking for
  * there. Null everywhere else, so every other list keeps its thumbnails.
+ *
+ * [onLongClick] is how a track reaches "add to playlist" (spec §3.2). It lives HERE rather than in
+ * each list because every list in the app is made of this row, and a per-screen copy is how the
+ * gesture ends up on the songs tab but not on an album page. Null keeps the row on a plain
+ * `clickable`, so a surface with nothing to offer on a long press does not silently swallow one —
+ * `combinedClickable` with a null handler still consumes the gesture and blocks whatever is
+ * underneath from seeing it.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SongRow(
     song: Song,
@@ -44,11 +54,18 @@ fun SongRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     trackLabel: String? = null,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .then(
+                if (onLongClick == null) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                }
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

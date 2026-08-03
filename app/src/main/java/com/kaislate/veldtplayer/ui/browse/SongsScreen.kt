@@ -12,6 +12,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -23,6 +26,7 @@ import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 @Composable
 fun SongsScreen(
     vm: BrowseViewModel,
+    playlistVm: PlaylistViewModel,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
@@ -34,6 +38,15 @@ fun SongsScreen(
     // Browse rows use the neutral fallback palette; per-track colour is a now-playing
     // concern (a list themed by 300 different covers would be noise, not craft).
     val palette = ColorExtractor.extract(null)
+
+    // Which track a long press is currently offering to file. Held above the list, so the sheet
+    // survives its row scrolling away underneath it.
+    var pendingAddition by remember { mutableStateOf<PlaylistAddition?>(null) }
+    AddToPlaylistHost(
+        vm = playlistVm,
+        addition = pendingAddition,
+        onDismiss = { pendingAddition = null },
+    )
 
     // Audio access is NOT checked here. VeldtNavHost gates all four destinations, so this
     // screen is only ever composed with access granted — see AudioAccessRequired.
@@ -95,6 +108,7 @@ fun SongsScreen(
                 palette = palette,
                 onClick = { vm.play(songs, index) },
                 modifier = Modifier.staggeredEntrance(index, reduced),
+                onLongClick = { pendingAddition = PlaylistAdditions.ofSong(song) },
             )
         }
     }
