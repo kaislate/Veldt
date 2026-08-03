@@ -157,7 +157,7 @@ class PlaylistRepositoryTest {
      */
     private suspend fun rescanLibraryAs(vararg songs: Song) {
         songDao.clear()
-        songDao.upsertAll(songs.map { it.toEntity() })
+        songDao.upsertBySourceKey(songs.map { it.toEntity() })
     }
 
     private suspend fun positions(playlistId: Long) =

@@ -128,7 +128,7 @@ class PlaylistViewModelTest {
 
     private suspend fun seedLibrary(vararg songs: Song) {
         source.songs = songs.toList()
-        db.songDao().upsertAll(songs.map { it.toEntity() })
+        db.songDao().upsertBySourceKey(songs.map { it.toEntity() })
     }
 
     private fun serve(uri: String, text: String) =

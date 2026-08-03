@@ -81,7 +81,11 @@ class LibraryScanWorker @AssistedInject constructor(
             ).toEntity()
         }
 
-        if (toUpsert.isNotEmpty()) songDao.upsertAll(toUpsert)
+        // `upsertBySourceKey`, never a bare REPLACE: these rows carry `Song.UNSAVED` (the source
+        // enumerated them and cannot know a surrogate), and a REPLACE would hand every changed row
+        // a BRAND NEW id on every scan — silently invalidating every playlist entry cached against
+        // the old one, here, on a background worker, with no user action to associate it with.
+        if (toUpsert.isNotEmpty()) songDao.upsertBySourceKey(toUpsert)
         if (diff.removed.isNotEmpty()) songDao.deleteByExternalIds(librarySource.id, diff.removed)
         Result.success()
     } catch (io: IOException) {

@@ -58,10 +58,17 @@ class LibraryScanWorkerTest {
         val upsertedExternalIds = mutableListOf<String>()
         val deletes = mutableListOf<Pair<String, List<String>>>()
 
-        override suspend fun upsertAll(rows: List<SongEntity>) {
+        // Recorded, then delegated to the REAL dao — the id-preserving transaction is production
+        // behaviour and must actually run, not be modelled here.
+        override suspend fun upsertBySourceKey(rows: List<SongEntity>) {
             upsertedExternalIds += rows.map { it.externalId }
-            delegate.upsertAll(rows)
+            delegate.upsertBySourceKey(rows)
         }
+
+        override suspend fun findIdBySourceKey(sourceId: String, externalId: String) =
+            delegate.findIdBySourceKey(sourceId, externalId)
+
+        override suspend fun insertReplacing(row: SongEntity) = delegate.insertReplacing(row)
 
         override suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>) {
             deletes += sourceId to externalIds
@@ -145,7 +152,8 @@ class LibraryScanWorkerTest {
         dateModifiedSec = 100L, hasEmbeddedArt = false,
     )
 
-    private suspend fun seed(vararg rows: SongEntity) = db.songDao().upsertAll(rows.toList())
+    private suspend fun seed(vararg rows: SongEntity) =
+        db.songDao().upsertBySourceKey(rows.toList())
 
     private suspend fun runScan(): ListenableWorker.Result =
         TestListenableWorkerBuilder.from(context, LibraryScanWorker::class.java)

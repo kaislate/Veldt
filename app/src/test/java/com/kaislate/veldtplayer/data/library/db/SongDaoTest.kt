@@ -5,10 +5,12 @@ package com.kaislate.veldtplayer.data.library.db
 
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.kaislate.veldtplayer.data.library.model.Song
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,7 +33,7 @@ class SongDaoTest {
      */
     private fun entity(
         id: Long,
-        title: String,
+        title: String = "T",
         externalId: String,
         sourceId: String = "test-source",
         album: String = "Al",
@@ -55,8 +57,72 @@ class SongDaoTest {
 
     @After fun tearDown() = db.close()
 
+    // ------------------------------------------------- the surrogate, and the id-stable upsert
+
+    /**
+     * **The property `upsertBySourceKey` exists for, and the one that costs user data when it is
+     * wrong.** A row's content changes — a re-tag, a move — and it is upserted again. Its surrogate
+     * must be the *same number* afterwards, because `playlist_entries.songId`, and every art or
+     * palette cache keyed on it, are holding that number.
+     *
+     * A bare `@Insert(REPLACE)` cannot do this. With an `AUTOINCREMENT` PK it resolves the
+     * `(sourceId, externalId)` unique-index conflict by DELETE-and-REINSERT, and the reinserted row
+     * draws a **fresh** id. Every scan that touched a row would silently invalidate every playlist
+     * entry pointing at it — on a background worker, with no user action to blame it on.
+     *
+     * Asserted as the pair `(id, title)` in one assertion, so the failure message IS the trade the
+     * defect makes: the title updated (the upsert "worked") while the id moved underneath it. The
+     * id alone would pass for an upsert that did nothing at all.
+     */
+    @Test fun `re-upserting a changed row keeps its surrogate id`() = runTest {
+        dao.upsertBySourceKey(
+            listOf(entity(id = Song.UNSAVED, externalId = "ms-9001", title = "before", modified = 1L))
+        )
+        val assigned = dao.getAllSongs().single().id
+        dao.upsertBySourceKey(
+            listOf(entity(id = Song.UNSAVED, externalId = "ms-9001", title = "after", modified = 2L))
+        )
+        val after = dao.getAllSongs().single()
+        assertEquals(assigned to "after", after.id to after.title)
+    }
+
+    /**
+     * `AUTOINCREMENT`, stated as the behaviour it buys rather than as the keyword.
+     *
+     * Deleting the **MAX** row is the case that tells the two apart: plain `INTEGER PRIMARY KEY`
+     * assigns `max(rowid) + 1`, so it would hand `ms-1`'s freed id straight to `ms-2`;
+     * `AUTOINCREMENT` never reissues. That matters because a `playlist_entries.songId` (or an art
+     * cache key) can outlive the row it names — the user deletes a file, the scan removes it, the
+     * next scan adds a different one. With reissue that stale reference silently resolves to the
+     * **wrong song**; without it, it resolves to nothing and the entry greys out honestly.
+     *
+     * `assertNotEquals` would be too weak here: monotonicity, not mere difference, is the property
+     * — and only `>` distinguishes it from an id space that wandered.
+     */
+    @Test fun `a freed surrogate id is never reissued to a later row`() = runTest {
+        dao.upsertBySourceKey(listOf(entity(id = Song.UNSAVED, externalId = "ms-1")))
+        val first = dao.getAllSongs().single().id
+        dao.deleteByExternalIds("test-source", listOf("ms-1"))
+        dao.upsertBySourceKey(listOf(entity(id = Song.UNSAVED, externalId = "ms-2")))
+        val second = dao.getAllSongs().single().id
+        assertTrue("surrogate $second reissued after $first was freed", second > first)
+    }
+
+    /**
+     * The escape hatch every fixture in this repo rests on: an id supplied explicitly is stored
+     * verbatim, and only [Song.UNSAVED] means "assign me one". Room's `autoGenerate` treats `0` as
+     * the not-set signal, which is exactly why the sentinel's value is `0` and not `-1`.
+     *
+     * Without this, every seeded row would silently get a different id from the one the test named,
+     * and assertions written against literal ids would be asserting nothing.
+     */
+    @Test fun `an explicitly-set id on first insert is preserved`() = runTest {
+        dao.upsertBySourceKey(listOf(entity(id = 7, externalId = "ms-7")))
+        assertEquals(7L, dao.getAllSongs().single().id)
+    }
+
     @Test fun insert_then_queryAll_returnsRows() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(entity(1, "Beta", externalId = "ms-9001"), entity(2, "Alpha", externalId = "ms-9002"))
         )
         val all = dao.getAllSongs()
@@ -65,8 +131,8 @@ class SongDaoTest {
     }
 
     @Test fun upsert_replacesOnConflict() = runTest {
-        dao.upsertAll(listOf(entity(1, "Old", externalId = "ms-9001")))
-        dao.upsertAll(listOf(entity(1, "New", externalId = "ms-9001")))
+        dao.upsertBySourceKey(listOf(entity(1, "Old", externalId = "ms-9001")))
+        dao.upsertBySourceKey(listOf(entity(1, "New", externalId = "ms-9001")))
         assertEquals("New", dao.getAllSongs().single().title)
     }
 
@@ -77,15 +143,42 @@ class SongDaoTest {
      * replacing the older row, so exactly the newer one survives. Without `unique = true` on the
      * index BOTH rows survive and the library shows the track twice; that is what the negative
      * control proves. Asserted as a pair (id AND title) so the failure message names which row won.
+     *
+     * **This goes through [SongDao.insertReplacing] deliberately, not through
+     * [SongDao.upsertBySourceKey], and the distinction is what keeps it falsifiable.**
+     * `upsertBySourceKey` resolves this collision itself, by looking the natural key up first — so
+     * routed through it, dropping `unique = true` from the index would leave this test **green**
+     * and the index would be pinned by nothing at all. The raw insert is the only caller that lets
+     * the index be the thing under test.
      */
     @Test fun `two rows may not share one sourceId-externalId pair`() = runTest {
-        dao.upsertAll(listOf(entity(id = 1, externalId = "ms-9001", title = "first")))
-        dao.upsertAll(listOf(entity(id = 2, externalId = "ms-9001", title = "second")))
+        dao.insertReplacing(entity(id = 1, externalId = "ms-9001", title = "first"))
+        dao.insertReplacing(entity(id = 2, externalId = "ms-9001", title = "second"))
         assertEquals(
             listOf(2L to "second"),
             dao.getAllSongs().map { it.id to it.title },
         )
     }
+
+    /**
+     * The same collision through the production path, and it resolves the **other** way: the
+     * surviving row keeps the id it already had and takes the new content. That asymmetry with the
+     * test above is the entire deliverable of this task — a raw REPLACE re-numbers the row, and
+     * `upsertBySourceKey` does not.
+     *
+     * Asserted as a pair, and both halves are load bearing: `1L` alone would pass for an upsert
+     * that ignored the second row completely, and `"second"` alone is what a bare REPLACE also
+     * produces. Only together do they name the case.
+     */
+    @Test fun `an upsert onto an existing natural key keeps the id and takes the content`() =
+        runTest {
+            dao.insertReplacing(entity(id = 1, externalId = "ms-9001", title = "first"))
+            dao.upsertBySourceKey(listOf(entity(id = 2, externalId = "ms-9001", title = "second")))
+            assertEquals(
+                listOf(1L to "second"),
+                dao.getAllSongs().map { it.id to it.title },
+            )
+        }
 
     /**
      * The other half of the same property, and the reason the index is a PAIR rather than
@@ -95,7 +188,7 @@ class SongDaoTest {
      * that merge.
      */
     @Test fun `the same externalId under two sources is two distinct rows`() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(
                 entity(id = 1, sourceId = "alpha", externalId = "42", title = "alpha's"),
                 entity(id = 2, sourceId = "beta", externalId = "42", title = "beta's"),
@@ -119,7 +212,7 @@ class SongDaoTest {
      * alone pass.
      */
     @Test fun getIndex_returnsExternalIdDateAndRelativeKey() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(
                 entity(
                     7, "x", externalId = "ms-9007", modified = 555,
@@ -135,7 +228,7 @@ class SongDaoTest {
 
     /** A provider that withholds the location columns still projects, as null, not as a crash. */
     @Test fun getIndex_toleratesANullRelativeKey() = runTest {
-        dao.upsertAll(listOf(entity(8, "y", externalId = "ms-9008", modified = 1, relativeKey = null)))
+        dao.upsertBySourceKey(listOf(entity(8, "y", externalId = "ms-9008", modified = 1, relativeKey = null)))
         assertEquals(IndexEntry("ms-9008", 1, null), dao.getIndex("test-source").single())
     }
 
@@ -153,7 +246,7 @@ class SongDaoTest {
      * They arrive as `removed` and the scan deletes a library it does not own.
      */
     @Test fun `getIndex returns only the requested source's rows`() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(
                 entity(id = 1, sourceId = "alpha", externalId = "ms-1", title = "a", relativeKey = "k1"),
                 entity(id = 2, sourceId = "beta", externalId = "ms-2", title = "b", relativeKey = "k2"),
@@ -174,7 +267,7 @@ class SongDaoTest {
      * failure that silently empties a user's remote library during a local rescan.
      */
     @Test fun `deleteByExternalIds spares another source's row with the same externalId`() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(
                 entity(id = 1, sourceId = "alpha", externalId = "42", title = "alpha keeps nothing"),
                 entity(id = 2, sourceId = "beta", externalId = "42", title = "beta keeps this"),
@@ -186,7 +279,7 @@ class SongDaoTest {
     }
 
     @Test fun searchAndAlbumQuery_work() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(
                 entity(1, "Hello", externalId = "ms-9001", album = "AlbA"),
                 entity(2, "World", externalId = "ms-9002", album = "AlbB"),
@@ -197,7 +290,7 @@ class SongDaoTest {
     }
 
     @Test fun observeAllSongs_emits() = runTest {
-        dao.upsertAll(listOf(entity(1, "x", externalId = "ms-9001")))
+        dao.upsertBySourceKey(listOf(entity(1, "x", externalId = "ms-9001")))
         assertEquals(1, dao.observeAllSongs().first().size)
     }
 
@@ -207,7 +300,7 @@ class SongDaoTest {
      * the wrong row and `size == 1` would not notice.
      */
     @Test fun deleteByExternalIds_and_clear() = runTest {
-        dao.upsertAll(
+        dao.upsertBySourceKey(
             listOf(entity(1, "x", externalId = "ms-9001"), entity(2, "y", externalId = "ms-9002"))
         )
         dao.deleteByExternalIds("test-source", listOf("ms-9001"))

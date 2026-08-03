@@ -124,7 +124,15 @@ class PlaylistImporter @Inject constructor(
         )
         return NewPlaylistEntry(
             sourceKey = source.stableKey(song),
-            songId = song.id,
+            // Null, not `song.id` — and this row is nonetheless counted RESOLVED. `song` came from
+            // `source.listSongs()`, whose rows carry `Song.UNSAVED`, so the only id available here
+            // is the sentinel. Caching it would write `0` into `playlist_entries.songId`, where it
+            // stops being a sentinel and starts claiming to be a real id: rung 2 would then look up
+            // a row Room can never issue, so the entry would be pinned to a permanently dead cache
+            // rather than being seen as uncached. Null is self-healing by construction — the
+            // `sourceKey` written on the line above is exactly what rung 1 searches, so the first
+            // `resolve()` after a scan fills the cache with the surrogate the scan assigned.
+            songId = null,
             title = song.title,
             artist = song.artist,
             album = song.album,

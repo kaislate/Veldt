@@ -11,8 +11,8 @@ import androidx.room.PrimaryKey
  * The `songs` row.
  *
  * `(sourceId, externalId)` is the **real** identity of a track and is enforced unique here. [id] is
- * the app-internal handle everything else in the app points at — still the MediaStore `_ID` at this
- * version, a Room-assigned surrogate from v7 onward — and nothing may read meaning out of it.
+ * the app-internal handle everything else in the app points at — a **Room-assigned surrogate** from
+ * v7 onward, no longer the MediaStore `_ID` — and nothing may read meaning out of it.
  *
  * The index is a pair rather than `externalId` alone because source-native ids are only unique
  * *within* a source: a Subsonic track `42` and a MediaStore `_ID` `42` are different songs and must
@@ -23,7 +23,20 @@ import androidx.room.PrimaryKey
     indices = [Index(value = ["sourceId", "externalId"], unique = true)],
 )
 data class SongEntity(
-    @PrimaryKey val id: Long,
+    /**
+     * The surrogate. `autoGenerate = true` makes the column `INTEGER PRIMARY KEY AUTOINCREMENT`,
+     * and the `AUTOINCREMENT` half is load bearing rather than incidental: without it SQLite issues
+     * `max(rowid) + 1`, so **deleting the highest row hands its id to the next track inserted**. A
+     * `playlist_entries.songId` — or an art/palette cache keyed on `songId` — that outlived the
+     * deletion would then resolve to a *different song* instead of to nothing. Monotonic ids make
+     * every stale reference a miss, which is recoverable, rather than a silent mismatch, which is
+     * not. `SongDaoTest.a freed surrogate id is never reissued to a later row` pins it.
+     *
+     * `0` — [com.kaislate.veldtplayer.data.library.model.Song.UNSAVED] — is Room's "not set"
+     * signal and is what a source's enumeration emits; any other value is inserted verbatim, which
+     * is what lets fixtures seed chosen ids and assert against them literally.
+     */
+    @PrimaryKey(autoGenerate = true) val id: Long,
     /** See [com.kaislate.veldtplayer.data.library.model.Song.sourceId]. */
     val sourceId: String,
     /** See [com.kaislate.veldtplayer.data.library.model.Song.externalId]. */
@@ -50,7 +63,7 @@ data class SongEntity(
  * **Keyed on [externalId], never on [SongEntity.id].** The diff compares what a *source* said about
  * its own library against what the DB stored, so the only identity both sides can possibly agree on
  * is the source-native one. [SongEntity.id] is the app-internal handle — a Room-assigned surrogate
- * from v7 — which a source has never heard of and a fresh scan cannot reproduce; keyed on that, the
+ * as of v7 — which a source has never heard of and a fresh scan cannot reproduce; keyed on that, the
  * first scan after the surrogate flip would classify the entire library as `added` and re-upsert and
  * re-tag every file. The projection is scoped to one source by [SongDao.getIndex], because
  * source-native ids are unique only *within* a source.

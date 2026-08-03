@@ -10,6 +10,7 @@ import android.database.MatrixCursor
 import android.net.Uri
 import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
+import com.kaislate.veldtplayer.data.library.model.Song
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -135,17 +136,41 @@ class LocalSourceEnumerationTest {
     }
 
     /**
-     * The identity fields are not each other's aliases. `id` and `externalId` hold the same number
-     * today — the PK is still the MediaStore `_ID` — but they are read from and written to
-     * independently, and `relativeKey` is a third thing again. Asserting all three of one row
-     * against the provider's input pins which column each came from; a mapper that filled
-     * `externalId` from the display name, or `relativeKey` from the id, is red here.
+     * The identity fields are not each other's aliases, and the surrogate is **not one of them**.
+     * `externalId` is the `_ID` as text and `relativeKey` is the location; `id` is a Room surrogate
+     * that this method — reading a source, not the database — cannot know, so it emits
+     * [Song.UNSAVED]. Asserting all three of one row against the provider's input pins which column
+     * each came from; a mapper that filled `externalId` from the display name, or `relativeKey`
+     * from the id, is red here.
      */
     @Test fun `id externalId and relativeKey each come from their own column`() = runTest {
         serve(row(9001L, "Alpha", "a.mp3"))
         val song = source.listSongs().single()
-        assertEquals(9001L, song.id)
+        assertEquals(Song.UNSAVED, song.id)
         assertEquals("9001", song.externalId)
         assertEquals("external_primary:Music/a.mp3", song.relativeKey)
+    }
+
+    /**
+     * **The surrogate is not the MediaStore `_ID`, stated as the non-collapse of two named rows.**
+     *
+     * This is the property the whole task turns on and it is the easiest one to regress by
+     * accident: `id = id` reads as obviously correct at the call site, was correct until this
+     * commit, and would leave the rest of the suite green — a MediaStore `_ID` is a perfectly
+     * plausible surrogate right up to the moment a second source hands out the same number, or
+     * `upsertBySourceKey` gets a row claiming an id that already belongs to a different track.
+     *
+     * Two rows with **different** `_ID`s must produce the **same** `id`, because both are unsaved.
+     * That is the assertion a lingering `id = _ID` cannot satisfy: it would emit `9001` and `9002`.
+     * Asserted as a list against the literal sentinel, so the failure message shows the `_ID`s
+     * leaking through. `assertEquals(0L, …)` on a single row would pass just as well for a source
+     * that happened to enumerate one file with `_ID` 0.
+     */
+    @Test fun `every enumerated song is UNSAVED, whatever its MediaStore _ID`() = runTest {
+        serve(row(9001L, "Alpha", "a.mp3"), row(9002L, "Beta", "b.mp3"))
+        assertEquals(
+            listOf(Song.UNSAVED, Song.UNSAVED),
+            source.listSongs().map { it.id },
+        )
     }
 }

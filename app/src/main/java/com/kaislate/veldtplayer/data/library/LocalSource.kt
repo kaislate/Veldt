@@ -128,7 +128,13 @@ class LocalSource @Inject constructor(
                 val id = c.getLong(idIx)
                 val rawTrack = if (c.isNull(trackIx)) 0 else c.getInt(trackIx)
                 out += Song(
-                    id = id,
+                    // NOT the MediaStore `_ID`. `Song.id` is a Room-assigned surrogate and this
+                    // method is reading a *source*, not the database — it has no way to know one,
+                    // and inventing a plausible-looking number here is exactly how the old
+                    // "`Song.id` means the `_ID`" assumption would survive the flip. The scan
+                    // assigns the real id when `SongDao.upsertBySourceKey` persists the row; the
+                    // source's own identity for the track travels in `externalId` below.
+                    id = Song.UNSAVED,
                     // The val, never the literal (Global Constraint 1) — the initializer of `id`
                     // above is the single place that string is written anywhere in `src/main`
                     // (`SourceIdLiteralTest` proves it), and reading it back here is what makes a
