@@ -45,14 +45,18 @@ class LibraryScanWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result = try {
         val scanned: List<Song> = librarySource.listSongs()
-        val current = songDao.getIndex()
+        // Every identity in this method is the source-native `externalId`, scoped to THIS source's
+        // id — never `Song.id`, which is an app-internal handle a source cannot name (GC 5). The
+        // same `librarySource.id` is passed to the read and to the delete, so a scan can neither
+        // diff against nor destroy another source's rows.
+        val current = songDao.getIndex(librarySource.id)
         val diff = ScanDiffer.diff(
             current = current,
-            scanned = scanned.map { IndexEntry(it.id, it.dateModifiedSec, it.relativeKey) },
+            scanned = scanned.map { IndexEntry(it.externalId, it.dateModifiedSec, it.relativeKey) },
         )
 
-        val touchedIds = (diff.added + diff.changed).toHashSet()
-        val toUpsert = scanned.filter { it.id in touchedIds }.map { song ->
+        val touched = (diff.added + diff.changed).toHashSet()
+        val toUpsert = scanned.filter { it.externalId in touched }.map { song ->
             val fallback = TrackTags(
                 title = song.title,
                 artist = song.artist,
@@ -78,7 +82,7 @@ class LibraryScanWorker @AssistedInject constructor(
         }
 
         if (toUpsert.isNotEmpty()) songDao.upsertAll(toUpsert)
-        if (diff.removed.isNotEmpty()) songDao.deleteByIds(diff.removed)
+        if (diff.removed.isNotEmpty()) songDao.deleteByExternalIds(librarySource.id, diff.removed)
         Result.success()
     } catch (io: IOException) {
         // Transient I/O (DB/storage) — retry, but only a bounded number of times.

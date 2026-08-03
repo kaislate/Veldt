@@ -109,7 +109,7 @@ class PlaylistRepository(
      * twice, and silently swallowing the second add would be the wrong surprise.
      *
      * Source identity comes from [LibrarySource.id] and [LibrarySource.stableKey] — never a
-     * hardcoded `"local"` (spec §3.1.1), and never the playable uri, which embeds the MediaStore
+     * hardcoded `local` (spec §3.1.1), and never the playable uri, which embeds the MediaStore
      * id a rescan reissues. The display strings are denormalised at add time so the entry still
      * says something after the song leaves the library.
      */

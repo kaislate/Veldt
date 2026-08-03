@@ -38,12 +38,22 @@ interface SongDao {
     )
     fun observeSearch(pattern: String): Flow<List<SongEntity>>
 
-    /** `relativeKey` is projected so the diff can see a move; see [IndexEntry]. */
-    @Query("SELECT id, dateModifiedSec, relativeKey FROM songs")
-    suspend fun getIndex(): List<IndexEntry>
+    /**
+     * `relativeKey` is projected so the diff can see a move; see [IndexEntry]. Scoped to one
+     * source: the local scan must never diff against — or delete — another source's rows.
+     */
+    @Query("SELECT externalId, dateModifiedSec, relativeKey FROM songs WHERE sourceId = :sourceId")
+    suspend fun getIndex(sourceId: String): List<IndexEntry>
 
-    @Query("DELETE FROM songs WHERE id IN (:ids)")
-    suspend fun deleteByIds(ids: List<Long>)
+    /**
+     * Delete rows this source no longer enumerates. Keyed on `(sourceId, externalId)` — the row's
+     * real identity — and NOT on [SongEntity.id], which is an app-internal surrogate no source can
+     * name. There is deliberately no id-keyed delete on this DAO: with two sources sharing one id
+     * space, an id-keyed delete driven by one source's scan is a data-loss bug waiting for its
+     * second caller.
+     */
+    @Query("DELETE FROM songs WHERE sourceId = :sourceId AND externalId IN (:externalIds)")
+    suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>)
 
     @Query("DELETE FROM songs")
     suspend fun clear()

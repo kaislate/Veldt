@@ -45,9 +45,16 @@ class PlaylistRepositoryTest {
      * than passing quietly against different data.
      *
      * A fixture may name its source literally; production code must read it from
-     * [LibrarySource.id] (Global Constraint 2).
+     * [LibrarySource.id] (Global Constraint 1/2).
+     *
+     * **The default id is `"test-source"`, not `"local"`.** It used to be `"local"`, which meant a
+     * production `sourceId = "local"` hardcode agreed with this fake by coincidence in every test
+     * here except the one that explicitly passes `"not-local"`. The canonical fake id exists so a
+     * hardcode disagrees. Note it is deliberately still **different from `song().sourceId`** — the
+     * two must not become the same string, or `addEntries` reading the Song's field instead of the
+     * source's would also start passing by coincidence.
      */
-    private class FakeSource(override val id: String = "local") : LibrarySource {
+    private class FakeSource(override val id: String = "test-source") : LibrarySource {
         override fun resolvePlayableUri(song: Song): String = song.uri
         override fun stableKey(song: Song): String =
             song.relativeKey ?: song.filePath ?: song.uri
@@ -118,10 +125,11 @@ class PlaylistRepositoryTest {
         relativeKey: String? = null,
     ) = Song(
         id = id,
-        // Deliberately neither FakeSource's default "local" nor the "not-local" the GC-2 test uses.
-        // `addSongs` must take entry.sourceId from the LibrarySource, never from the Song, so if it
-        // ever started reading this field that test would go red instead of agreeing by accident.
-        sourceId = "test-source",
+        // Deliberately none of the source ids any test in this file uses — not FakeSource's default
+        // "test-source", not the "not-local" of the GC-1 test. `addSongs` must take entry.sourceId
+        // from the LibrarySource, never from the Song, so if it ever started reading this field the
+        // entries would come out labelled "wrong-source" instead of agreeing by accident.
+        sourceId = "wrong-source",
         externalId = "ms-${id + 9000}",
         uri = "content://media/external/audio/media/$id",
         filePath = path,

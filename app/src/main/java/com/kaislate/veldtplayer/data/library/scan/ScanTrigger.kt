@@ -34,7 +34,7 @@ object ScanTrigger {
      * `ScanTriggerTest` asserts the *time* of the emission and not only the count — but only the
      * trailing edge scans a settled library. MediaStore starts notifying while the scanner is
      * still walking the new files, so a leading-edge scan enumerates a half-indexed album and
-     * then, because [ScanDiffer] keys on `(id, dateModifiedSec)` and those rows have not moved
+     * then, because [ScanDiffer] keys on `(externalId, dateModifiedSec)` and those rows have not moved
      * since, never revisits it.
      *
      * Two consequences worth knowing, both asserted in the test rather than merely stated:

@@ -111,8 +111,14 @@ class SongDaoTest {
      * The projection is the diff's only input, so it has to carry the location too — see
      * [IndexEntry]. A non-null `relativeKey` is used deliberately: with null on both sides this
      * assertion would pass identically whether or not the column is in the SELECT.
+     *
+     * The projected identity is `externalId`, NOT [SongEntity.id]: the diff must never see the
+     * app-internal handle, which becomes a Room surrogate in Task 3 and would then churn the whole
+     * library on the first scan after the flip. The fixture's id (`7`) and externalId (`"ms-9007"`)
+     * are deliberately unequal (GC 14), so a projection of the wrong column cannot typecheck, let
+     * alone pass.
      */
-    @Test fun getIndex_returnsIdDateAndRelativeKey() = runTest {
+    @Test fun getIndex_returnsExternalIdDateAndRelativeKey() = runTest {
         dao.upsertAll(
             listOf(
                 entity(
@@ -122,15 +128,61 @@ class SongDaoTest {
             )
         )
         assertEquals(
-            IndexEntry(7, 555, "external_primary:Music/x.mp3"),
-            dao.getIndex().single(),
+            IndexEntry("ms-9007", 555, "external_primary:Music/x.mp3"),
+            dao.getIndex("test-source").single(),
         )
     }
 
     /** A provider that withholds the location columns still projects, as null, not as a crash. */
     @Test fun getIndex_toleratesANullRelativeKey() = runTest {
         dao.upsertAll(listOf(entity(8, "y", externalId = "ms-9008", modified = 1, relativeKey = null)))
-        assertEquals(IndexEntry(8, 1, null), dao.getIndex().single())
+        assertEquals(IndexEntry("ms-9008", 1, null), dao.getIndex("test-source").single())
+    }
+
+    /**
+     * Source scoping on the READ side, as the non-collapse of a named pair. Two sources each hold
+     * one row; each `getIndex` call must see its own row and only its own.
+     *
+     * Both directions are asserted, not one: `getIndex("alpha") == ["ms-1"]` alone is satisfied by a
+     * query that ignores its argument whenever `alpha` happens to be the only row it returns, and by
+     * an unscoped query the moment the fixture has a single row. Asserting the pair makes an
+     * argument-ignoring query fail on whichever call it answers wrongly, and the failure message
+     * names the row that leaked across the boundary.
+     *
+     * What this must NOT collapse: **another source's index rows into this source's scan input.**
+     * They arrive as `removed` and the scan deletes a library it does not own.
+     */
+    @Test fun `getIndex returns only the requested source's rows`() = runTest {
+        dao.upsertAll(
+            listOf(
+                entity(id = 1, sourceId = "alpha", externalId = "ms-1", title = "a", relativeKey = "k1"),
+                entity(id = 2, sourceId = "beta", externalId = "ms-2", title = "b", relativeKey = "k2"),
+            )
+        )
+        assertEquals(listOf("ms-1"), dao.getIndex("alpha").map { it.externalId })
+        assertEquals(listOf("ms-2"), dao.getIndex("beta").map { it.externalId })
+    }
+
+    /**
+     * Source scoping on the WRITE side — the destructive half, and the one that costs data when it
+     * is wrong. Two sources deliberately share the externalId `"42"` (a Subsonic track `42` and a
+     * MediaStore `_ID` `42` are different songs, which is why the unique index is a PAIR), and one
+     * source deletes it.
+     *
+     * The survivor is asserted as the pair `(id, sourceId)` rather than as a count: `size == 1`
+     * would pass just as well if the query had deleted the WRONG row of the two, which is the
+     * failure that silently empties a user's remote library during a local rescan.
+     */
+    @Test fun `deleteByExternalIds spares another source's row with the same externalId`() = runTest {
+        dao.upsertAll(
+            listOf(
+                entity(id = 1, sourceId = "alpha", externalId = "42", title = "alpha keeps nothing"),
+                entity(id = 2, sourceId = "beta", externalId = "42", title = "beta keeps this"),
+            )
+        )
+        dao.deleteByExternalIds("alpha", listOf("42"))
+        val survivor = dao.getAllSongs().single()
+        assertEquals(2L to "beta", survivor.id to survivor.sourceId)
     }
 
     @Test fun searchAndAlbumQuery_work() = runTest {
@@ -149,12 +201,17 @@ class SongDaoTest {
         assertEquals(1, dao.observeAllSongs().first().size)
     }
 
-    @Test fun deleteByIds_and_clear() = runTest {
+    /**
+     * The survivor is named, not counted: the fixture's ids and externalIds are unequal (GC 14), so
+     * a query that deleted by the app-internal handle instead of the source-native id would take
+     * the wrong row and `size == 1` would not notice.
+     */
+    @Test fun deleteByExternalIds_and_clear() = runTest {
         dao.upsertAll(
             listOf(entity(1, "x", externalId = "ms-9001"), entity(2, "y", externalId = "ms-9002"))
         )
-        dao.deleteByIds(listOf(1))
-        assertEquals(1, dao.getAllSongs().size)
+        dao.deleteByExternalIds("test-source", listOf("ms-9001"))
+        assertEquals(listOf("ms-9002"), dao.getAllSongs().map { it.externalId })
         dao.clear()
         assertEquals(0, dao.getAllSongs().size)
     }

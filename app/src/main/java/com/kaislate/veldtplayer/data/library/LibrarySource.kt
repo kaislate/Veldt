@@ -13,7 +13,14 @@ import com.kaislate.veldtplayer.data.library.model.Song
  * so this interface and its pure consumers stay JVM-testable.
  */
 interface LibrarySource {
-    /** Stable source id, e.g. "local". */
+    /**
+     * Stable source id, e.g. `local` for [LocalSource].
+     *
+     * The **only** place a source's id may be written is its own implementation's initializer
+     * (Global Constraint 1); everything else reads it from here or from `Song.sourceId`. A
+     * `SourceIdLiteralTest` enforces that structurally, which is also why this line spells the id in
+     * backticks rather than as a Kotlin string literal.
+     */
     val id: String
 
     suspend fun listSongs(): List<Song>

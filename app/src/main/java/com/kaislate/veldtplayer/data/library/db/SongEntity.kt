@@ -47,15 +47,24 @@ data class SongEntity(
 /**
  * Lightweight projection for scan-diff (avoids loading full rows).
  *
- * [relativeKey] is carried because **`(id, dateModifiedSec)` cannot see a file that moved.** A move
- * keeps the MediaStore `_ID` — API 30+ file managers go through `ContentResolver.update` or a
- * FUSE-intercepted `rename`, and both UPDATE the row rather than delete-and-reinsert — and it keeps
- * `dateModifiedSec`, because that is the FILE's mtime and POSIX `rename(2)` touches the DIRECTORY's
- * mtime. (Google adding `GENERATION_MODIFIED` in API 30 is the tell.) So the location is the third
- * thing the diff has to compare, or the stored `filePath`/`relativeKey` go stale permanently and no
- * rescan ever corrects them.
+ * **Keyed on [externalId], never on [SongEntity.id].** The diff compares what a *source* said about
+ * its own library against what the DB stored, so the only identity both sides can possibly agree on
+ * is the source-native one. [SongEntity.id] is the app-internal handle — a Room-assigned surrogate
+ * from v7 — which a source has never heard of and a fresh scan cannot reproduce; keyed on that, the
+ * first scan after the surrogate flip would classify the entire library as `added` and re-upsert and
+ * re-tag every file. The projection is scoped to one source by [SongDao.getIndex], because
+ * source-native ids are unique only *within* a source.
  *
- * It is a projection of an existing column, so it costs no schema change.
+ * [relativeKey] is carried because **`(externalId, dateModifiedSec)` cannot see a file that moved.**
+ * A move keeps the source-native `externalId` — for the local source that is the MediaStore `_ID`,
+ * and API 30+ file managers go through `ContentResolver.update` or a FUSE-intercepted `rename`, both
+ * of which UPDATE the row rather than delete-and-reinsert — and it keeps `dateModifiedSec`, because
+ * that is the FILE's mtime and POSIX `rename(2)` touches the DIRECTORY's mtime. (Google adding
+ * `GENERATION_MODIFIED` in API 30 is the tell.) So the location is the third thing the diff has to
+ * compare, or the stored `filePath`/`relativeKey` go stale permanently and no rescan ever corrects
+ * them.
+ *
+ * It is a projection of existing columns, so it costs no schema change.
  *
  * **Residual, deliberately not covered here:** when [relativeKey] is null — an OEM provider that
  * withholds `VOLUME_NAME`/`RELATIVE_PATH`/`DISPLAY_NAME`, see
@@ -64,4 +73,4 @@ data class SongEntity(
  * that, at the cost of re-upserting every row whenever the mount point spelling changes
  * (`/storage/emulated/0` vs `/storage/self/primary`), which `relativeKey` is immune to.
  */
-data class IndexEntry(val id: Long, val dateModifiedSec: Long, val relativeKey: String?)
+data class IndexEntry(val externalId: String, val dateModifiedSec: Long, val relativeKey: String?)

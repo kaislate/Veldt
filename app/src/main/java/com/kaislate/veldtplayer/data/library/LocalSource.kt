@@ -129,9 +129,10 @@ class LocalSource @Inject constructor(
                 val rawTrack = if (c.isNull(trackIx)) 0 else c.getInt(trackIx)
                 out += Song(
                     id = id,
-                    // The val, never the literal (Global Constraint 1) — this source's own id is
-                    // the single place `"local"` is written, and reading it back here is what
-                    // makes a renamed source propagate instead of silently disagreeing.
+                    // The val, never the literal (Global Constraint 1) — the initializer of `id`
+                    // above is the single place that string is written anywhere in `src/main`
+                    // (`SourceIdLiteralTest` proves it), and reading it back here is what makes a
+                    // renamed source propagate instead of silently disagreeing.
                     sourceId = this@LocalSource.id,
                     // The MediaStore `_ID` is this source's native identity for the track. It is
                     // deliberately carried separately from `Song.id`: the two hold the same number
