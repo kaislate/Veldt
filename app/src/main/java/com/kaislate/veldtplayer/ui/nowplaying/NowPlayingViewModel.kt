@@ -7,7 +7,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import com.kaislate.veldtplayer.ui.theme.ArtSeed
-import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.PaletteCache
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,14 +39,11 @@ class NowPlayingViewModel @Inject constructor(
     /** The queue behind the current track. Consumed by the P1.4 queue sheet. */
     val queue = connection.queue
 
-    private val _palette = MutableStateFlow(ArtSeed.NEUTRAL.colors(isLight = false))
+    private val _seed = MutableStateFlow(ArtSeed.NEUTRAL)
 
-    /**
-     * The TARGET palette for the current track. It steps, per track; the drift between two
-     * of these values is `rememberAnimatedPalette`'s job, in the UI, because it is an
-     * animation and the ViewModel has no frame clock.
-     */
-    val palette: StateFlow<DominantColors> = _palette.asStateFlow()
+    /** The TARGET seed for the current track. Theme-INDEPENDENT on purpose: the view model has
+     *  no business knowing the theme, and a theme switch must re-derive without re-extracting. */
+    val seed: StateFlow<ArtSeed> = _seed.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -59,12 +55,7 @@ class NowPlayingViewModel @Inject constructor(
                 .distinctUntilChanged()
                 // PaletteCache loads the full-size bitmap itself and dispatches the pixel
                 // walk off the main thread; see its KDoc for why it does not accept one.
-                //
-                // isLight = false is temporary — PaletteCache now hands back a theme-
-                // independent ArtSeed, and Task 5 is the one that turns this into a
-                // theme-aware seed field. Until then this keeps the dark-only behaviour
-                // every other site in this sweep keeps.
-                .collect { art -> _palette.value = paletteCache.seedFor(art).colors(isLight = false) }
+                .collect { art -> _seed.value = paletteCache.seedFor(art) }
         }
     }
 

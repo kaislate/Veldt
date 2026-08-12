@@ -47,6 +47,7 @@ import com.kaislate.veldtplayer.ui.motion.rememberMorphLinger
 import com.kaislate.veldtplayer.ui.motion.rememberSongArtMorph
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
+import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 
 /**
@@ -156,7 +157,8 @@ fun VeldtNavHost() {
                         // is attached, so collecting it unconditionally would have it running
                         // for the app's whole foreground life against an empty queue.
                         if (npState.isActive && (!onNowPlaying || morphing)) {
-                            val npPalette by npVm.palette.collectAsStateWithLifecycle()
+                            val npSeed by npVm.seed.collectAsStateWithLifecycle()
+                            val npPalette = npSeed.colors(isLight = LocalIsLightTheme.current)
                             // Held as State and never unwrapped here: the 250ms position tick is
                             // read in the mini-player's DRAW phase. See MiniPlayer's `progress`.
                             val npPosition = npVm.positionMs.collectAsStateWithLifecycle()

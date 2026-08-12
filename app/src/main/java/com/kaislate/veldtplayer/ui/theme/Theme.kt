@@ -3,9 +3,14 @@
 
 package com.kaislate.veldtplayer.ui.theme
 
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import com.kaislate.veldtplayer.data.settings.ThemeMode
 
 /**
  * Opacity of the app's bottom chrome — the navigation bar and the mini-player sitting on it.
@@ -21,30 +26,42 @@ import androidx.compose.runtime.Composable
  */
 const val CHROME_ALPHA = 0.94f
 
+/** True when the app is painting a LIGHT ground. Read by [neutralPalette] and by any surface
+ *  that must derive an art palette; provided once, by [VeldtTheme]. */
+val LocalIsLightTheme = staticCompositionLocalOf { false }
+
 /**
- * **Veldt is a dark app in this phase, and this is where that is decided.**
+ * Veldt follows [mode]: Light, Dark, or the system.
  *
- * Not an oversight and not a placeholder: every colour the app actually paints with comes from
- * [ColorExtractor], and that pipeline has one branch. `bg` is
- * `getDarkMutedColor(getDarkVibrantColor(...))` — a DARK swatch by construction — the neutral
- * fallback is `#101014`, and `onBg` is chosen by measuring the luminance of that dark ground.
- * There is no light palette to switch to, so following `isSystemInDarkTheme()` would not give a
- * light app; it would give a WHITE Material scaffold with the extracted dark palette still
- * painted on top of it — a near-black mini-player welded to the bottom of a white list, and an
- * art-less thumbnail as a black box in every row. (That was the shipped behaviour: this file
- * landed in the first task and was never revisited once the palette arrived.)
- *
- * `darkColorScheme()` is therefore forced, so the Material surfaces the app does not repaint
- * (the scaffold ground, ripples, the snackbar) agree with the palette that covers them instead
- * of contradicting it. The system bars are told the same thing in `MainActivity`, and the
- * pre-Compose window background in `themes.xml` is pinned dark for the same reason — a
- * DayNight parent would flash white on a cold start on a light-mode phone.
- *
- * A real light palette is a colour-pipeline change (a second branch in [ColorExtractor], a
- * light `onBg` crossover, a light chrome alpha), not a theme change. When that exists, this
- * is the line that starts following the system again.
+ * This used to force `darkColorScheme()`, because every colour the app painted came from a
+ * pipeline with one branch and a light Material scaffold underneath it would have produced a
+ * near-black mini-player welded to a white list. That is no longer true: [ArtSeed.colors]
+ * derives a ground for either theme by solving for a contrast ratio, so both the Material
+ * surfaces and the painted ones agree.
  */
-@Composable
-fun VeldtTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = darkColorScheme(), typography = VeldtTypography, content = content)
+/**
+ * Which ground [mode] resolves to. A pure function, not an inline `when` in the composable,
+ * because it is a DECISION and decisions belong in tested functions (GC 10) — and because a
+ * `when` inside `@Composable` is unreachable without Compose UI test infrastructure.
+ */
+internal fun resolveDark(mode: ThemeMode, systemDark: Boolean): Boolean = when (mode) {
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+    ThemeMode.SYSTEM -> systemDark
 }
+
+@Composable
+fun VeldtTheme(mode: ThemeMode, content: @Composable () -> Unit) {
+    val dark = resolveDark(mode, systemDark = isSystemInDarkTheme())
+    CompositionLocalProvider(LocalIsLightTheme provides !dark) {
+        MaterialTheme(
+            colorScheme = if (dark) darkColorScheme() else lightColorScheme(),
+            typography = VeldtTypography,
+            content = content,
+        )
+    }
+}
+
+/** The art-less palette every browse surface uses, derived for the CURRENT theme. */
+@Composable
+fun neutralPalette(): DominantColors = ArtSeed.NEUTRAL.colors(isLight = LocalIsLightTheme.current)

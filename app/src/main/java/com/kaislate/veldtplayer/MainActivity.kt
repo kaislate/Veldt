@@ -11,8 +11,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
+import com.kaislate.veldtplayer.data.settings.ThemeMode
 import com.kaislate.veldtplayer.ui.nav.VeldtNavHost
 import com.kaislate.veldtplayer.ui.theme.VeldtTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -27,6 +31,10 @@ class MainActivity : ComponentActivity() {
      * should be registered at all.
      */
     @Inject lateinit var mediaStoreWatcher: MediaStoreWatcher
+
+    /** Read once in [onCreate] to seed the Compose collection; the mode itself lives in
+     *  DataStore, not here. */
+    @Inject lateinit var settingsRepository: SettingsRepository
 
     /**
      * Registration is re-stated on every resume rather than fired once on a grant, for the same
@@ -65,16 +73,24 @@ class MainActivity : ComponentActivity() {
      * and no screen lays out twice. From `androidx.activity`, which
      * `androidx.activity:activity-compose` already brings in — no new dependency.
      *
-     * **Both bars are declared `dark`, not `auto`.** `SystemBarStyle.auto()` picks its icon
-     * tint from the SYSTEM's day/night setting, and Veldt is dark on every phone (see
-     * `VeldtTheme`) — so on a light-mode device `auto` would ask for dark icons and put them
-     * on the app's near-black chrome, which is the light-mode bug one layer up.
+     * **Both bars are still declared `dark`, not `auto` — and that is now a known gap, not a
+     * decision this slice makes correct.** The reasoning that justified it originally no
+     * longer holds: `VeldtTheme` resolves `ThemeMode` (Light, Dark, or System) itself now, so
+     * Veldt is emphatically NOT dark on every phone any more. `SystemBarStyle.auto()` would be
+     * wrong for the same old reason — it reads the SYSTEM's day/night setting, which ignores a
+     * user who explicitly picked Light or Dark in Settings — but forcing `dark()`
+     * unconditionally is wrong too: on the genuinely light branch (`ThemeMode.LIGHT`, or
+     * `SYSTEM` on a light-mode phone) the bars now sit on a LIGHT scaffold with dark-tinted
+     * icons still requested on top of it. Fixing this needs the resolved mode available before
+     * [setContent] — [enableEdgeToEdge] runs ahead of the first composition — which is
+     * follow-up work, not something this change does.
      *
      * That choice also settles navigation-bar contrast, which is why nothing here sets
      * `isNavigationBarContrastEnforced`. It is `SystemBarStyle.auto()` that turns the
      * framework scrim ON; `dark()` already sets the flag false. Assigning it again after this
      * call is a no-op — and on three-button navigation the scrim would land exactly where the
-     * mini-player already paints its own translucent pane, stacking two slabs.
+     * mini-player already paints its own translucent pane, stacking two slabs. That reasoning
+     * holds regardless of which `SystemBarStyle` eventually answers the question above.
      */
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
@@ -82,6 +98,12 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
-        setContent { VeldtTheme { Surface(Modifier.fillMaxSize()) { VeldtNavHost() } } }
+        setContent {
+            // SYSTEM until the first DataStore emission, never a hardcoded LIGHT or DARK — a
+            // literal here would flash the wrong theme on every cold start, for everyone whose
+            // stored choice is not SYSTEM, on every launch until the read completes.
+            val mode by settingsRepository.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM)
+            VeldtTheme(mode) { Surface(Modifier.fillMaxSize()) { VeldtNavHost() } }
+        }
     }
 }

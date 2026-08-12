@@ -77,8 +77,8 @@ import com.kaislate.veldtplayer.ui.motion.artistArtKey
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
-import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /** The circular portrait on an artist card, and the card it is centred in. */
 private val ARTIST_PORTRAIT_SIZE = 88.dp
@@ -125,7 +125,7 @@ fun SearchScreen(
     val library by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
     val reduced = rememberReducedMotion()
-    val palette = ArtSeed.NEUTRAL.colors(isLight = false)
+    val palette = neutralPalette()
 
     // Search results are a browse surface too, and the long press has to be here for the same
     // reason it is on the songs tab: a gesture that works on four lists and not the fifth is

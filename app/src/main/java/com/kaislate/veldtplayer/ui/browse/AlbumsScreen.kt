@@ -38,8 +38,8 @@ import com.kaislate.veldtplayer.ui.motion.albumArtKey
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
-import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /**
  * Narrowest a tile may get before the grid drops a column: two up on a phone, three or
@@ -79,7 +79,7 @@ fun AlbumsScreen(
     val reduced = rememberReducedMotion()
     // The neutral fallback palette, as in the songs list: a grid themed by 60 different
     // covers at once would be noise. Per-artwork colour is a now-playing concern.
-    val palette = ArtSeed.NEUTRAL.colors(isLight = false)
+    val palette = neutralPalette()
 
     if (albums.isEmpty()) {
         // Three states, not two — the same distinction SongsScreen draws. On a fresh
