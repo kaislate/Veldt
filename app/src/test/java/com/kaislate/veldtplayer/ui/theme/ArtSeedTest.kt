@@ -5,6 +5,8 @@ package com.kaislate.veldtplayer.ui.theme
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import com.kaislate.veldtplayer.ui.theme.hct.Hct
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -82,6 +84,21 @@ class ArtSeedTest {
             c.waveColors.filter { ratio(it, c.bg) < AA_LARGE }.map { "$light:$it" }
         }
         assertEquals("wave colours failed AA-large: $failures", emptyList<String>(), failures)
+    }
+
+    @Test fun `solve lands on an interior tone, not the unreachable-ratio clamp`() {
+        // BG_TONE_LIGHT (98) is comfortably reachable by DARKENING — the correct light-theme
+        // direction — landing on some interior tone well short of black. It is NOT reachable by
+        // LIGHTENING, which a direction bug (control (a): always lighten) would fall back to,
+        // and that fallback clamps straight to the extreme (tone 0). A ratio-only assertion
+        // can't tell "the solver solved" apart from "the clamp fired", because tone 0 against a
+        // tone-98 background clears AA comfortably too — so this checks the mechanism directly:
+        // the solved tone must be interior, not the clamp's extreme.
+        val s = seed(250.0, 40.0)
+        val onTone = Hct.fromInt(s.colors(isLight = true).onBg.toArgb()).tone
+        val accentTone = Hct.fromInt(s.colors(isLight = true).accent.toArgb()).tone
+        assertTrue("onBg tone should be interior, not the clamp extreme: $onTone", onTone in 1.0..99.0)
+        assertTrue("accent tone should be interior, not the clamp extreme: $accentTone", accentTone in 1.0..99.0)
     }
 
     @Test fun `the neutral seed is monochrome and derives per theme`() {
