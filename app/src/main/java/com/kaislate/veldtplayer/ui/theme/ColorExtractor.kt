@@ -190,7 +190,7 @@ object ColorExtractor {
     }
 
     /** WCAG contrast ratio: `(L_lighter + 0.05) / (L_darker + 0.05)`. */
-    private fun contrastRatio(a: Color, b: Color): Double {
+    internal fun contrastRatio(a: Color, b: Color): Double {
         val la = relativeLuminance(a)
         val lb = relativeLuminance(b)
         return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
