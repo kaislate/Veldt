@@ -69,7 +69,7 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.ui.components.ArtImage
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import com.kaislate.veldtplayer.ui.theme.DISABLED_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
@@ -118,7 +118,7 @@ fun PlaylistDetailScreen(
         // produce it, so "not answered yet" can never be confused with "deleted".
         initialValue = PlaylistDetailUiState.Loading,
     )
-    val palette = ColorExtractor.extract(null)
+    val palette = ArtSeed.NEUTRAL.colors(isLight = false)
 
     when (val current = state) {
         PlaylistDetailUiState.Loading -> PlaylistsLoading(

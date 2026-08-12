@@ -29,7 +29,7 @@ data class ArtSeed(
      */
     fun colors(isLight: Boolean): DominantColors {
         val surface = TonalPalette.fromHueAndChroma(primary.hue, minOf(primary.chroma, SURFACE_CHROMA))
-        val accentP = TonalPalette.fromHueAndChroma(primary.hue, maxOf(primary.chroma, ACCENT_CHROMA))
+        val accentP = TonalPalette.fromHueAndChroma(primary.hue, accentChroma(primary))
 
         val bgTone = if (isLight) BG_TONE_LIGHT else BG_TONE_DARK
         val bg = Color(surface.tone(bgTone.toInt()))
@@ -42,8 +42,7 @@ data class ArtSeed(
             onBg = Color(surface.tone(onTone.toInt())),
             accent = Color(accentP.tone(accentTone.toInt())),
             waveColors = wave.map {
-                Color(TonalPalette.fromHueAndChroma(it.hue, maxOf(it.chroma, ACCENT_CHROMA))
-                    .tone(accentTone.toInt()))
+                Color(TonalPalette.fromHueAndChroma(it.hue, accentChroma(it)).tone(accentTone.toInt()))
             },
         )
     }
@@ -59,6 +58,17 @@ data class ArtSeed(
         /** Shown before art loads and whenever there is none. Monochrome by construction, so
          *  it derives per theme like everything else and cannot be a hardcoded dark constant. */
         val NEUTRAL = ArtSeed(Chromaticity(0.0, 0.0))
+
+        /**
+         * The chroma an accent's [TonalPalette] is built from. [ACCENT_CHROMA] is a FLOOR —
+         * so a washed-out swatch still reads as an accent — but the floor must NOT apply to a
+         * genuinely monochrome [Chromaticity] (`chroma == 0.0`): flooring a zero would invent
+         * a hue neither [ColorExtractor] nor the caller ever supplied. [NEUTRAL] is exactly
+         * that case, and every browse surface renders it — a hue invented here is not a
+         * subtle bug, it is the whole app's neutral accent turning some arbitrary colour.
+         */
+        private fun accentChroma(c: Chromaticity): Double =
+            if (c.chroma == 0.0) 0.0 else maxOf(c.chroma, ACCENT_CHROMA)
 
         /**
          * The tone that clears [ratio] against [bgTone]. On a light ground the foreground must

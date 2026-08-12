@@ -6,7 +6,7 @@ package com.kaislate.veldtplayer.ui.nowplaying
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.playback.PlaybackConnection
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.PaletteCache
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,7 +40,7 @@ class NowPlayingViewModel @Inject constructor(
     /** The queue behind the current track. Consumed by the P1.4 queue sheet. */
     val queue = connection.queue
 
-    private val _palette = MutableStateFlow(ColorExtractor.extract(null))
+    private val _palette = MutableStateFlow(ArtSeed.NEUTRAL.colors(isLight = false))
 
     /**
      * The TARGET palette for the current track. It steps, per track; the drift between two
@@ -59,7 +59,12 @@ class NowPlayingViewModel @Inject constructor(
                 .distinctUntilChanged()
                 // PaletteCache loads the full-size bitmap itself and dispatches the pixel
                 // walk off the main thread; see its KDoc for why it does not accept one.
-                .collect { art -> _palette.value = paletteCache.paletteFor(art) }
+                //
+                // isLight = false is temporary — PaletteCache now hands back a theme-
+                // independent ArtSeed, and Task 5 is the one that turns this into a
+                // theme-aware seed field. Until then this keeps the dark-only behaviour
+                // every other site in this sweep keeps.
+                .collect { art -> _palette.value = paletteCache.seedFor(art).colors(isLight = false) }
         }
     }
 

@@ -41,7 +41,7 @@ class ColorExtractorHardwareBitmapTest {
         assertSame(software, ColorExtractor.toReadable(software))
     }
 
-    @Test fun `extract survives a hardware bitmap`() {
-        assertNotNull(ColorExtractor.extract(Bitmap.createBitmap(8, 8, Bitmap.Config.HARDWARE)))
+    @Test fun `seedOf survives a hardware bitmap`() {
+        assertNotNull(ColorExtractor.seedOf(Bitmap.createBitmap(8, 8, Bitmap.Config.HARDWARE)))
     }
 }

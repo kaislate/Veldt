@@ -71,9 +71,15 @@ class ArtSeedTest {
         val mono = seed(123.0, 0.0)     // hue present but chroma zero: hue is noise
         listOf(true, false).forEach { light ->
             val c = mono.colors(isLight = light)
-            assertEquals("bg should be neutral grey in ${if (light) "light" else "dark"}",
-                c.bg.red, c.bg.green, 0.02f)
+            val label = if (light) "light" else "dark"
+            assertEquals("bg should be neutral grey in $label", c.bg.red, c.bg.green, 0.02f)
             assertEquals(c.bg.green, c.bg.blue, 0.02f)
+            // The gap this closes: ACCENT_CHROMA is a floor meant to keep a washed-out swatch
+            // reading as an accent, but applied unconditionally it floors a genuine 0 too —
+            // inventing a hue for the one seed whose entire point is to carry none. bg alone
+            // never caught that, because bg's chroma is capped (minOf), not floored (maxOf).
+            assertEquals("accent should be neutral grey in $label", c.accent.red, c.accent.green, 0.02f)
+            assertEquals(c.accent.green, c.accent.blue, 0.02f)
         }
     }
 

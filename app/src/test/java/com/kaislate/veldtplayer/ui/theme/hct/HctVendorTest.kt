@@ -4,7 +4,6 @@
 package com.kaislate.veldtplayer.ui.theme.hct
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -50,14 +49,5 @@ class HctVendorTest {
     @Test fun `an unreachable ratio reports failure rather than lying`() {
         // Nothing is 21:1 against mid-grey. The solver must say so; the derivation clamps on it.
         assertTrue("expected a negative sentinel", Contrast.lighter(50.0, 21.0) < 0)
-    }
-
-    @Test fun `the dislike fix rotates bile and leaves good colours alone`() {
-        // Dark yellow-green: the case Palette hands over cheerfully today.
-        val bile = Hct.from(90.0, 40.0, 30.0)
-        val fine = Hct.from(250.0, 40.0, 50.0)
-        assertTrue("expected bile to be disliked", DislikeAnalyzer.isDisliked(bile))
-        assertNotEquals(bile.toInt(), DislikeAnalyzer.fixIfDisliked(bile).toInt())
-        assertEquals(fine.toInt(), DislikeAnalyzer.fixIfDisliked(fine).toInt())
     }
 }

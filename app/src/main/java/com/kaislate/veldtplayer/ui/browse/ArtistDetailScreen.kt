@@ -46,7 +46,7 @@ import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.SongRow
 import com.kaislate.veldtplayer.ui.motion.artistArtKey
 import com.kaislate.veldtplayer.ui.motion.sharedArt
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 
 /** The header portrait — big enough to anchor the name, not so big it becomes the screen. */
 private val PORTRAIT_SIZE = 96.dp
@@ -74,7 +74,7 @@ fun ArtistDetailScreen(
     // The whole library, for the album strip's covers ONLY — see coverByAlbum below.
     val allSongs by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
-    val palette = ColorExtractor.extract(null)
+    val palette = ArtSeed.NEUTRAL.colors(isLight = false)
 
     if (songs.isEmpty()) {
         // Scanning-and-empty is not the same as empty; see AlbumDetailScreen.

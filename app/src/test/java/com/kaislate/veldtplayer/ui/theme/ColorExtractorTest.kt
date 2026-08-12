@@ -3,65 +3,75 @@
 
 package com.kaislate.veldtplayer.ui.theme
 
-import androidx.compose.ui.graphics.Color
+import android.graphics.Bitmap
+import com.kaislate.veldtplayer.ui.theme.hct.Hct
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import kotlin.math.pow
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+/**
+ * [ColorExtractor.seedOf] walks a real [Palette][androidx.palette.graphics.Palette], which
+ * needs a real [Bitmap] — Robolectric stays for that reason, same as
+ * [ColorExtractorHardwareBitmapTest].
+ */
+@RunWith(RobolectricTestRunner::class)
+// Robolectric 4.14.x ships no API-36 shadow; pin as SongDaoTest does.
+@Config(sdk = [34])
 class ColorExtractorTest {
 
-    /** WCAG relative luminance — recomputed here independently of the implementation. */
-    private fun luminance(c: Color): Double {
-        fun channel(v: Float): Double {
-            val d = v.toDouble()
-            return if (d <= 0.03928) d / 12.92 else ((d + 0.055) / 1.055).pow(2.4)
+    private fun bitmapOf(vararg argb: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(argb.size, 1, Bitmap.Config.ARGB_8888)
+        argb.forEachIndexed { x, c -> bmp.setPixel(x, 0, c) }
+        return bmp
+    }
+
+    @Test fun `a saturated cover yields that hue as the seed`() {
+        val seed = ColorExtractor.seedOf(bitmapOf(0xFFD32F2F.toInt()))
+        val expected = Hct.fromInt(0xFFD32F2F.toInt()).hue
+        assertEquals(expected, seed.primary.hue, 12.0)   // tolerance: Palette quantizes
+        assertTrue("a red cover is not monochrome", !seed.isMonochrome)
+    }
+
+    @Test fun `a greyscale cover is monochrome and carries no hue`() {
+        val seed = ColorExtractor.seedOf(bitmapOf(0xFF202020.toInt(), 0xFF9E9E9E.toInt()))
+        assertTrue("greyscale must not invent a hue", seed.isMonochrome)
+        assertEquals(0.0, seed.primary.chroma, 0.0)
+    }
+
+    @Test fun `a null bitmap is the neutral seed`() {
+        assertEquals(ArtSeed.NEUTRAL, ColorExtractor.seedOf(null))
+    }
+
+    @Test fun `wave hues are distinct, not five copies of one colour`() {
+        val seed = ColorExtractor.seedOf(
+            bitmapOf(0xFFD32F2F.toInt(), 0xFF1976D2.toInt(), 0xFF388E3C.toInt())
+        )
+        val hues = (listOf(seed.primary) + seed.wave).map { it.hue }
+        hues.forEachIndexed { i, h ->
+            hues.drop(i + 1).forEach { other ->
+                val sep = kotlin.math.abs(h - other).let { minOf(it, 360.0 - it) }
+                assertTrue("hues $h and $other are only $sep apart", sep >= 15.0)
+            }
         }
-        return 0.2126 * channel(c.red) + 0.7152 * channel(c.green) + 0.0722 * channel(c.blue)
     }
 
-    private fun ratio(a: Color, b: Color): Double {
-        val la = luminance(a)
-        val lb = luminance(b)
-        val hi = maxOf(la, lb)
-        val lo = minOf(la, lb)
-        return (hi + 0.05) / (lo + 0.05)
-    }
-
-    @Test fun `null bitmap yields the neutral fallback with no wave colours`() {
-        val c = ColorExtractor.extract(null)
-        assertTrue("fallback bg should be dark", luminance(c.bg) < 0.2)
-        assertTrue("fallback onBg should be light", luminance(c.onBg) > 0.5)
-        assertTrue("fallback has no wave colours", c.waveColors.isEmpty())
-    }
-
-    @Test fun `null bitmap fallback is stable across calls`() {
-        assertEquals(ColorExtractor.extract(null), ColorExtractor.extract(null))
-    }
-
-    @Test fun `ensureContrast lifts a dark accent off a dark background to at least 3 to 1`() {
-        val bg = Color(0xFF101014)
-        val fg = Color(0xFF1A1D22) // nearly invisible against bg
-        val out = ColorExtractor.ensureContrast(fg, bg)
-        assertTrue("expected >= 3.0, got ${ratio(out, bg)}", ratio(out, bg) >= 3.0)
-    }
-
-    @Test fun `ensureContrast leaves an already-legible colour unchanged`() {
-        val bg = Color(0xFF101014)
-        val fg = Color(0xFFFFFFFF)
-        assertEquals(fg, ColorExtractor.ensureContrast(fg, bg))
-    }
-
-    @Test fun `ensureContrast preserves alpha`() {
-        val bg = Color(0xFF101014)
-        val fg = Color(0x8021242A)
-        assertEquals(0x80 / 255f, ColorExtractor.ensureContrast(fg, bg).alpha, 0.01f)
-    }
-
-    @Test fun `ensureContrast terminates on an impossible request`() {
-        // White on white can never reach 3:1 — the bounded loop must still return.
-        val white = Color(0xFFFFFFFF)
-        val out = ColorExtractor.ensureContrast(white, white)
-        assertTrue(out.red >= 0f && out.red <= 1f)
+    @Test fun `a bile cover is rotated away from the raw swatch`() {
+        // Dark yellow-green, chosen (not just a plausible-looking hex) to land comfortably
+        // inside the disliked band after Palette's quantization: the raw swatch here measures
+        // hue 94.0 / chroma 31.3, well clear of both the 90/111 band edges and the chroma-16
+        // floor, so this is testing the rotation itself rather than sitting on a boundary that
+        // could pass by accident. Unrotated it themes the app the colour of bile, which is the
+        // single ugliest failure this pipeline can produce. The disliked band (90.0..111.0) is
+        // Material's `DislikeAnalyzer.isDisliked`'s, mirrored in ColorExtractor's own
+        // escapeDislikedHue now that the tone-based fix (gone from this tree) can't apply here.
+        val bile = 0xFF524700.toInt()
+        val seed = ColorExtractor.seedOf(bitmapOf(bile))
+        assertTrue(
+            "the seed hue must not land in the disliked dark yellow-green band, was ${seed.primary.hue}",
+            seed.primary.hue !in 90.0..111.0,
+        )
     }
 }

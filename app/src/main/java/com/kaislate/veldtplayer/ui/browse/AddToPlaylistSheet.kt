@@ -36,7 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.ui.components.ArtImage
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
 /** The artwork of what is being added, at the head of the sheet. */
@@ -67,7 +67,7 @@ fun AddToPlaylistSheet(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val sheetState = rememberModalBottomSheetState()
-    val palette = ColorExtractor.extract(null)
+    val palette = ArtSeed.NEUTRAL.colors(isLight = false)
     var naming by remember { mutableStateOf(false) }
 
     // The names already taken, read off the SAME state the rows are drawn from, so the suggested

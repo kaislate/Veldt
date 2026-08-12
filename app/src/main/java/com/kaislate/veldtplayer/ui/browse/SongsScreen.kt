@@ -21,7 +21,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.ui.components.SongRow
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 
 @Composable
 fun SongsScreen(
@@ -37,7 +37,7 @@ fun SongsScreen(
     val reduced = rememberReducedMotion()
     // Browse rows use the neutral fallback palette; per-track colour is a now-playing
     // concern (a list themed by 300 different covers would be noise, not craft).
-    val palette = ColorExtractor.extract(null)
+    val palette = ArtSeed.NEUTRAL.colors(isLight = false)
 
     // Which track a long press is currently offering to file. Held above the list, so the sheet
     // survives its row scrolling away underneath it.

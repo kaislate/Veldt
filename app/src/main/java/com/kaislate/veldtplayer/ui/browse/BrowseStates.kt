@@ -26,7 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.ui.components.ArtPlaceholder
 import com.kaislate.veldtplayer.ui.components.paletteWash
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 
 /**
@@ -119,7 +119,7 @@ fun AudioAccessRequired(
     modifier: Modifier = Modifier,
 ) {
     EmptyState(
-        palette = ColorExtractor.extract(null),
+        palette = ArtSeed.NEUTRAL.colors(isLight = false),
         title = "Veldt needs access to your music",
         body = if (blocked) {
             "Audio access is turned off for Veldt, and Android will not ask again. " +
