@@ -4,6 +4,7 @@
 package com.kaislate.veldtplayer.data.playlist
 
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.toDomain
 import com.kaislate.veldtplayer.data.library.model.Song
@@ -41,10 +42,16 @@ data class PlaylistTrack(
  * whatever durable text the import had — the playlist's own path — which is not a `stableKey` and
  * will usually match none, but can only ever match the file it names.
  *
- * [songId] is the resolution cache and is null for an unresolved entry. [sourceId] is never
- * supplied here: it comes from the repository's own source (spec §3.1.1).
+ * [songId] is the resolution cache and is null for an unresolved entry.
+ *
+ * [sourceId] **is** supplied here, and takes no default on purpose (Global Constraint 4). It used
+ * to be filled in by the repository from its one source — a sentence that stopped being meaningful
+ * when the repository gained a registry instead. Every construction site now has to say which
+ * source the track belongs to, and the compiler visits each one; a default would let a call site
+ * quietly inherit whichever source happened to be first.
  */
 data class NewPlaylistEntry(
+    val sourceId: String,
     val sourceKey: String,
     val songId: Long?,
     val title: String,
@@ -81,12 +88,12 @@ data class NewPlaylistEntry(
 class PlaylistRepository(
     private val dao: PlaylistDao,
     private val songDao: SongDao,
-    private val source: LibrarySource,
+    private val registry: SourceRegistry,
     private val now: () -> Long,
 ) {
     /** Hilt entry point. The clock is a seam for tests, not a graph dependency. */
-    @Inject constructor(dao: PlaylistDao, songDao: SongDao, source: LibrarySource) :
-        this(dao, songDao, source, System::currentTimeMillis)
+    @Inject constructor(dao: PlaylistDao, songDao: SongDao, registry: SourceRegistry) :
+        this(dao, songDao, registry, System::currentTimeMillis)
 
     fun observe(): Flow<List<PlaylistEntity>> = dao.observePlaylists()
 
@@ -108,17 +115,31 @@ class PlaylistRepository(
      * Duplicates are allowed and are NOT deduped: a playlist legitimately contains the same track
      * twice, and silently swallowing the second add would be the wrong surprise.
      *
-     * Source identity comes from [LibrarySource.id] and [LibrarySource.stableKey] — never a
-     * hardcoded `"local"` (spec §3.1.1), and never the playable uri, which embeds the MediaStore
-     * id a rescan reissues. The display strings are denormalised at add time so the entry still
-     * says something after the song leaves the library.
+     * Source identity comes from **each song's own** source — `registry.require(it.sourceId)` — and
+     * never from a hardcoded `local` (spec §3.1.1), never from a single ambient source, and never
+     * from the playable uri, which embeds the MediaStore id a rescan reissues. One `addSongs` call
+     * may legitimately carry songs from two sources (a search result spanning both), so reading the
+     * source from anywhere but the song is a defect the moment a second source exists.
+     *
+     * [SourceRegistry.require] rather than `byId`: these songs came out of the library, so an
+     * unregistered source is a wiring bug and not the removed-account state a playlist *entry* can
+     * legitimately be in.
+     *
+     * The display strings are denormalised at add time so the entry still says something after the
+     * song leaves the library.
      */
     suspend fun addSongs(playlistId: Long, songs: List<Song>) = addEntries(
         playlistId,
         songs.map {
+            val src = registry.require(it.sourceId)
             NewPlaylistEntry(
-                sourceKey = source.stableKey(it),
-                songId = it.id,
+                sourceId = src.id,
+                sourceKey = src.stableKey(it),
+                // NEVER cache Song.UNSAVED. A `0` here stops being a sentinel and starts claiming
+                // to be a real id, pinning the entry to a row Room can never issue — a permanently
+                // dead cache the self-healing ladder then has no reason to repair. Decided here,
+                // inside the tested function, not at the call sites (Global Constraint 10).
+                songId = it.id.takeUnless { id -> id == Song.UNSAVED },
                 title = it.title,
                 artist = it.artist,
                 album = it.album,
@@ -149,7 +170,7 @@ class PlaylistRepository(
                     id = 0,
                     playlistId = playlistId,
                     position = start + i,
-                    sourceId = source.id,
+                    sourceId = entry.sourceId,
                     sourceKey = entry.sourceKey,
                     songId = entry.songId,
                     sourceTitle = entry.title,
@@ -187,10 +208,14 @@ class PlaylistRepository(
      * Join a playlist's entries to the current library.
      *
      * The ladder, in order:
-     * 1. `(sourceId, sourceKey)` — the durable identity, [LibrarySource.stableKey]. A rescan
-     *    changes MediaStore ids but not the source's own key, so this rung is what survives one.
-     * 2. the cached [PlaylistEntryEntity.songId] — only for entries owned by this source, so a
-     *    future second source's ids can never collide into a local match.
+     * 1. `(sourceId, sourceKey)` — the durable identity, [LibrarySource.stableKey] **of the entry's
+     *    own source**, looked up in that source's own key map. A rescan changes MediaStore ids but
+     *    not the source's own key, so this rung is what survives one.
+     * 2. the cached [PlaylistEntryEntity.songId] — accepted only when the row it finds belongs to
+     *    the entry's source, so one source's ids can never collide into another's match.
+     *
+     * An entry naming a source the [SourceRegistry] does not hold resolves to `null` at rung 0 and
+     * is never written to at all — see the early return.
      *
      * Two corrections are written back, and they are deliberately not the same one:
      * - rung 1 hit, cached id disagrees ⇒ write the corrected `songId`.
@@ -239,7 +264,9 @@ class PlaylistRepository(
      *
      * If two songs collide on one key, `associateBy` keeps the last and rung 1 returns that one —
      * still a hit, so the key is not rewritten; one further `songId` correction settles it. Bounded
-     * at two extra bounces, never unbounded.
+     * at two extra bounces, never unbounded. Note that collision is now scoped *within* a source:
+     * two songs from DIFFERENT sources sharing a key string do not collide at all, which is the
+     * whole reason the map is nested rather than flat.
      */
     suspend fun resolve(playlistId: Long): List<PlaylistTrack> {
         val entries = dao.getEntries(playlistId)
@@ -248,25 +275,47 @@ class PlaylistRepository(
         // The Room projection, not source.listSongs(): these are the tag-merged rows the rest of
         // the app renders, and it is one indexed table read instead of a device-wide enumeration.
         val songs = songDao.getAllSongs().map { it.toDomain() }
-        val byKey = songs.associateBy { source.stableKey(it) }
+        // Per-source key maps, NOT one flat associateBy over every song. Two sources may
+        // legitimately emit the SAME key string for different tracks — nothing coordinates their
+        // key spaces — and a flat map silently keeps whichever came last, handing both entries the
+        // same song. That is the P1.4 defect class exactly: locally correct, collapses two distinct
+        // inputs. Songs whose source is not registered are dropped from the maps rather than keyed
+        // under a source that cannot describe them.
+        val byKey: Map<String, Map<String, Song>> = songs.groupBy { it.sourceId }
+            .mapNotNull { (sid, list) ->
+                val src = registry.byId(sid) ?: return@mapNotNull null
+                sid to list.associateBy { src.stableKey(it) }
+            }.toMap()
         val byId = songs.associateBy { it.id }
 
         val corrections = LinkedHashMap<Long, Long?>()
         val keyCorrections = LinkedHashMap<Long, String>()
         val tracks = entries.map { entry ->
-            val mine = entry.sourceId == source.id
+            // An entry whose source is not registered — the account was removed, the module is
+            // absent — is a first-class unresolved row, NOT an error. It renders greyed and is
+            // NEVER rewritten: there is no source to compute a fresh key with, and writing anything
+            // would destroy the identity the user needs back if they re-add the source
+            // (spec §4.3, §5.2). Returning early is what guarantees the zero writes.
+            val src = registry.byId(entry.sourceId)
+                ?: return@map PlaylistTrack(entry = entry, song = null)
+
             // Rung 1 and rung 2 are kept apart, not collapsed into one elvis, because WHICH rung
             // answered is itself the signal: only a rung-2-after-rung-1-missed hit means the key
             // went stale under a preserved id.
-            val byKeyHit = if (mine) byKey[entry.sourceKey] else null
-            val song = byKeyHit ?: if (mine) entry.songId?.let { byId[it] } else null
+            val byKeyHit = byKey[entry.sourceId]?.get(entry.sourceKey)
+            // Rung 2 is guarded BY SOURCE. Surrogate ids now share one AUTOINCREMENT space across
+            // every source, so a cached id names a real row that may belong to somebody else; it
+            // may only count when the row it finds belongs to this entry's own source. Without the
+            // takeIf, a stale cache resolves cross-source into a different track entirely.
+            val song = byKeyHit
+                ?: entry.songId?.let { byId[it] }?.takeIf { it.sourceId == entry.sourceId }
 
             if (song != null && song.id != entry.songId) corrections[entry.id] = song.id
             // The file moved but kept its id. Two things are load bearing here and they are NOT
             // the same thing (see the KDoc): the inequality guard is what makes this terminate,
             // and `stableKey(song)` — a key of a row already in `byKey` — is what makes rung 1 hit
             // again afterwards instead of the entry staying pinned to its cached id.
-            val freshKey = if (byKeyHit == null && song != null) source.stableKey(song) else null
+            val freshKey = if (byKeyHit == null && song != null) src.stableKey(song) else null
             if (freshKey != null && freshKey != entry.sourceKey) keyCorrections[entry.id] = freshKey
 
             PlaylistTrack(

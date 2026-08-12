@@ -13,7 +13,8 @@ import org.junit.Test
 class DisplayNamesTest {
 
     private fun song(artist: String, album: String, albumArtist: String? = null) = Song(
-        id = 1, uri = "content://media/external/audio/media/1", filePath = null, relativeKey = null,
+        id = 1, sourceId = "test-source", externalId = "ms-9001",
+        uri = "content://media/external/audio/media/1", filePath = null, relativeKey = null,
         title = "T", artist = artist, album = album, albumArtist = albumArtist,
         trackNumber = null, discNumber = null, year = null, durationMs = 0,
         dateModifiedSec = 0, hasEmbeddedArt = false,

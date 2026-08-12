@@ -18,6 +18,7 @@ import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.library.tag.TagReader
 import com.kaislate.veldtplayer.data.library.tag.TrackTags
+import com.kaislate.veldtplayer.di.LocalLibrary
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.IOException
@@ -33,26 +34,39 @@ import java.io.IOException
  * WorkManager backoff. Any other throwable is a deterministic bug and returns
  * [Result.failure] immediately rather than retrying uselessly. A normally-ungranted
  * scan does NOT throw ([LibrarySource] returns empty), so it simply no-ops to success.
+ *
+ * This worker is **local-only by type**: it takes the [LocalLibrary]-qualified source rather than
+ * one of the registry's, because a MediaStore enumeration is the only thing it knows how to do. A
+ * remote source syncs through its own worker (design spec §5.4). That also keeps `ScanDiffer`'s
+ * one-source precondition satisfied structurally — there is no set here to loop over and therefore
+ * no way to hand the differ a concatenation of two sources' rows.
  */
 @HiltWorker
 class LibraryScanWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val librarySource: LibrarySource,
+    // @LocalLibrary, not a source from the registry. This worker enumerates MediaStore and
+    // nothing else — remote sync gets its own worker (design spec §5.4) — so the restriction is
+    // part of the type Dagger resolves and needs no string to say it (Global Constraint 1).
+    @LocalLibrary private val librarySource: LibrarySource,
     private val tagReader: TagReader,
     private val songDao: SongDao,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result = try {
         val scanned: List<Song> = librarySource.listSongs()
-        val current = songDao.getIndex()
+        // Every identity in this method is the source-native `externalId`, scoped to THIS source's
+        // id — never `Song.id`, which is an app-internal handle a source cannot name (GC 5). The
+        // same `librarySource.id` is passed to the read and to the delete, so a scan can neither
+        // diff against nor destroy another source's rows.
+        val current = songDao.getIndex(librarySource.id)
         val diff = ScanDiffer.diff(
             current = current,
-            scanned = scanned.map { IndexEntry(it.id, it.dateModifiedSec, it.relativeKey) },
+            scanned = scanned.map { IndexEntry(it.externalId, it.dateModifiedSec, it.relativeKey) },
         )
 
-        val touchedIds = (diff.added + diff.changed).toHashSet()
-        val toUpsert = scanned.filter { it.id in touchedIds }.map { song ->
+        val touched = (diff.added + diff.changed).toHashSet()
+        val toUpsert = scanned.filter { it.externalId in touched }.map { song ->
             val fallback = TrackTags(
                 title = song.title,
                 artist = song.artist,
@@ -77,8 +91,12 @@ class LibraryScanWorker @AssistedInject constructor(
             ).toEntity()
         }
 
-        if (toUpsert.isNotEmpty()) songDao.upsertAll(toUpsert)
-        if (diff.removed.isNotEmpty()) songDao.deleteByIds(diff.removed)
+        // `upsertBySourceKey`, never a bare REPLACE: these rows carry `Song.UNSAVED` (the source
+        // enumerated them and cannot know a surrogate), and a REPLACE would hand every changed row
+        // a BRAND NEW id on every scan — silently invalidating every playlist entry cached against
+        // the old one, here, on a background worker, with no user action to associate it with.
+        if (toUpsert.isNotEmpty()) songDao.upsertBySourceKey(toUpsert)
+        if (diff.removed.isNotEmpty()) songDao.deleteByExternalIds(librarySource.id, diff.removed)
         Result.success()
     } catch (io: IOException) {
         // Transient I/O (DB/storage) — retry, but only a bounded number of times.

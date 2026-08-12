@@ -13,6 +13,8 @@ class NowPlayingStateTest {
 
     private fun song(title: String = "Blue Monday", duration: Long = 180_000L) = Song(
         id = 7L,
+        sourceId = "test-source",
+        externalId = "ms-9007",
         uri = "content://media/external/audio/media/7",
         filePath = "/music/7.mp3",
         relativeKey = "Music/7.mp3",

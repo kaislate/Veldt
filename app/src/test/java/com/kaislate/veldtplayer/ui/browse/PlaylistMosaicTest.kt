@@ -211,6 +211,8 @@ class PlaylistMosaicTest {
     private fun song(album: String, artist: String = "Artist"): Song = nextId++.let { id ->
         Song(
             id = id,
+            sourceId = "test-source",
+            externalId = "ms-${id + 9000}",
             uri = "content://media/external/audio/media/$id",
             filePath = "/x/Music/$id.mp3",
             relativeKey = "external_primary:Music/$id.mp3",

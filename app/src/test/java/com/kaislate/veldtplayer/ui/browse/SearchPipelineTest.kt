@@ -40,9 +40,11 @@ class SearchPipelineTest {
     /** How long the fake "Room" takes to answer. Any non-zero value reproduces the bug. */
     private val roomMs = 40L
 
-    private fun song(title: String) = Song(
-        id = title.hashCode().toLong(),
-        uri = "content://media/external/audio/media/${title.hashCode()}",
+    private fun song(title: String) = title.hashCode().toLong().let { id -> Song(
+        id = id,
+        sourceId = "test-source",
+        externalId = "ms-${id + 9000}",
+        uri = "content://media/external/audio/media/$id",
         filePath = null,
         relativeKey = null,
         title = title,
@@ -55,7 +57,7 @@ class SearchPipelineTest {
         durationMs = 125_000,
         dateModifiedSec = 0,
         hasEmbeddedArt = false,
-    )
+    ) }
 
     /**
      * The ViewModel's wiring, minus the ViewModel: a field, the settled terms, and the

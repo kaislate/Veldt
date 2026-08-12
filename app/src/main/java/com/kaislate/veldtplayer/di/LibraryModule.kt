@@ -11,6 +11,7 @@ import com.kaislate.veldtplayer.data.library.tag.EAlvaTagReader
 import com.kaislate.veldtplayer.data.library.tag.TagReader
 import dagger.Binds
 import dagger.Module
+import dagger.multibindings.IntoSet
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,9 +26,33 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 abstract class LibraryModule {
 
+    /**
+     * The local source joins a **set**, not a single binding.
+     *
+     * There is deliberately no way left to inject a bare `LibrarySource`: "the" source stopped
+     * being a meaningful thing when a song, a playlist entry and a media item each started naming
+     * the source they belong to. Consumers take
+     * [com.kaislate.veldtplayer.data.library.SourceRegistry] and route on that id; the two classes
+     * that are MediaStore-specific by design — `LibraryScanWorker` and `PlaylistImporter` — inject
+     * the concrete [LocalSource] instead, so the *type* states the restriction and no string has to
+     * (Global Constraint 1).
+     *
+     * `@Singleton` is on [LocalSource]'s own declaration, not here: an `@IntoSet` binding scoped at
+     * the module would scope the set element, which is not the same statement.
+     */
     @Binds
-    @Singleton
-    abstract fun bindLibrarySource(impl: LocalSource): LibrarySource
+    @IntoSet
+    abstract fun bindLocalSource(impl: LocalSource): LibrarySource
+
+    /**
+     * The same instance again, under [LocalLibrary], for the two consumers that are MediaStore-
+     * specific by design. `LocalSource` itself carries `@Singleton`, so this binding and the set
+     * element above resolve to one object — the scope lives on the class precisely so these two
+     * bindings cannot drift into two instances.
+     */
+    @Binds
+    @LocalLibrary
+    abstract fun bindLocalLibrary(impl: LocalSource): LibrarySource
 
     @Binds
     @Singleton

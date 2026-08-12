@@ -8,6 +8,7 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -78,7 +80,7 @@ class PlaylistImporterTest {
             .allowMainThreadQueries().build()
         dao = db.playlistDao()
         source = FakeSource()
-        repo = PlaylistRepository(dao, db.songDao(), source) { ++clock }
+        repo = PlaylistRepository(dao, db.songDao(), SourceRegistry(setOf(source))) { ++clock }
         importer = PlaylistImporter(context, source, repo)
     }
 
@@ -92,7 +94,18 @@ class PlaylistImporterTest {
         album: String = "Al",
     ): Song = nextId++.let { id ->
         Song(
-            id = id,
+            // What an ENUMERATION yields. A source reads its own library, not this app's database,
+            // so it cannot know a surrogate — `LocalSource.listSongs` emits exactly this. The fake
+            // matches, because the importer's whole reason for existing is that it works off
+            // `listSongs()` rather than off the `songs` table, and a fixture that quietly handed it
+            // real ids would let a `songId = song.id` cache write look correct here forever.
+            //
+            // `id` below still varies per row: it distinguishes uri and externalId, which is what
+            // GC 14 is about. It is deliberately NOT reused as the surrogate.
+            id = Song.UNSAVED,
+            // The fake source's own id — these rows are what that source enumerated.
+            sourceId = "test-source",
+            externalId = "ms-${id + 9000}",
             uri = "content://media/external/audio/media/$id",
             filePath = path,
             relativeKey = relativeKey,
@@ -211,6 +224,39 @@ class PlaylistImporterTest {
         assertEquals(listOf(0, 1, 2, 3), rows.map { it.position })
         assertEquals(listOf("a.mp3", "b.mp3", "c.mp3", "d.mp3"), rows.map { it.sourceKey })
     }
+
+    /**
+     * **`resolved` and `cached` are different things**, and this is the one row where they come
+     * apart. The entry matched a library row — it is counted in `result.resolved`, and it is
+     * captioned by the library rather than by `#EXTINF` — yet it stores `songId = null`.
+     *
+     * It has to. The importer resolves against `source.listSongs()`, whose rows carry
+     * [Song.UNSAVED]; there is no surrogate to cache. Writing the sentinel would put a literal `0`
+     * into `playlist_entries.songId`, where it stops being a sentinel and becomes a claim: rung 2
+     * would look up a row `AUTOINCREMENT` can never issue, miss forever, and — because the column
+     * is no longer null — never be seen as uncached. `?: 0` is the exact shape of that bug, so the
+     * assertion is `assertNull` and not merely `assertNotEquals(0L, …)`.
+     *
+     * The two are asserted as a **pair with the resolved count**, because either alone is
+     * satisfied by the wrong thing: `assertNull` alone passes for an import that resolved nothing
+     * at all (every unresolved row is null too), and `resolved == 1` alone says nothing about the
+     * cache. And the `sourceKey` is asserted to be `stableKey(fixture)` because that — not the id —
+     * is what makes this self-healing: it is precisely the key rung 1 searches, so the first
+     * `resolve()` after a scan fills the cache in.
+     */
+    @Test fun `a resolved import row caches no songId — enumeration rows carry no surrogate`() =
+        runTest {
+            val fixture = song(path = "/x/Music/a.mp3", title = "Lost Cause")
+            source.songs = listOf(fixture)
+            serve(DOC, "/x/Music/a.mp3")
+
+            val result = importer.import(DOC, "Mix")
+            val entry = dao.getEntries(result.playlistId).single()
+
+            assertEquals(1 to "Lost Cause", result.resolved to entry.sourceTitle)
+            assertNull("a resolved row must cache no songId, not Song.UNSAVED", entry.songId)
+            assertEquals(source.stableKey(fixture), entry.sourceKey)
+        }
 
     /** Source identity comes from [LibrarySource.id]; a hardcoded `"local"` is a rejection. */
     @Test fun `rows are stamped with the source's own id`() = runTest {

@@ -2,8 +2,9 @@
 
 **A local + self-hosted music player for Android — with the Veldt Wisp pill built in.**
 
-> ⚠️ **Early development.** Veldt is being built in phases. This repo currently
-> contains the **P1.1 playback foundation** and is not yet a usable player.
+> ⚠️ **Early development.** Veldt is being built in phases. The library, browse,
+> now-playing and playlist slices are in; settings, the built-in pill and the
+> self-hosted backends are not. Treat it as a working preview, not a release.
 
 Veldt is the full-player companion to [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp)
 (the standalone One UI-style now-playing pill). Where Veldt Wisp rides *any*
@@ -24,15 +25,27 @@ Like Veldt Wisp, Veldt is **pure Kotlin/Compose with no native code we author**
 (Media3 decodes via the platform `MediaCodec`), so it runs on 32-bit and modern
 arm64 devices alike.
 
-## Status — what works today (P1.1)
+## Status — what works today
 
-- A Media3 `PlaybackService` that plays an on-device audio file (audio focus +
-  media notification + background playback via a `mediaPlayback` foreground service).
-- A `PlayerBusAdapter` that mirrors player state into `MediaSessionBus`.
-- A temporary developer screen (pick an audio file, play/pause/seek, and watch the
-  bus state update live) that proves the producer→bus seam end-to-end.
+- **Playback.** A Media3 `PlaybackService` with audio focus, a media notification,
+  and background playback via a `mediaPlayback` foreground service. A
+  `PlayerBusAdapter` mirrors player state into `MediaSessionBus`, which is the seam
+  the built-in pill will read.
+- **Library.** On-device scan via `MediaStore`, augmented with eAlvaTag tag reading,
+  stored in Room and kept live by a `MediaStore` observer.
+- **Browse and now-playing.** Songs / albums / artists / search, an album-art
+  backdrop with a palette extracted from the current artwork, and a scrub bar.
+- **Playlists.** Create, reorder, add from browse, and `.m3u` / `.m3u8` import.
+  Entries are keyed on a rescan-stable source identity, so a track that moves — or a
+  volume that remounts — re-links itself instead of going permanently blank.
 
-There is **no library, browse UI, or pill yet** — those arrive in the next slices.
+Not yet: a settings screen, the built-in pill, lyrics, and the self-hosted backends.
+
+**Under way — N0, the source-identity refactor.** `Song.id` is now a Room surrogate
+rather than the MediaStore `_ID`, with `(sourceId, externalId)` as the real identity
+and a `SourceRegistry` keying every source by its own id. This is the groundwork a
+Subsonic or Jellyfin backend needs, and it is being done pre-release because it is
+free now and a user-data migration later.
 
 ## Requirements
 

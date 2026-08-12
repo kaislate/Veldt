@@ -46,8 +46,10 @@ class LocalEntryResolverTest {
         album: String = "Al",
         durationMs: Long = 1_000L,
         uri: String = "content://media/external/audio/media/${nextId}",
-    ): Song = Song(
-        id = nextId++,
+    ): Song = nextId++.let { id -> Song(
+        id = id,
+        sourceId = "test-source",
+        externalId = "ms-${id + 9000}",
         uri = uri,
         filePath = path,
         relativeKey = relativeKey,
@@ -61,7 +63,7 @@ class LocalEntryResolverTest {
         durationMs = durationMs,
         dateModifiedSec = 0L,
         hasEmbeddedArt = false,
-    )
+    ) }
 
     private fun entry(path: String, title: String? = null, artist: String? = null, dur: Int? = null) =
         M3uEntry(path = path, durationSec = dur, title = title, artist = artist)

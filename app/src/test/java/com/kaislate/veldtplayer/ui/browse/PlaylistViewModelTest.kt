@@ -5,10 +5,12 @@ package com.kaislate.veldtplayer.ui.browse
 
 import android.content.Context
 import android.net.Uri
+import androidx.lifecycle.viewModelScope
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.library.model.Album
@@ -21,6 +23,7 @@ import com.kaislate.veldtplayer.playback.PlaybackConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -87,8 +90,9 @@ class PlaylistViewModelTest {
         db = Room.inMemoryDatabaseBuilder(context, VeldtDatabase::class.java)
             .allowMainThreadQueries().build()
         source = FakeSource()
-        playlists = PlaylistRepository(db.playlistDao(), db.songDao(), source) { ++clock }
-        music = MusicRepository(db.songDao(), source, context)
+        val registry = SourceRegistry(setOf(source))
+        playlists = PlaylistRepository(db.playlistDao(), db.songDao(), registry) { ++clock }
+        music = MusicRepository(db.songDao(), registry, context)
         vm = PlaylistViewModel(
             playlists = playlists,
             importer = PlaylistImporter(context, source, playlists),
@@ -98,7 +102,31 @@ class PlaylistViewModelTest {
         )
     }
 
+    /**
+     * Cancel the view model's coroutines BEFORE closing the database, and note that the order is
+     * the whole point.
+     *
+     * [PlaylistViewModel.state] is `stateIn(viewModelScope, WhileSubscribed(5_000))` over
+     * `playlists.observe()` and `music.songs()` — both Room invalidation-tracker flows — and that
+     * `stateIn` coroutine is launched when the view model is *constructed*, so it is live in every
+     * test here whether or not the test collects it. Each mutation helper adds another
+     * `viewModelScope.launch`.
+     *
+     * Nothing cancelled any of that. `viewModelScope` runs on `Dispatchers.Main`, which [setUp]
+     * points at an [UnconfinedTestDispatcher] whose delays are *virtual*, so `WhileSubscribed`'s
+     * 5s timeout is never advanced by anyone and the collector never lapses on its own: it parks
+     * indefinitely holding flows over a database this method then closes. The resulting throw
+     * happens on Room's own executor, off the test thread, and JUnit attributes it to whichever
+     * class Gradle runs NEXT in the same JVM fork — surfacing as a phantom
+     * `UncaughtExceptionsBeforeTest` in an unrelated suite. The N0 ledger records exactly that
+     * against `PlaylistRepositoryTest.move with out-of-range`.
+     *
+     * That matters here beyond tidiness: this phase's method counts red tests to decide whether a
+     * negative control landed, and a stray failure attributed to an innocent class corrupts that
+     * count.
+     */
     @After fun tearDown() {
+        vm.viewModelScope.cancel()
         db.close()
         Dispatchers.resetMain()
     }
@@ -107,6 +135,9 @@ class PlaylistViewModelTest {
         nextId++.let { id ->
             Song(
                 id = id,
+                // The fake source's own id — these rows are what that source enumerated.
+                sourceId = "test-source",
+                externalId = "ms-${id + 9000}",
                 uri = "content://media/external/audio/media/$id",
                 filePath = path,
                 relativeKey = null,
@@ -125,7 +156,7 @@ class PlaylistViewModelTest {
 
     private suspend fun seedLibrary(vararg songs: Song) {
         source.songs = songs.toList()
-        db.songDao().upsertAll(songs.map { it.toEntity() })
+        db.songDao().upsertBySourceKey(songs.map { it.toEntity() })
     }
 
     private fun serve(uri: String, text: String) =

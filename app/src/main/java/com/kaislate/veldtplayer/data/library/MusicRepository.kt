@@ -26,7 +26,7 @@ import javax.inject.Singleton
 @Singleton
 class MusicRepository @Inject constructor(
     private val songDao: SongDao,
-    private val librarySource: LibrarySource,
+    private val registry: SourceRegistry,
     @ApplicationContext private val context: Context,
 ) {
     /** Observe the full library, ordered by title. */
@@ -88,6 +88,16 @@ class MusicRepository @Inject constructor(
             .map { infos -> infos.any { !it.state.isFinished } }
             .distinctUntilChanged()
 
-    /** The string a MediaItem should play for [song] (local: its content:// uri). */
-    fun playableUri(song: Song): String = librarySource.resolvePlayableUri(song)
+    /**
+     * The string a MediaItem should play for [song], resolved by the song's **own** source
+     * (local: its `content://` uri).
+     *
+     * [SourceRegistry.require], not [SourceRegistry.byId]: a row that came out of the library table
+     * necessarily belongs to a registered source, so an absent one is a wiring bug — a module that
+     * failed to bind, not user state. Failing loudly at the play call beats handing the player a
+     * uri of the wrong shape and letting it surface as an unplayable track. (A *playlist entry* is
+     * the opposite case and uses `byId`: its source going away is ordinary user state.)
+     */
+    fun playableUri(song: Song): String =
+        registry.require(song.sourceId).resolvePlayableUri(song)
 }

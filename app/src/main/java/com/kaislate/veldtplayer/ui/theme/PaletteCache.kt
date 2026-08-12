@@ -20,6 +20,10 @@ import javax.inject.Singleton
  * THE app palette source: one track's artwork in, the colours every surface themes itself
  * from out. Results are memoised by song id, so revisiting a track is free.
  *
+ * The key is the Room surrogate `songs.id` (see `SongArt`), which is correct for the same reason
+ * it is correct there: this is an in-memory `LruCache` that dies with the process, so uniqueness
+ * among live rows is the entire requirement, and AUTOINCREMENT never reissues a freed id.
+ *
  * **It loads the bitmap itself, and that is the point.** The cache is keyed on song id with
  * no decode-size component, so as long as callers handed bitmaps in, nothing structural
  * stopped the now-playing backdrop's deliberately tiny decode (`ArtDecode`, currently 1/32 —

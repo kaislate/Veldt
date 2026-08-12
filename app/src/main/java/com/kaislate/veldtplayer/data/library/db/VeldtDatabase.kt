@@ -26,6 +26,17 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 // still finds the track. A future key-format change is a behaviour change to review on its merits,
 // not an automatic version bump.
 //
+// v6 adds the source dimension (`sourceId`, `externalId`, unique index) while the PK is still the
+// MediaStore `_ID`; v7 makes the PK a surrogate. Splitting the dimension from the PK flip is what
+// keeps each commit green — the column shape changes here, the meaning of `id` changes there.
+//
+// v7 rewrites `songs.id` as `INTEGER PRIMARY KEY AUTOINCREMENT`. The bump is required rather than
+// cosmetic: the column's DDL changes (a plain PK cannot start auto-generating), and every stored id
+// changes meaning from "the MediaStore _ID" to "a Room surrogate". Carried across, the old ids would
+// be indistinguishable from surrogates while colliding with the ones AUTOINCREMENT is about to
+// issue, and `playlist_entries.songId` would keep pointing at the old meaning. Dropping the tables
+// makes the first rescan the single moment the id space changes hands.
+//
 // The app is pre-release with zero users, so the builder's destructive migration is the correct
 // upgrade path; no Migration is written (Global Constraint 7).
 //
@@ -33,7 +44,7 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 // which nothing can regenerate. Acceptable only pre-release; see DatabaseModule's standing note.
 @Database(
     entities = [SongEntity::class, PlaylistEntity::class, PlaylistEntryEntity::class],
-    version = 5,
+    version = 7,
     exportSchema = false,
 )
 abstract class VeldtDatabase : RoomDatabase() {

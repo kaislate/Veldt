@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * The P1 [LibrarySource]: enumerates on-device audio via `MediaStore.Audio.Media`
@@ -26,6 +27,7 @@ import javax.inject.Inject
  * empty list — it never throws, so a denied scan degrades to "no library" rather than
  * a crash. Column reads are guarded (null-safe; `ALBUM_ARTIST` may be absent per-OEM).
  */
+@Singleton
 class LocalSource @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : LibrarySource {
@@ -62,9 +64,23 @@ class LocalSource @Inject constructor(
      *    here does NOT survive a rescan; see the report's R3-C1. It is still better than throwing
      *    or keying on null, and with rung 1 available from the minSdk it should be unreachable in
      *    practice.
+     *
+     * **Each rung is namespaced** — `rel:`, `data:`, `uri:` — because the three share ONE flat key
+     * space. Un-prefixed, a `DATA` path on one row and a `relativeKey` on another can be the same
+     * string, and [com.kaislate.veldtplayer.data.playlist.PlaylistRepository.resolve]'s
+     * `associateBy` would keep only the last of them, silently resolving one playlist entry to the
+     * other row's file. That never happened only because a real rung-1 key opens with a volume
+     * name and a real rung-2 key opens with `/` — luck, not design, and luck a server GUID does
+     * not extend to. The prefixes make the rung part of the key.
+     *
+     * The prefix is applied *around* [composeRelativeKey]'s output and never inside it: that
+     * function's injectivity invariant is stated in its own KDoc and is not this method's to
+     * weaken.
      */
     override fun stableKey(song: Song): String =
-        song.relativeKey ?: song.filePath ?: song.uri
+        song.relativeKey?.let { "$RUNG_REL$it" }
+            ?: song.filePath?.let { "$RUNG_DATA$it" }
+            ?: "$RUNG_URI${song.uri}"
 
     override suspend fun listAlbums(): List<Album> = LibraryDerivations.deriveAlbums(listSongs())
     override suspend fun listArtists(): List<Artist> = LibraryDerivations.deriveArtists(listSongs())
@@ -128,7 +144,22 @@ class LocalSource @Inject constructor(
                 val id = c.getLong(idIx)
                 val rawTrack = if (c.isNull(trackIx)) 0 else c.getInt(trackIx)
                 out += Song(
-                    id = id,
+                    // NOT the MediaStore `_ID`. `Song.id` is a Room-assigned surrogate and this
+                    // method is reading a *source*, not the database — it has no way to know one,
+                    // and inventing a plausible-looking number here is exactly how the old
+                    // "`Song.id` means the `_ID`" assumption would survive the flip. The scan
+                    // assigns the real id when `SongDao.upsertBySourceKey` persists the row; the
+                    // source's own identity for the track travels in `externalId` below.
+                    id = Song.UNSAVED,
+                    // The val, never the literal (Global Constraint 1) — the initializer of `id`
+                    // above is the single place that string is written anywhere in `src/main`
+                    // (`SourceIdLiteralTest` proves it), and reading it back here is what makes a
+                    // renamed source propagate instead of silently disagreeing.
+                    sourceId = this@LocalSource.id,
+                    // The MediaStore `_ID` is this source's native identity for the track. It is
+                    // deliberately carried separately from `Song.id`: the two hold the same number
+                    // today only because the PK flip has not landed yet.
+                    externalId = id.toString(),
                     uri = ContentUris.withAppendedId(base, id).toString(),
                     filePath = if (c.isNull(dataIx)) null else c.getString(dataIx),
                     relativeKey = composeRelativeKey(
@@ -173,6 +204,20 @@ class LocalSource @Inject constructor(
         private const val VOLUME_SEPARATOR = ":"
 
         /**
+         * Rung namespaces for [stableKey]. They exist because the three rungs share one flat key
+         * space and nothing but coincidence kept them apart — see [stableKey]'s KDoc.
+         *
+         * Cross-*source* collisions are a different problem and are already impossible: an entry
+         * is identified by `(sourceId, sourceKey)` and `PlaylistRepository.resolve` keys a
+         * separate map per source. These prefixes close the remaining *within-source* case, and
+         * they land now because the schema is pre-release and being rewritten anyway — there is
+         * no stored key to migrate.
+         */
+        private const val RUNG_REL = "rel:"
+        private const val RUNG_DATA = "data:"
+        private const val RUNG_URI = "uri:"
+
+        /**
          * ## The key uniqueness invariant — read this before changing any rung
          *
          * A playlist key must be unique **across all four** of the following, and stable under the
@@ -208,14 +253,20 @@ class LocalSource @Inject constructor(
          * source ever shares the `songs` table with per-volume id spaces, that is the thing that
          * breaks first, silently, and no test in this repo would notice.
          *
-         * ### Note for Task 4 (the deeper resolution ladder)
+         * ### The flat key space — resolved (N0 Tasks 4 and 5)
          *
-         * All rungs currently share ONE flat key space: `PlaylistRepository.resolve` builds a
-         * single `associateBy { stableKey(it) }`. Today they happen not to overlap — a rung-1 key
-         * never starts with `/`, a `DATA` path always does, and a uri always starts with
-         * `content://` — but that is luck, not design. A title/artist/duration rung has no such
-         * discipline and could collide with a filename. **Task 4 needs namespaced rung prefixes**
-         * (e.g. `rel:`, `data:`, `tag:`), not merely rungs that are each individually correct.
+         * The rungs used to share one flat key space and stay apart only by coincidence. Both
+         * halves of that are now closed, and they were two different problems:
+         *
+         * - *Across sources*: `PlaylistRepository.resolve` no longer builds one map over every
+         *   song. It keys a separate map **per source**, and an entry is identified by
+         *   `(sourceId, sourceKey)`, so two sources emitting one key string cannot collide.
+         * - *Within this source*: [stableKey] namespaces its rungs `rel:` / `data:` / `uri:`, so
+         *   the rung is part of the key rather than an accident of how each one happens to start.
+         *
+         * Consequence for anyone adding a rung: give it its own prefix. Being individually correct
+         * is not enough — a title/artist/duration rung has none of the shape discipline that made
+         * the old arrangement survive, and would collide with a filename.
          *
          * ---
          *
