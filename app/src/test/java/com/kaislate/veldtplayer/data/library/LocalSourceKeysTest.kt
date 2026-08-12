@@ -76,13 +76,13 @@ class LocalSourceKeysTest {
     /** Rung 1 wins outright: it is the guaranteed-present, non-deprecated one. */
     @Test fun `stableKey prefers the relative key over the DATA path`() {
         val s = song(3, "/storage/emulated/0/Music/a.mp3", relativeKey = "external_primary:Music/a.mp3")
-        assertEquals("external_primary:Music/a.mp3", source.stableKey(s))
+        assertEquals("rel:external_primary:Music/a.mp3", source.stableKey(s))
     }
 
     /** Rung 2: DATA is fully qualified when present, and is what the tag reader already uses. */
     @Test fun `stableKey falls back to the DATA path when there is no relative key`() {
         assertEquals(
-            "/storage/emulated/0/Music/a.mp3",
+            "data:/storage/emulated/0/Music/a.mp3",
             source.stableKey(song(3, "/storage/emulated/0/Music/a.mp3", relativeKey = null)),
         )
     }
@@ -94,7 +94,7 @@ class LocalSourceKeysTest {
      */
     @Test fun `stableKey works when DATA is withheld but the relative key is present`() {
         val s = song(3, filePath = null, relativeKey = "external_primary:Music/a.mp3")
-        assertEquals("external_primary:Music/a.mp3", source.stableKey(s))
+        assertEquals("rel:external_primary:Music/a.mp3", source.stableKey(s))
         assertNotEquals(source.resolvePlayableUri(s), source.stableKey(s))
     }
 
@@ -118,7 +118,7 @@ class LocalSourceKeysTest {
      */
     @Test fun `stableKey falls back to the uri only when both location rungs are absent`() {
         val s = song(3, filePath = null, relativeKey = null)
-        assertEquals("content://media/external/audio/media/3", source.stableKey(s))
+        assertEquals("uri:content://media/external/audio/media/3", source.stableKey(s))
     }
 
     @Test fun `resolvePlayableUri is unchanged — it is still the content uri`() {
@@ -285,4 +285,44 @@ class LocalSourceKeysTest {
 
     private fun key(volume: String?, relativePath: String?, displayName: String?) =
         LocalSource.composeRelativeKey(volume, relativePath, displayName)
+
+    // ------------------------------------------------------- rung namespaces (N0 Task 5)
+
+    /** The prefix is added and the key itself is passed through untouched after it. */
+    @Test fun `rung one emits the namespaced relative key, verbatim after the prefix`() {
+        val s = song(3, filePath = null, relativeKey = "external_primary:Music/Beck/Lost Cause.mp3")
+        assertEquals("rel:external_primary:Music/Beck/Lost Cause.mp3", source.stableKey(s))
+    }
+
+    /**
+     * THE reason the prefixes exist: the three rungs share ONE flat key space.
+     *
+     * `K` below is a single string reachable from two different rungs — a `relativeKey` on one row
+     * and a `DATA` path on another. Un-prefixed, both rows key as `K`, and `resolve`'s
+     * `associateBy` keeps whichever came last, so one playlist entry silently resolves to the
+     * other row's file. Nothing prevented that before; it merely never happened, because a real
+     * rung-1 key starts with a volume name and a real rung-2 key starts with `/`. That was luck,
+     * not design — and it is luck that does not extend to a server GUID, which is an arbitrary
+     * string. The pair is asserted as a pair so the failure message IS the collapse.
+     */
+    @Test fun `a filePath equal to another song's relativeKey cannot collide across rungs`() {
+        val k = "external_primary:Music/a.mp3"
+        val viaRelative = song(3, filePath = null, relativeKey = k)
+        val viaData = song(7, filePath = k, relativeKey = null)
+        assertEquals(
+            "rel:$k" to "data:$k",
+            source.stableKey(viaRelative) to source.stableKey(viaData),
+        )
+    }
+
+    /** Rung ORDER is untouched by the namespacing — relativeKey, then filePath, then uri. */
+    @Test fun `rung order is unchanged — relativeKey over filePath over uri`() {
+        val all = song(3, filePath = "/p", relativeKey = "R")
+        val noRel = song(3, filePath = "/p", relativeKey = null)
+        val bare = song(3, filePath = null, relativeKey = null)
+        assertEquals(
+            listOf("rel:R", "data:/p", "uri:content://media/external/audio/media/3"),
+            listOf(source.stableKey(all), source.stableKey(noRel), source.stableKey(bare)),
+        )
+    }
 }

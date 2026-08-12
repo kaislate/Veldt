@@ -458,7 +458,11 @@ class PlaylistRepositoryTest {
             pl,
             listOf(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha", "local")),
         )
-        assertEquals("external_primary:Music/a.mp3", dao.getEntries(pl).single().sourceKey)
+        // `rel:` — the real LocalSource namespaces its rungs (N0 Task 5). The fakes in this file
+        // do not, deliberately: the interface contract is "any string injective within a source",
+        // and the per-source maps are what protect them. Only LocalSource had three rungs sharing
+        // one flat space.
+        assertEquals("rel:external_primary:Music/a.mp3", dao.getEntries(pl).single().sourceKey)
 
         rescanLibraryAs(songWithoutDataPath(7, "external_primary:Music/a.mp3", "Alpha", "local"))
 
