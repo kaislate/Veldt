@@ -293,6 +293,14 @@ class PlaybackConnection @Inject constructor(
         //  while audio plays. Fix by hydrating _queue from c.currentTimeline / media IDs.
         //  Filing this here, not against the mini-player task: the symptom shows up there
         //  but the cause is this line.
+        //
+        //  N0 made "hydrating from media IDs" concrete. A mediaId is `sourceId:externalId`
+        //  (see sessionMediaItem), so hydration is: split at the FIRST ':' — exact, because
+        //  SourceRegistry bans ':' in a source id — then look the pair up as the natural key
+        //  `(sourceId, externalId)`, which is the songs table's unique index. Note what this
+        //  deliberately is NOT: the surrogate Song.id is absent from the mediaId precisely so
+        //  that a restored session still resolves after a destructive migration has renumbered
+        //  every row. Do not "simplify" the hydration by putting the surrogate back in.
         val song = _queue.value.getOrNull(c.currentMediaItemIndex)
         _nowPlaying.value = NowPlayingState.from(
             song = song,

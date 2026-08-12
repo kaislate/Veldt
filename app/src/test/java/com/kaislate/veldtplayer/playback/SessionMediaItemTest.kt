@@ -8,6 +8,7 @@ import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.model.Song
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,14 +30,25 @@ class SessionMediaItemTest {
         title: String = "Sea Change",
         artist: String = "Beck",
         album: String = "Sea Change",
+        sourceId: String = "test-source",
+        externalId: String = "ms-${id + 9000}",
     ) = Song(
         id = id,
         // Stated for the same reason `relativeKey` is: no default exists, so every site says what
-        // its identity situation is. `externalId` is deliberately NOT `id.toString()` — the Media3
-        // `mediaId` must be built from `Song.id`, and a fixture where the two agreed could not tell
-        // the two apart.
-        sourceId = "test-source",
-        externalId = "ms-${id + 9000}",
+        // its identity situation is.
+        //
+        // *** THE RULE THIS COMMENT USED TO STATE WAS INVERTED BY N0 TASK 6. *** It said the
+        // Media3 `mediaId` must be built from `Song.id`. It must now be built from
+        // `sourceId:externalId` and must contain the surrogate NOWHERE — a surrogate is unique but
+        // a database wipe reassigns it, and a mediaId has to still mean something to a future
+        // session-restore path after one.
+        //
+        // What has NOT changed is why `externalId` is deliberately not `id.toString()`: the two
+        // identities must stay tellable apart, and a fixture where they agreed would let a
+        // regression that used the wrong one pass. That is now load-bearing in the opposite
+        // direction, which is exactly why the fixture keeps the distinction.
+        sourceId = sourceId,
+        externalId = externalId,
         uri = "content://media/external/audio/media/$id",
         filePath = "/storage/emulated/0/Music/$id.mp3",
         // Stated explicitly, not defaulted: `Song.relativeKey` deliberately has no default
@@ -115,7 +127,43 @@ class SessionMediaItemTest {
         )
     }
 
-    @Test fun `the media id is the song id so the session can be mapped back to the library`() {
-        assertEquals("42", itemFor(song()).mediaId)
+    // ------------------------------------------------- source-qualified mediaId (N0 Task 6)
+
+    /**
+     * The mediaId is the DURABLE identity, not the surrogate.
+     *
+     * A surrogate is unique but it is reassigned by a database wipe, and this string has to
+     * survive one: `PlaybackConnection.publish()` is meant to hydrate a restored session from its
+     * media ids, and a v7-style wipe renumbers every row underneath it. `(sourceId, externalId)`
+     * is the identity that outlives the table.
+     */
+    @Test fun `mediaId is the source-qualified external identity`() {
+        val item = itemFor(song(sourceId = "local", externalId = "ms-9042"))
+        assertEquals("local:ms-9042", item.mediaId)
+    }
+
+    /**
+     * Two sources may hand out the same source-native id for different tracks — `externalId` is
+     * unique only WITHIN a source. Qualifying it is what keeps the mediaId injective, and the
+     * encoding is unambiguous only because `SourceRegistry` rejects a `:` in a source id, so the
+     * FIRST colon is always the boundary. That guarantee is asserted in `SourceRegistryTest`, in
+     * the constructor that enforces it — not here, and not at this call site (GC 10).
+     *
+     * Asserted as a pair so the failure message IS the collapse.
+     */
+    @Test fun `two sources sharing an externalId do not collapse into one mediaId`() {
+        val a = itemFor(song(sourceId = "alpha", externalId = "7"))
+        val b = itemFor(song(sourceId = "beta", externalId = "7"))
+        assertEquals("alpha:7" to "beta:7", a.mediaId to b.mediaId)
+    }
+
+    /**
+     * The surrogate must not leak into the mediaId at all — not as the whole string, not as a
+     * third component somebody added "just in case". This is the assertion that would catch a
+     * well-meaning `"${'$'}{song.sourceId}:${'$'}{song.externalId}:${'$'}{song.id}"`.
+     */
+    @Test fun `the surrogate id appears nowhere in the mediaId`() {
+        val item = itemFor(song(id = 123L, sourceId = "local", externalId = "ms-9"))
+        assertFalse("surrogate leaked into mediaId: ${'$'}{item.mediaId}", item.mediaId.contains("123"))
     }
 }

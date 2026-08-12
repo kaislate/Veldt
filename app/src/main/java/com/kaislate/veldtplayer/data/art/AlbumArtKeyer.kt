@@ -19,6 +19,10 @@ import coil.request.Options
  */
 class AlbumArtKeyer : Keyer<SongArt> {
     override fun key(data: SongArt, options: Options): String {
+        // The Room surrogate `songs.id`, NOT `sourceId:externalId` — this is a process-lifetime
+        // memory/disk cache key, and the surrogate is unique among live rows and never reissued
+        // (see [SongArt]). Unlike the Media3 mediaId it does not have to survive a database wipe:
+        // a wipe takes the library with it, and the cache being cold afterwards is correct.
         val shared = "song-art-${data.songId}"
         val sample = options.artDecodeSample()
         return if (sample == ArtDecode.FULL) shared else "$shared@1-$sample"

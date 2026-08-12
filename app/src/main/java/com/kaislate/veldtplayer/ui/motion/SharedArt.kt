@@ -57,6 +57,11 @@ fun artistArtKey(artistKey: String): String = "artist-art:$artistKey"
  * Keyed on the song id rather than the album key on purpose: what travels here is the
  * playing track's cover, and two tracks on one record must not be able to name the same
  * element while both are on screen.
+ *
+ * That id is the Room surrogate `songs.id` (see `SongArt`), and a morph key is the most
+ * short-lived identity in the app — it has to be unique only among elements composed at the same
+ * instant. The surrogate is more than sufficient; `sourceId:externalId` here would be a longer
+ * string buying nothing.
  */
 fun songArtKey(songId: Long): String = "song-art:$songId"
 

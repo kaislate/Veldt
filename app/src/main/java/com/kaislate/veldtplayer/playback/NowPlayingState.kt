@@ -42,6 +42,12 @@ object RepeatModes {
 
 /** Everything the mini-player and now-playing surface need, and nothing more. */
 data class NowPlayingState(
+    /**
+     * The Room surrogate `songs.id`, **session-scoped**: it identifies the current track to the
+     * UI for as long as this playback session lives, and nothing persists it. It is not the
+     * Media3 mediaId — that is `sourceId:externalId`, because it leaves the process — and it is
+     * not an identity anything should store. Null when nothing is playing; see [isActive].
+     */
     val songId: Long?,
     val title: String,
     val artist: String,

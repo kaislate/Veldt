@@ -41,6 +41,13 @@ object VeldtArtUri {
     /**
      * `appendQueryParameter` percent-encodes, and `getQueryParameter` decodes, so a file path
      * containing `&`, `=` or `?` round-trips instead of being re-read as further parameters.
+     *
+     * The path segment is the Room surrogate `songs.id` (see [SongArt]), **not** the
+     * `sourceId:externalId` the Media3 mediaId uses. The two answer different questions: this uri
+     * is consumed in-process by Coil for as long as the process lives, so uniqueness among live
+     * rows is the whole requirement; the mediaId leaves the process and must survive a database
+     * wipe. Note also that a `:` in a path segment would be legal here but is exactly what the
+     * mediaId's split depends on being absent — another reason not to unify them.
      */
     fun of(art: SongArt): Uri = Uri.Builder()
         .scheme(SCHEME)
