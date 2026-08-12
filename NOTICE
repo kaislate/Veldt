@@ -7,3 +7,9 @@ LICENSE).
 * app/src/main/res/font/ — Bricolage Grotesque
   SIL Open Font License 1.1, Copyright 2022 The Bricolage Grotesque Project
   Authors. Full text: licenses/bricolage-grotesque-OFL.txt
+
+* app/src/main/java/com/kaislate/veldtplayer/ui/theme/hct/ — Material Color Utilities
+  Apache License 2.0, Copyright 2021 Google LLC
+  A nine-class subset (HCT/CAM16 colour appearance, tonal palettes, contrast solving)
+  is vendored under app/src/main/java/com/kaislate/veldtplayer/ui/theme/hct/.
+  Each file retains its original Apache-2.0 header.
