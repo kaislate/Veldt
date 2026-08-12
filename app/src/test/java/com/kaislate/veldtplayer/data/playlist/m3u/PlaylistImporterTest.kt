@@ -8,6 +8,7 @@ import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
@@ -79,7 +80,7 @@ class PlaylistImporterTest {
             .allowMainThreadQueries().build()
         dao = db.playlistDao()
         source = FakeSource()
-        repo = PlaylistRepository(dao, db.songDao(), source) { ++clock }
+        repo = PlaylistRepository(dao, db.songDao(), SourceRegistry(setOf(source))) { ++clock }
         importer = PlaylistImporter(context, source, repo)
     }
 

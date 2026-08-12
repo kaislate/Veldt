@@ -18,6 +18,7 @@ import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.library.tag.TagReader
 import com.kaislate.veldtplayer.data.library.tag.TrackTags
+import com.kaislate.veldtplayer.di.LocalLibrary
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.IOException
@@ -33,12 +34,21 @@ import java.io.IOException
  * WorkManager backoff. Any other throwable is a deterministic bug and returns
  * [Result.failure] immediately rather than retrying uselessly. A normally-ungranted
  * scan does NOT throw ([LibrarySource] returns empty), so it simply no-ops to success.
+ *
+ * This worker is **local-only by type**: it takes the [LocalLibrary]-qualified source rather than
+ * one of the registry's, because a MediaStore enumeration is the only thing it knows how to do. A
+ * remote source syncs through its own worker (design spec §5.4). That also keeps `ScanDiffer`'s
+ * one-source precondition satisfied structurally — there is no set here to loop over and therefore
+ * no way to hand the differ a concatenation of two sources' rows.
  */
 @HiltWorker
 class LibraryScanWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val librarySource: LibrarySource,
+    // @LocalLibrary, not a source from the registry. This worker enumerates MediaStore and
+    // nothing else — remote sync gets its own worker (design spec §5.4) — so the restriction is
+    // part of the type Dagger resolves and needs no string to say it (Global Constraint 1).
+    @LocalLibrary private val librarySource: LibrarySource,
     private val tagReader: TagReader,
     private val songDao: SongDao,
 ) : CoroutineWorker(appContext, params) {

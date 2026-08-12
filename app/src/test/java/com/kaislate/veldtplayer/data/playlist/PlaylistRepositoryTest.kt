@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.playlist
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.db.toEntity
@@ -50,9 +51,14 @@ class PlaylistRepositoryTest {
      * **The default id is `"test-source"`, not `"local"`.** It used to be `"local"`, which meant a
      * production `sourceId = "local"` hardcode agreed with this fake by coincidence in every test
      * here except the one that explicitly passes `"not-local"`. The canonical fake id exists so a
-     * hardcode disagrees. Note it is deliberately still **different from `song().sourceId`** — the
-     * two must not become the same string, or `addEntries` reading the Song's field instead of the
-     * source's would also start passing by coincidence.
+     * hardcode disagrees.
+     *
+     * **It now deliberately AGREES with `song()`'s default `sourceId`, which is the opposite of
+     * what this KDoc used to require.** Before N0 Task 4 the two had to differ, because `addSongs`
+     * read the source from the ambient `LibrarySource` and a matching Song field would have let a
+     * regression pass by coincidence. Task 4 made the Song's own `sourceId` the routing key on
+     * purpose, so a song must now name a source the registry actually holds — a mismatched default
+     * would simply throw, testing nothing. See `song()`'s comment for where that protection went.
      */
     private class FakeSource(override val id: String = "test-source") : LibrarySource {
         override fun resolvePlayableUri(song: Song): String = song.uri
@@ -108,7 +114,7 @@ class PlaylistRepositoryTest {
         dao = db.playlistDao()
         songDao = db.songDao()
         source = FakeSource()
-        repo = PlaylistRepository(dao, songDao, source) { ++clock }
+        repo = PlaylistRepository(dao, songDao, SourceRegistry(setOf(source))) { ++clock }
     }
 
     @After fun tearDown() = db.close()
@@ -123,13 +129,23 @@ class PlaylistRepositoryTest {
         path: String?,
         title: String = "T$id",
         relativeKey: String? = null,
+        sourceId: String = "test-source",
     ) = Song(
         id = id,
-        // Deliberately none of the source ids any test in this file uses — not FakeSource's default
-        // "test-source", not the "not-local" of the GC-1 test. `addSongs` must take entry.sourceId
-        // from the LibrarySource, never from the Song, so if it ever started reading this field the
-        // entries would come out labelled "wrong-source" instead of agreeing by accident.
-        sourceId = "wrong-source",
+        // *** THIS FIELD'S MEANING WAS INVERTED BY N0 TASK 4 — read before "fixing" it. ***
+        //
+        // It used to be a DECOY, pinned to "wrong-source", because `addSongs` was required to take
+        // the entry's source from the single ambient LibrarySource and NEVER from the Song. Task 4
+        // deliberately reversed that rule: there is no single source any more, one `addSongs` call
+        // may carry songs from two of them, so `addSongs` now routes on `registry.require(
+        // it.sourceId)` — i.e. on this very field, BY DESIGN. A decoy value here is no longer a
+        // trap for a regression; it is just an unregistered source that throws.
+        //
+        // The protection the decoy used to give did not disappear, it MOVED: `addSongs stores each
+        // song's own source identity, not any single source's` is what now catches a call site that
+        // reads the source from anywhere but the song, and it does it by asserting two different
+        // sources come back on two entries — something one ambient source cannot fake.
+        sourceId = sourceId,
         externalId = "ms-${id + 9000}",
         uri = "content://media/external/audio/media/$id",
         filePath = path,
@@ -147,8 +163,12 @@ class PlaylistRepositoryTest {
     )
 
     /** A row from a provider that withholds `DATA`: no file path, relative key only. */
-    private fun songWithoutDataPath(id: Long, relativeKey: String, title: String = "T$id") =
-        song(id = id, path = null, title = title, relativeKey = relativeKey)
+    private fun songWithoutDataPath(
+        id: Long,
+        relativeKey: String,
+        title: String = "T$id",
+        sourceId: String = "test-source",
+    ) = song(id = id, path = null, title = title, relativeKey = relativeKey, sourceId = sourceId)
 
     /**
      * Replace the whole `songs` projection — i.e. what a library scan does. Clearing first is the
@@ -208,9 +228,9 @@ class PlaylistRepositoryTest {
      */
     @Test fun `addSongs takes source identity from the LibrarySource, never a literal`() = runTest {
         val other = FakeSource(id = "not-local")
-        val otherRepo = PlaylistRepository(dao, songDao, other) { ++clock }
+        val otherRepo = PlaylistRepository(dao, songDao, SourceRegistry(setOf(other))) { ++clock }
         val pl = otherRepo.create("Mix")
-        otherRepo.addSongs(pl, listOf(song(1, "/a.mp3")))
+        otherRepo.addSongs(pl, listOf(song(1, "/a.mp3", sourceId = "not-local")))
         val entry = dao.getEntries(pl).single()
         assertEquals("not-local", entry.sourceId)
         assertEquals("/a.mp3", entry.sourceKey)
@@ -429,14 +449,18 @@ class PlaylistRepositoryTest {
         val real = com.kaislate.veldtplayer.data.library.LocalSource(
             ApplicationProvider.getApplicationContext()
         )
-        val realRepo = PlaylistRepository(dao, songDao, real) { ++clock }
+        val realRepo = PlaylistRepository(dao, songDao, SourceRegistry(setOf(real))) { ++clock }
         val pl = realRepo.create("Mix")
 
-        rescanLibraryAs(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha"))
-        realRepo.addSongs(pl, listOf(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha")))
+        // sourceId = the REAL LocalSource's own id, because that is the source in this registry.
+        rescanLibraryAs(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha", "local"))
+        realRepo.addSongs(
+            pl,
+            listOf(songWithoutDataPath(3, "external_primary:Music/a.mp3", "Alpha", "local")),
+        )
         assertEquals("external_primary:Music/a.mp3", dao.getEntries(pl).single().sourceKey)
 
-        rescanLibraryAs(songWithoutDataPath(7, "external_primary:Music/a.mp3", "Alpha"))
+        rescanLibraryAs(songWithoutDataPath(7, "external_primary:Music/a.mp3", "Alpha", "local"))
 
         val track = realRepo.resolve(pl).single()
         assertNotNull(track.song)
@@ -463,10 +487,11 @@ class PlaylistRepositoryTest {
         val real = com.kaislate.veldtplayer.data.library.LocalSource(
             ApplicationProvider.getApplicationContext()
         )
-        val realRepo = PlaylistRepository(dao, songDao, real) { ++clock }
+        val realRepo = PlaylistRepository(dao, songDao, SourceRegistry(setOf(real))) { ++clock }
         val pl = realRepo.create("Mix")
 
         fun onVolume(id: Long, volume: String, title: String) = song(
+            sourceId = "local", // the real LocalSource owns these rows
             id = id,
             path = null, // DATA withheld, so the volume-qualified key is the only thing standing
             title = title,
@@ -698,7 +723,7 @@ class PlaylistRepositoryTest {
     @Test fun `resolve quiesces after repairing a moved entry - it writes exactly once`() =
         runTest {
             val counting = CountingDao(dao)
-            val convergingRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+            val convergingRepo = PlaylistRepository(counting, songDao, SourceRegistry(setOf(source))) { ++clock }
             val pl = convergingRepo.create("Mix")
             rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
             convergingRepo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
@@ -729,7 +754,7 @@ class PlaylistRepositoryTest {
      */
     @Test fun `resolve still quiesces when two library rows collide on one key`() = runTest {
         val counting = CountingDao(dao)
-        val convergingRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val convergingRepo = PlaylistRepository(counting, songDao, SourceRegistry(setOf(source))) { ++clock }
         val pl = convergingRepo.create("Mix")
         rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
         convergingRepo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
@@ -763,7 +788,7 @@ class PlaylistRepositoryTest {
      */
     @Test fun `resolve does not rewrite the key of an entry that matched on rung 1`() = runTest {
         val counting = CountingDao(dao)
-        val quietRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val quietRepo = PlaylistRepository(counting, songDao, SourceRegistry(setOf(source))) { ++clock }
         val pl = quietRepo.create("Mix")
         rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
         quietRepo.addSongs(pl, listOf(songWithoutDataPath(7, here, "Alpha")))
@@ -782,11 +807,20 @@ class PlaylistRepositoryTest {
      */
     @Test fun `resolve leaves an unresolved entry's imported key alone`() = runTest {
         val counting = CountingDao(dao)
-        val quietRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val quietRepo = PlaylistRepository(counting, songDao, SourceRegistry(setOf(source))) { ++clock }
         val pl = quietRepo.create("Mix")
         quietRepo.addEntries(
             pl,
-            listOf(NewPlaylistEntry("/sdcard/Music/never-scanned.mp3", null, "T", "A", "Al")),
+            listOf(
+                NewPlaylistEntry(
+                    sourceId = "test-source",
+                    sourceKey = "/sdcard/Music/never-scanned.mp3",
+                    songId = null,
+                    title = "T",
+                    artist = "A",
+                    album = "Al",
+                ),
+            ),
         )
         rescanLibraryAs(songWithoutDataPath(7, here, "Alpha"))
 
@@ -803,7 +837,7 @@ class PlaylistRepositoryTest {
     /** Global Constraint 2 again: the repair is scoped to entries this source owns. */
     @Test fun `resolve never rewrites the key of another source's entry`() = runTest {
         val counting = CountingDao(dao)
-        val quietRepo = PlaylistRepository(counting, songDao, source) { ++clock }
+        val quietRepo = PlaylistRepository(counting, songDao, SourceRegistry(setOf(source))) { ++clock }
         val pl = quietRepo.create("Mix")
         dao.insertEntries(
             listOf(
@@ -831,5 +865,187 @@ class PlaylistRepositoryTest {
         repo.addSongs(chill, listOf(library[1]))
         assertEquals(listOf("Gymnopedie"), repo.resolve(gym).map { it.song?.title })
         assertEquals(listOf("Chill"), repo.resolve(chill).map { it.song?.title })
+    }
+    // ------------------------------------------------------------------ mixed sources (N0 Task 4)
+
+    /**
+     * Two sources, one key string, two different tracks — and each entry must land on its own.
+     *
+     * Nothing coordinates two sources' key spaces: a Subsonic GUID and a MediaStore path are not
+     * drawn from the same alphabet, but they are both `String` and they can collide. Before Task 4
+     * `resolve` built ONE flat `associateBy` over every song in the table, which keeps whichever
+     * row iterated last and hands it to BOTH entries. That is the P1.4 defect class exactly:
+     * locally correct, silently collapses two distinct inputs.
+     *
+     * Asserted as a pair, so the failure message IS the collapse rather than a bare "expected 2".
+     */
+    @Test fun `two sources sharing one sourceKey resolve each entry to its own source's song`() = runTest {
+        val alpha = FakeSource(id = "alpha")
+        val beta = FakeSource(id = "beta")
+        val mixedRepo =
+            PlaylistRepository(dao, songDao, SourceRegistry(setOf(alpha, beta))) { ++clock }
+        // Same filePath on both, so FakeSource.stableKey returns "/same.mp3" for each.
+        rescanLibraryAs(
+            song(1, "/same.mp3", title = "Alpha track", sourceId = "alpha"),
+            song(2, "/same.mp3", title = "Beta track", sourceId = "beta"),
+        )
+        val pl = mixedRepo.create("Mix")
+        mixedRepo.addEntries(
+            pl,
+            listOf(
+                NewPlaylistEntry("alpha", "/same.mp3", null, "T", "A", "Al"),
+                NewPlaylistEntry("beta", "/same.mp3", null, "T", "A", "Al"),
+            ),
+        )
+
+        val resolved = mixedRepo.resolve(pl)
+        assertEquals(
+            listOf("alpha" to 1L, "beta" to 2L),
+            resolved.map { it.entry.sourceId to it.song?.id },
+        )
+    }
+
+    /**
+     * An entry naming a source nobody registered: the removed-account state.
+     *
+     * It resolves to `null` — greyed, still counted, never dropped — and, critically, NOTHING is
+     * written. There is no source to compute a fresh key with, and rewriting the entry would
+     * destroy the identity the user needs back if they re-add the account.
+     *
+     * **The library row this entry caches is owned by the GHOST source itself, and that detail is
+     * the whole test.** An earlier version of this test cached a row owned by the *registered*
+     * source, and it passed against a deliberately broken `resolve` that fell back to an arbitrary
+     * source instead of returning early — because rung 2's own `takeIf { it.sourceId ==
+     * entry.sourceId }` rejected that row first. The test was green for a reason it did not name,
+     * which makes it worthless as a guard on the early return. With the row owned by `ghost`, rung
+     * 2 MATCHES, so the only thing standing between this entry and a resolved track — plus a
+     * `sourceKey` write-back computed from a source that never described it — is the early return.
+     */
+    @Test fun `an entry whose source is not registered resolves to null and writes nothing`() = runTest {
+        val counting = CountingDao(dao)
+        val aloneRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source))) { ++clock }
+        // Owned by "ghost", which the registry does NOT hold — so rung 2's source guard passes and
+        // cannot be what saves us here.
+        rescanLibraryAs(song(7, "/a.mp3", title = "Real row", sourceId = "ghost"))
+        val pl = aloneRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "ghost", sourceKey = "/a.mp3", songId = 7L,
+                    sourceTitle = "T", sourceArtist = "A", sourceAlbum = "Al",
+                ),
+            ),
+        )
+
+        counting.reset()
+        val track = aloneRepo.resolve(pl).single()
+        assertNull(track.song)
+        assertEquals(0, counting.idWrites + counting.keyWrites)
+        // And the stored row is byte-for-byte what it was.
+        val stored = dao.getEntries(pl).single()
+        assertEquals(
+            "ghost" to ("/a.mp3" to 7L),
+            stored.sourceId to (stored.sourceKey to stored.songId),
+        )
+    }
+
+    /**
+     * Rung 2, guarded by source.
+     *
+     * Surrogate ids share ONE AUTOINCREMENT space across every source after Task 3, so a cached id
+     * always names a real row — just not necessarily one belonging to this entry. Without the
+     * `takeIf { it.sourceId == entry.sourceId }` guard this entry silently resolves to a different
+     * source's track, which is worse than not resolving: the playlist plays the wrong song.
+     */
+    @Test fun `a cached songId pointing at another source's row never resolves`() = runTest {
+        val alpha = FakeSource(id = "alpha")
+        val beta = FakeSource(id = "beta")
+        val mixedRepo =
+            PlaylistRepository(dao, songDao, SourceRegistry(setOf(alpha, beta))) { ++clock }
+        rescanLibraryAs(song(2, "/beta-only.mp3", title = "Beta track", sourceId = "beta"))
+        val pl = mixedRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    // alpha's entry, a key matching nothing, and a cache pointing at beta's row.
+                    sourceId = "alpha", sourceKey = "/no-such-key.mp3", songId = 2L,
+                    sourceTitle = "T", sourceArtist = "A", sourceAlbum = "Al",
+                ),
+            ),
+        )
+
+        assertNull(mixedRepo.resolve(pl).single().song)
+    }
+
+    /**
+     * One `addSongs` call, two sources — the case a search result spanning both produces.
+     *
+     * This is the test that replaces `song()`'s old decoy `sourceId`. A call site that reads the
+     * source from anywhere but the song (an ambient field, the first registered source, a literal)
+     * cannot produce two different ids here, so the pair of literals below is what pins the
+     * routing.
+     */
+    @Test fun `addSongs stores each song's own source identity, not any single source's`() = runTest {
+        val alpha = FakeSource(id = "alpha")
+        val beta = FakeSource(id = "beta")
+        val mixedRepo =
+            PlaylistRepository(dao, songDao, SourceRegistry(setOf(alpha, beta))) { ++clock }
+        val pl = mixedRepo.create("Mix")
+
+        mixedRepo.addSongs(
+            pl,
+            listOf(
+                song(1, "/from-alpha.mp3", sourceId = "alpha"),
+                song(2, "/from-beta.mp3", sourceId = "beta"),
+            ),
+        )
+
+        assertEquals(
+            listOf("alpha" to "/from-alpha.mp3", "beta" to "/from-beta.mp3"),
+            dao.getEntries(pl).map { it.sourceId to it.sourceKey },
+        )
+    }
+
+    /**
+     * A freshly-enumerated song has no surrogate, and `0` must never reach the cache.
+     *
+     * `Song.UNSAVED` is `0`, which is Room's "not set". Stored in `playlist_entries.songId` it
+     * stops being a sentinel and starts claiming to be an id — pinning the entry to a row Room can
+     * never issue, so rung 2 is dead forever and the ladder has no reason to repair it. `null` is
+     * the genuinely different thing: "unknown, ask the resolver".
+     */
+    @Test fun `addSongs never caches an UNSAVED id`() = runTest {
+        val pl = repo.create("Mix")
+        repo.addSongs(pl, listOf(song(Song.UNSAVED, "/fresh.mp3")))
+        assertNull(dao.getEntries(pl).single().songId)
+    }
+
+    /**
+     * Two sources handing out the SAME source-native id for different tracks.
+     *
+     * The N0 ledger flags this as a mandatory Task 4 control, conditioned on Task 4 looping sources
+     * in the scan pipeline — which it deliberately does NOT: `LibraryScanWorker` takes the
+     * `@LocalLibrary` source, so there is no set to loop over and no way to hand `ScanDiffer` a
+     * concatenation of two sources' rows. The hazard is structurally absent rather than merely
+     * untriggered. This asserts the property the schema owes regardless — `(sourceId, externalId)`
+     * is the identity, so one `externalId` under two sources is two rows and not one.
+     */
+    @Test fun `one externalId under two sources is two distinct rows`() = runTest {
+        val shared = "ms-collide"
+        songDao.upsertBySourceKey(
+            listOf(
+                song(1, "/a.mp3", title = "Alpha", sourceId = "alpha")
+                    .copy(externalId = shared).toEntity(),
+                song(2, "/b.mp3", title = "Beta", sourceId = "beta")
+                    .copy(externalId = shared).toEntity(),
+            ),
+        )
+        assertEquals(
+            listOf("alpha" to "Alpha", "beta" to "Beta"),
+            songDao.getAllSongs().map { it.sourceId to it.title }.sortedBy { it.first },
+        )
     }
 }

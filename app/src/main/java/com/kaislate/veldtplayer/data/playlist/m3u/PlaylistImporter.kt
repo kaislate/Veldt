@@ -8,6 +8,7 @@ import android.net.Uri
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.playlist.NewPlaylistEntry
 import com.kaislate.veldtplayer.data.playlist.PlaylistRepository
+import com.kaislate.veldtplayer.di.LocalLibrary
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -73,7 +74,7 @@ data class ImportResult(
  */
 class PlaylistImporter @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val source: LibrarySource,
+    @LocalLibrary private val source: LibrarySource,
     private val playlists: PlaylistRepository,
 ) {
 
@@ -116,6 +117,10 @@ class PlaylistImporter @Inject constructor(
      */
     private fun newEntryOf(resolution: Resolution): NewPlaylistEntry {
         val song = resolution.song ?: return NewPlaylistEntry(
+            // The local source's own id, from the source object — never the string. An import is
+            // MediaStore-specific by construction (see the class KDoc), so this is the one source
+            // it can possibly mean, but it still has to *say* so per entry now.
+            sourceId = source.id,
             sourceKey = resolution.entry.path,
             songId = null,
             title = captionOf(resolution.entry),
@@ -123,6 +128,7 @@ class PlaylistImporter @Inject constructor(
             album = "",
         )
         return NewPlaylistEntry(
+            sourceId = source.id,
             sourceKey = source.stableKey(song),
             // Null, not `song.id` — and this row is nonetheless counted RESOLVED. `song` came from
             // `source.listSongs()`, whose rows carry `Song.UNSAVED`, so the only id available here

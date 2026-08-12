@@ -14,6 +14,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * The P1 [LibrarySource]: enumerates on-device audio via `MediaStore.Audio.Media`
@@ -26,6 +27,7 @@ import javax.inject.Inject
  * empty list — it never throws, so a denied scan degrades to "no library" rather than
  * a crash. Column reads are guarded (null-safe; `ALBUM_ARTIST` may be absent per-OEM).
  */
+@Singleton
 class LocalSource @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : LibrarySource {

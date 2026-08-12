@@ -10,6 +10,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.library.model.Album
@@ -89,8 +90,9 @@ class PlaylistViewModelTest {
         db = Room.inMemoryDatabaseBuilder(context, VeldtDatabase::class.java)
             .allowMainThreadQueries().build()
         source = FakeSource()
-        playlists = PlaylistRepository(db.playlistDao(), db.songDao(), source) { ++clock }
-        music = MusicRepository(db.songDao(), source, context)
+        val registry = SourceRegistry(setOf(source))
+        playlists = PlaylistRepository(db.playlistDao(), db.songDao(), registry) { ++clock }
+        music = MusicRepository(db.songDao(), registry, context)
         vm = PlaylistViewModel(
             playlists = playlists,
             importer = PlaylistImporter(context, source, playlists),
