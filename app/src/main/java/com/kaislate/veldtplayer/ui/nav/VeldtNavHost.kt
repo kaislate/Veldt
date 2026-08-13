@@ -307,13 +307,15 @@ fun VeldtNavHost() {
                         }
                         // One destination PER folder, so back pops one level — see FolderScreen.
                         //
-                        // The argument is read exactly as ALBUM_DETAIL reads its own, `?: ""` and
-                        // all. The fallback still earns its place here, though, and for a reason
-                        // that does not apply there: on this screen `null` is not "no key", it is
-                        // the TAB ROOT. Letting an absent argument through as null would open the
-                        // root under a `folder/…` route. `""` is a key no tree can hold — every
-                        // node's key starts with a volume name, which is never empty — so it
-                        // resolves to nothing and lands on "Folder unavailable" instead. Pinned in
+                        // The argument is coerced to "" exactly as ALBUM_DETAIL coerces its own —
+                        // spelled `?: ""` here and `.orEmpty()` below, which are the same thing.
+                        // The fallback earns its place for a reason that does not apply there,
+                        // though: on this screen `null` is not "no key", it is the TAB ROOT.
+                        // Letting an absent argument through as null would open the root under a
+                        // `folder/…` route. `""` is a key no tree can hold — every node's key
+                        // starts with a volume name, which is never empty — so it resolves to
+                        // nothing and falls to the same surface a deleted folder does: "Folder
+                        // unavailable", or ScanningState while a scan is still in flight. Pinned in
                         // FolderViewModelTest, at the view model, since nothing in this source set
                         // can drive the nav host itself.
                         veldtDestination(

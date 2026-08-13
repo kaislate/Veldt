@@ -23,7 +23,15 @@ class FolderRouteTest {
      * left bare — `Uri.encode(key, "/")` encodes the `%`, the `#` and the spaces and satisfies it.
      * That mutant is not cosmetic: `folder/external_primary:Music/Beck` is THREE path segments, and
      * Navigation Compose compiles `folder/{key}` to an argument pattern that does not cross `/`, so
-     * every folder tap in the app would silently fail to navigate while the suite read green.
+     * no destination matches.
+     *
+     * **An unmatched route CRASHES; it does not fail quietly.** Checked against the artifact this
+     * project actually resolves rather than assumed: `navigation-runtime-android 2.9.0`'s
+     * `NavControllerImpl` carries the message *"Navigation destination that matches route … cannot
+     * be found in the navigation graph"*, and the constant pool marks it
+     * `$i$a$-requireNotNull-NavControllerImpl$navigate$5` — a `requireNotNull` inside `navigate`,
+     * which throws `IllegalArgumentException` straight out of the click handler. So the mutant this
+     * test exists to kill takes the app down on the first folder tap while the suite reads green.
      */
     @Test fun `every separator is percent-encoded, so the route stays one path segment`() {
         assertEquals(

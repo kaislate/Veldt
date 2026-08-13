@@ -296,10 +296,18 @@ class FolderViewModelTest {
      *   actually on the stack.
      * - **The elided depth must be read from the crumb's OWN volume.** The two volumes here have
      *   deliberately DIFFERENT display roots — internal storage branches at its root (`Music` and
-     *   `Download`) so nothing is elided, while the card elides its volume node — so a lookup that
-     *   took the first root would mark the wrong crumbs inert.
+     *   `Download`) so nothing is elided and its depth is 0, while the card elides its volume node
+     *   and its depth is 1 — so a lookup keyed on anything but the node's volume marks the wrong
+     *   crumbs inert.
+     *
+     * **Both volumes are asked, and that is what makes the lookup pinned in both directions.** With
+     * only the card's crumbs asserted, `roots.lastOrNull()` and a hardcoded `displayDepth = 1` both
+     * pass — this fixture's card *is* the last root and its depth *is* 1. The internal-storage
+     * assertion at the bottom is the one those two fail, and Task 6 depends on it: `displayDepth`
+     * decides which crumbs are inert, which is exactly which branch of the pop-or-navigate fallback
+     * a tap can reach.
      */
-    @Test fun `a second volume's breadcrumb pops to that volume, not to the tab root`() = runTest {
+    @Test fun `each volume's breadcrumb is measured against its own elided depth`() = runTest {
         addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
         val vm = viewModel(
             // Internal storage first, so `roots.first()` is the volume with the OTHER display depth.
@@ -308,24 +316,37 @@ class FolderViewModelTest {
             row("1234-5678:Music/Beck/Sea Change/c.mp3"),
             row("1234-5678:Music/Radiohead/d.mp3"),
         )
+        val state = vm.settled()
 
-        val crumbs = vm.listing(vm.settled(), "1234-5678:Music/Beck/Sea Change").crumbs
-
+        val card = vm.listing(state, "1234-5678:Music/Beck/Sea Change").crumbs
         assertEquals(
             "the card's breadcrumb is mislabelled — the volume label, then its own path",
             listOf("SanDisk Ultra", "Music", "Beck", "Sea Change"),
-            crumbs.map { it.label },
+            card.map { it.label },
         )
         assertEquals(
             "the display root's crumb does not pop to its own volume, or the elided depth was " +
-                "read from the wrong volume",
+                "read from a volume that elides LESS than this one",
             listOf(
                 null,
                 Destinations.folder("1234-5678:Music"),
                 Destinations.folder("1234-5678:Music/Beck"),
                 null,
             ),
-            crumbs.map { it.route },
+            card.map { it.route },
+        )
+
+        // Internal storage elides NOTHING here, so its volume crumb is a real destination rather
+        // than an inert one. This is the assertion `roots.lastOrNull()` and a hardcoded depth fail.
+        val internal = vm.listing(state, "external_primary:Music").crumbs
+        assertEquals(
+            "internal storage's breadcrumb is wrong, or the elided depth was read from a volume " +
+                "that elides MORE than this one — its volume crumb went inert",
+            listOf(
+                "Internal storage" to Destinations.folder("external_primary"),
+                "Music" to null,
+            ),
+            internal.map { it.label to it.route },
         )
     }
 
@@ -431,8 +452,13 @@ class FolderViewModelTest {
      * landing. That is the bug `BrowseViewModel.scanning`'s KDoc records, and nothing else here
      * would notice the seed being quietly changed back. Read from `value` with no collector, which
      * is exactly the window the screen sees on its first frame.
+     *
+     * **And it has to come back DOWN**, which is the half a seed assertion alone cannot see: pinned
+     * true and nothing else, `scanning = true` hardcoded in the combine passes, and the tab sits in
+     * `ScanningState` for the life of the process. The complement is what makes this a claim about
+     * the WIRING rather than about the seed.
      */
-    @Test fun `the tab assumes a scan is coming until the library says otherwise`() {
+    @Test fun `the tab assumes a scan is coming until the library says otherwise`() = runTest {
         val vm = viewModel(row("external_primary:Music/Beck/a.mp3"))
 
         assertEquals(
@@ -440,6 +466,12 @@ class FolderViewModelTest {
                 "'No folders yet' over a library that is still being read",
             true,
             vm.state.value.scanning,
+        )
+        assertEquals(
+            "the flag never came down — it is not wired to the repository, so the tab would sit " +
+                "in ScanningState forever",
+            false,
+            vm.settled().scanning,
         )
     }
 
