@@ -56,12 +56,56 @@ class SongLocationTest {
         assertEquals(listOf("Music", "Beck"), loc?.segments)
     }
 
-    @Test fun `rung 2 on an UNRECOGNISED mount keeps the path but marks the volume unknown`() {
-        // Degradation, not a drop: the track still has a place in the tree. Device-unverifiable —
-        // no SD card exists on this fleet (pre-flight, 2026-08-14).
+    @Test fun `rung 2 maps a removable card mount to the volume name rung 1 uses`() {
+        // Device-unverifiable — no SD card exists on this fleet (pre-flight, 2026-08-14).
         val loc = song(null, "/storage/1234-5678/Music/x.mp3").location()
+        assertEquals("1234-5678", loc?.volume)
+        assertEquals(listOf("Music"), loc?.segments)
+    }
+
+    @Test fun `rung 2 recovers a CARD-root track, the case rung 1 cannot represent off primary`() {
+        // The volume-root case again, but on a removable card: RELATIVE_PATH is "/" here too, so
+        // composeRelativeKey returns null and only filePath can place this file.
+        val loc = song(null, "/storage/1234-5678/root.mp3").location()
+        assertEquals(
+            SongLocation("1234-5678", emptyList(), "root.mp3"),
+            loc,
+        )
+    }
+
+    @Test fun `rung 2 on a genuinely UNRECOGNISED mount keeps the path but marks the volume unknown`() {
+        // Degradation, not a drop: the track still has a place in the tree. /mnt/... is not under
+        // any /storage/<id>/ root, so there is no volume id to recover and "?" is the honest answer.
+        val loc = song(null, "/mnt/weird/x.mp3").location()
         assertEquals(VOLUME_UNKNOWN, loc?.volume)
-        assertEquals(listOf("storage", "1234-5678", "Music"), loc?.segments)
+        assertEquals(listOf("mnt", "weird"), loc?.segments)
+    }
+
+    @Test fun `a card-root track and a card Music track land on ONE volume — one card is one root`() {
+        // The regression this pair exists for. The two tracks reach the ladder by DIFFERENT rungs
+        // by construction — the Music/ file has RELATIVE_PATH "Music/" so rung 1 takes it, the root
+        // file has RELATIVE_PATH "/" so composeRelativeKey rejects it and rung 2 takes it — and the
+        // defect was that the two rungs then disagreed about the volume of one physical card.
+        val cardRoot = song(null, "/storage/1234-5678/root.mp3").location()
+        val cardMusic = song("1234-5678:Music/a.mp3", null).location()
+        assertEquals(
+            "one physical card split into two tree roots: its root track and its Music/ track " +
+                "resolved to different volumes, so the card appears twice and once as '?'",
+            listOf("1234-5678", "1234-5678"),
+            listOf(cardRoot?.volume, cardMusic?.volume),
+        )
+    }
+
+    @Test fun `the volume id folds case but a segment beside it does NOT`() {
+        // Asymmetric on purpose, asserted as a pair so neither half can drift alone: the volume is
+        // a MediaStore identifier (lowercase by convention, must agree with rung 1), the segment is
+        // a user-authored directory name (byte-exact, global constraints 7 and 8).
+        val loc = song(null, "/storage/ABCD-1234/Music/x.mp3").location()
+        assertEquals(
+            "volume id must fold to match rung 1, and the segment beside it must NOT fold",
+            listOf<Any?>("abcd-1234", listOf("Music")),
+            listOf<Any?>(loc?.volume, loc?.segments),
+        )
     }
 
     @Test fun `both rungs null yields no location — the Unfiled case`() {
