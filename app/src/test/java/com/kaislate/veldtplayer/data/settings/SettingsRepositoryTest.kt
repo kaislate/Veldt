@@ -85,13 +85,19 @@ class SettingsRepositoryTest {
      * stores *something derived from the name*, while the literal pins the actual wire format that
      * an already-installed app has to keep reading. `DATE_MODIFIED` is chosen because it is neither
      * the default nor ordinal 0, so neither a no-op write nor an ordinal write can coincide with it.
+     *
+     * **The KEY string is named here too**, rather than read back through the repository's own
+     * private constant. Reading through the constant makes a rename invisible — write and read move
+     * together and every test stays green — while on an installed device the same rename resets the
+     * setting for every user on upgrade. Both halves of the on-disk contract are literals here
+     * because both are what an already-shipped install depends on.
      */
-    @Test fun `the folder sort is stored by NAME, not ordinal`() = runTest {
+    @Test fun `the folder sort is stored under its own key, by NAME and not ordinal`() = runTest {
         repo.setFolderSort(TrackSort.DATE_MODIFIED)
         assertEquals(
             "the folder sort is not on disk under its own name — an ordinal, or the wrong key",
             "DATE_MODIFIED",
-            repo.readRawFolderSortForTest(),
+            repo.readRawForTest("folder_sort"),
         )
     }
 
@@ -100,14 +106,23 @@ class SettingsRepositoryTest {
         assertEquals(TrackSort.FILENAME, repo.folderSort.first())
     }
 
-    /** Two keys, not one: setting a direction must not disturb the sort, or vice versa. */
+    /**
+     * Two keys, not one: setting a direction must not disturb the sort, or vice versa.
+     *
+     * The raw read is here for the same reason as in the test above — it is the only assertion that
+     * a rename of `folder_sort_desc` would break, since reading through the constant renames with it.
+     */
     @Test fun `the descending flag round-trips independently of the sort`() = runTest {
         repo.setFolderSort(TrackSort.TITLE)
         repo.setFolderSortDescending(true)
         assertEquals(
-            "the sort and its direction are not independently stored",
-            listOf<Any>(TrackSort.TITLE, true),
-            listOf<Any>(repo.folderSort.first(), repo.folderSortDescending.first()),
+            "the sort and its direction are not independently stored, or the direction's key moved",
+            listOf<Any?>(TrackSort.TITLE, true, true),
+            listOf<Any?>(
+                repo.folderSort.first(),
+                repo.folderSortDescending.first(),
+                repo.readRawBooleanForTest("folder_sort_desc"),
+            ),
         )
     }
 }

@@ -92,14 +92,22 @@ class SettingsRepository @Inject constructor(
     }
 
     /**
-     * Test seam: the stored string as stored, so a test can pin that it is the enum's NAME.
+     * Test seam: the stored value as stored, under a key the CALLER names.
      *
-     * Reading back through [folderSort] cannot see the difference — it resolves both a name and a
-     * stray ordinal to *some* [TrackSort] — so the round trip stays green under exactly the bug
-     * that reordering the enum would detonate. This is the only way to assert the wire format.
+     * Two things depend on it being the caller's key string rather than the constant above. It pins
+     * the **wire format** — reading back through [folderSort] cannot see the difference, because it
+     * resolves both a name and a stray ordinal to *some* [TrackSort], so a round trip stays green
+     * under a symmetric ordinal implementation that writes `ordinal` and reads it back by index.
+     * And it pins the **key string**, which reading through the same private constant cannot: a
+     * rename would move both the write and the read together, keep every test green, and silently
+     * reset the sort of every installed user on upgrade.
      */
-    internal suspend fun readRawFolderSortForTest(): String? =
-        context.settingsStore.data.map { it[FOLDER_SORT] }.first()
+    internal suspend fun readRawForTest(key: String): String? =
+        context.settingsStore.data.map { it[stringPreferencesKey(key)] }.first()
+
+    /** As [readRawForTest], for a boolean preference. */
+    internal suspend fun readRawBooleanForTest(key: String): Boolean? =
+        context.settingsStore.data.map { it[booleanPreferencesKey(key)] }.first()
 
     private companion object {
         val THEME_MODE = stringPreferencesKey("theme_mode")

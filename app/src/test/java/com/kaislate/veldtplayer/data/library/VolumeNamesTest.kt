@@ -58,12 +58,39 @@ class VolumeNamesTest {
         )
     }
 
+    /** A primary volume reports `getMediaStoreVolumeName() == MediaStore.VOLUME_EXTERNAL_PRIMARY`
+     *  whatever fs uuid it carries, so this one is matchable by the lookup. */
+    private fun addPrimaryVolume(description: String) {
+        shadowStorage.addStorageVolume(
+            StorageVolumeBuilder(
+                "primary", File("/storage/emulated/0"), description,
+                Process.myUserHandle(), Environment.MEDIA_MOUNTED,
+            ).setIsPrimary(true).setIsRemovable(false).setIsEmulated(true).build()
+        )
+    }
+
     @Test fun `the Unfiled bucket is labelled Unfiled`() {
         assertEquals("Unfiled", names.label(UNFILED_KEY))
     }
 
+    /**
+     * Our label wins over the platform's, which is a **branch-ORDER** claim and not just a mapping.
+     *
+     * The registered primary volume is what makes it one. A real `StorageManager` does report a
+     * primary volume, its `getMediaStoreVolumeName()` IS `external_primary`, and its
+     * `getDescription()` is an OEM string — "Internal shared storage", localised, sometimes branded.
+     * So the lookup genuinely matches this volume, and consulting it before this branch would
+     * relabel the top-level row on **every device**. With no primary volume registered the fixture
+     * cannot tell the two orderings apart: `described()` returns null either way and the test passes
+     * for the wrong reason.
+     */
     @Test fun `primary storage is labelled Internal storage`() {
-        assertEquals("Internal storage", names.label(VOLUME_PRIMARY))
+        addPrimaryVolume(description = "Internal shared storage (OEM)")
+        assertEquals(
+            "the StorageManager lookup was consulted before the primary branch",
+            "Internal storage",
+            names.label(VOLUME_PRIMARY),
+        )
     }
 
     /**

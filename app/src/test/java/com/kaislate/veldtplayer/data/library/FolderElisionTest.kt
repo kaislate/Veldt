@@ -73,12 +73,48 @@ class FolderElisionTest {
         // volumes are elided INDEPENDENTLY — each opening on its own `Music` while still carrying
         // the volume that labels its row. A no-op, or an R1 gate keyed on `roots.size`, leaves both
         // display roots named after the volume instead.
+        // `elided` is asserted here too, not just in the single-volume test above: the breadcrumb
+        // prefix is the entire reason elision is allowed to hide a level, and a report that only
+        // populates it when there is one volume leaves the SD-card case silently untruthful.
         assertEquals(
-            "the two volumes did not elide independently",
-            listOf("1234-5678" to "Music", "external_primary" to "Music"),
-            elided.map { it.displayRoot.volume to it.displayRoot.name }.sortedBy { it.first },
+            "the two volumes did not elide independently, or one lost its breadcrumb prefix",
+            listOf(
+                Triple("1234-5678", "Music", listOf("1234-5678")),
+                Triple("external_primary", "Music", listOf("external_primary")),
+            ),
+            elided
+                .map { Triple(it.displayRoot.volume, it.displayRoot.name, it.elided.map { e -> e.name }) }
+                .sortedBy { it.first },
         )
     }
+
+    /**
+     * The owner's rejection of interior collapsing, pinned. Previously nothing did: a recursive
+     * collapse passed the whole suite, because no fixture had a two-deep interior chain.
+     *
+     * `Radiohead/` is what makes this fixture work at all. Without it every ancestor is
+     * pass-through and ROOT elision legitimately consumes the entire chain down to `Disc 1`, so the
+     * fixture cannot distinguish the two behaviours it exists to separate. The second artist stops
+     * root elision at `Music`, leaving a genuine interior chain below `Beck` to observe.
+     */
+    @Test fun `interior single-child chains are NOT collapsed`() {
+        val roots = FolderTree.build(listOf(
+            song("external_primary:Music/Beck/Sea Change/Disc 1/a.mp3"),
+            song("external_primary:Music/Radiohead/x.mp3"),
+        ))
+        val display = FolderTree.elideRoots(roots).single().displayRoot
+        assertEquals(
+            "an interior chain was collapsed — 'Beck' and 'Sea Change' are the levels this view exists to show",
+            listOf("Music", "Beck", "Sea Change", "Disc 1"),
+            firstChildChain(display),
+        )
+    }
+
+    /** Names down the first-child spine, so a collapse shows up as a SHORTER list of names rather
+     *  than as an exception from a `single()` that no longer finds what it looked for. */
+    private fun firstChildChain(node: FolderNode): List<String> =
+        listOf(node.name) +
+            (node.children.minByOrNull { it.name }?.let { firstChildChain(it) } ?: emptyList())
 
     @Test fun `Unfiled is never elided away`() {
         val roots = FolderTree.build(listOf(song("external_primary:Music/a.mp3")) + listOf(

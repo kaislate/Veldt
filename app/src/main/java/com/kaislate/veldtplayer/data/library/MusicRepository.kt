@@ -51,16 +51,27 @@ class MusicRepository @Inject constructor(
      * The folder tree, derived once per emission (global constraint 14).
      *
      * The derivation is heavier than [LibraryDerivations.deriveAlbums] — it splits strings and
-     * builds a tree — and during a scan these emissions arrive per upsert batch. Derive here and
-     * cache; never per row, never per recomposition. `distinctUntilChanged()` on the song list is
-     * what stops an identical re-emission from rebuilding the whole tree and remounting every row.
+     * builds a tree — so it happens here, once, and never per row and never per recomposition.
      *
-     * Two halves of constraint 14, and this flow only supplies one of them. `map` runs the build
-     * exactly once per distinct emission **per collector**, upstream of the UI — so no row and no
-     * `FolderTree.find` call ever rebuilds. Surviving RECOMPOSITION is the collector's half: the
-     * ViewModel must hold this in a `stateIn`/`StateFlow` rather than re-collecting it, and a
-     * second concurrent collector re-derives rather than sharing. Both are the caller's to get
-     * right; if a second consumer ever appears, this wants `shareIn` instead of a comment.
+     * **What `distinctUntilChanged()` actually buys, stated precisely because the obvious reading
+     * is wrong.** It sits BEFORE the [map], which is the correct side: after it, the build would
+     * run first and the equality check would then deep-compare two whole trees to discover the work
+     * was wasted, instead of comparing two `List<Song>`. But it suppresses only **no-net-change**
+     * re-emissions — a steady-state rescan upserting identical rows. It does **not** bound a first
+     * scan: every upsert batch genuinely changes the row set, so the lists differ, the check passes
+     * them straight through, and a 5,000-track scan arriving in ~50 batches rebuilds the whole tree
+     * ~50 times with the folder tab open.
+     *
+     * **The bound on that burst is collector-side, and it is Task 5's `stateIn`.** A `StateFlow`
+     * retains only the latest value, so a run of batches collapses to the newest tree. Deliberately
+     * NOT `conflate()` here: one conflation point, and it belongs where the subscription lifecycle
+     * already lives. Do not add a second.
+     *
+     * Constraint 14 has two halves and this flow supplies one. `map` runs the build exactly once
+     * per emission **per collector**, upstream of the UI — so no row, and no [FolderTree.find] call,
+     * ever rebuilds. Surviving RECOMPOSITION is the collector's half, as above. A second concurrent
+     * collector re-derives rather than sharing; if one ever appears this wants `shareIn` rather than
+     * a comment.
      */
     fun folderTree(): Flow<List<FolderNode>> =
         songs().distinctUntilChanged().map { FolderTree.build(it) }
