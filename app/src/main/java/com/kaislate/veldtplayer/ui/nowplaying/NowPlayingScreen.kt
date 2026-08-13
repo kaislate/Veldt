@@ -64,7 +64,7 @@ import com.kaislate.veldtplayer.playback.NowPlayingState
 import com.kaislate.veldtplayer.playback.RepeatMode
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
 import com.kaislate.veldtplayer.ui.components.ArtImage
-import com.kaislate.veldtplayer.ui.components.SCRIM_AT_TEXT
+import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
@@ -342,9 +342,11 @@ fun NowPlayingScreen(
     // new track's colours over ~600ms (see rememberAnimatedPalette above), and solving against
     // the target would snap the text to its destination colour while the ground it sits on is
     // still mid-drift. This is pure arithmetic re-run every frame the animation touches, so the
-    // text drifts along with the ground for free. SCRIM_AT_TEXT, not backdropScrim(isLight).top:
-    // the latter is the gradient's value at y=0 where no glyph renders — see its KDoc.
-    val text = targetSeed.backdropText(palette.bg, SCRIM_AT_TEXT, isLight)
+    // text drifts along with the ground for free. scrimAtText(isLight), not
+    // backdropScrim(isLight).top: the latter is the gradient's value at y=0 where no glyph
+    // renders, and it is PER THEME because light's and dark's gradients are different shapes —
+    // see scrimAtText's KDoc for the device-measured fix-round that made it so.
+    val text = targetSeed.backdropText(palette.bg, scrimAtText(isLight), isLight)
 
     // Accumulated, and acted on at RELEASE. Reacting to a single drag delta would fire
     // onCollapse once per pointer event past the threshold, popping several entries off the
