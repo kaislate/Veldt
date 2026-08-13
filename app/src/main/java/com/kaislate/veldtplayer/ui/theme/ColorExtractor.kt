@@ -103,14 +103,26 @@ object ColorExtractor {
     private const val DISLIKED_HUE_ESCAPE_HIGH = 115.0
 
     /**
-     * The theme-independent seed for [bitmap], or [ArtSeed.NEUTRAL] when there is no
-     * artwork, it cannot be read, or every swatch Palette found is too close to grey to
-     * seed a hue.
+     * The theme-independent seed for [bitmap]. Returns [ArtSeed.NEUTRAL] — `artMean == null`
+     * — only when there is genuinely no artwork to composite: [bitmap] is null or cannot be
+     * read. When every swatch Palette found is too close to grey to seed a hue, the seed is
+     * still achromatic (it must not invent a hue), but it DOES carry a non-null [ArtSeed.artMean]:
+     * the backdrop still draws that cover, so text solved against it still needs the real
+     * composited ground, not `bg` alone.
      */
     fun seedOf(bitmap: Bitmap?): ArtSeed {
         if (bitmap == null) return ArtSeed.NEUTRAL
         val readable = toReadable(bitmap) ?: return ArtSeed.NEUTRAL
         val palette = Palette.from(readable).clearFilters().generate()
+
+        // The backdrop composites the blurred cover with `bg` per channel in sRGB (see
+        // ArtSeed.backdropText), so the mean must be taken the same way — over every swatch
+        // Palette found, unfiltered, since a near-grey region is still part of what is under
+        // the blur even though it cannot seed a hue. Computed BEFORE the monochrome check
+        // below, and unconditionally: a desaturated cover still has a mean and the backdrop
+        // still draws it, so a grey cover must not fall back to a null mean just because it
+        // seeds no hue — that was exactly the bug this hoist fixes.
+        val artMean = meanColor(palette.swatches)
 
         // population x capped chroma. The cap matters: uncapped, one near-fluorescent pixel
         // cluster outscores the colour the cover actually reads as. Population is the honest
@@ -120,14 +132,10 @@ object ColorExtractor {
             .filter { (_, hct) -> hct.chroma >= MONOCHROME_CHROMA }
             .sortedByDescending { (sw, hct) -> sw.population * minOf(hct.chroma, CHROMA_CEILING) }
 
-        // Every candidate was near-grey: theme grey. Do NOT amplify noise into a hue.
-        if (ranked.isEmpty()) return ArtSeed.NEUTRAL
-
-        // The backdrop composites the blurred cover with `bg` per channel in sRGB (see
-        // ArtSeed.backdropText), so the mean must be taken the same way — over every swatch
-        // Palette found, unfiltered, since a near-grey region is still part of what is under
-        // the blur even though it cannot seed a hue.
-        val artMean = meanColor(palette.swatches)
+        // Every candidate was near-grey: theme grey. Do NOT amplify noise into a hue — but DO
+        // keep artMean; only bitmap == null / an unreadable bitmap (handled above, before
+        // Palette ever ran) is genuinely art-less and gets NEUTRAL's null mean.
+        if (ranked.isEmpty()) return ArtSeed(Chromaticity(0.0, 0.0), emptyList(), artMean)
 
         val primaryHct = ranked.first().second
         val primaryHue = escapeDislikedHue(primaryHct.hue, primaryHct.chroma)
@@ -147,12 +155,18 @@ object ColorExtractor {
     }
 
     /**
-     * Population-weighted mean of [swatches], per channel in sRGB. [swatches] is never empty
-     * here: this is only called once [seedOf] has confirmed `ranked` — itself filtered from
-     * the same list — is non-empty.
+     * Population-weighted mean of [swatches], per channel in sRGB, or null when there is
+     * nothing to weight — [swatches] is empty, or every swatch in it reports zero population.
+     * [seedOf] now calls this before it knows whether `ranked` (filtered from the same list)
+     * is non-empty, so unlike the version this replaced, [swatches] is NOT guaranteed non-empty
+     * here: a real bitmap can make Palette return zero swatches. Dividing by a zero
+     * `totalPopulation` would produce NaN channels rather than throwing, so this returns null
+     * instead and the caller treats that exactly like "no artwork" — correct, since there is no
+     * artwork to composite into the ground either way.
      */
-    private fun meanColor(swatches: List<Palette.Swatch>): Color {
+    private fun meanColor(swatches: List<Palette.Swatch>): Color? {
         val totalPopulation = swatches.sumOf { it.population }.toDouble()
+        if (totalPopulation <= 0.0) return null
         var r = 0.0
         var g = 0.0
         var b = 0.0

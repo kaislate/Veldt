@@ -29,16 +29,20 @@ import org.junit.Test
  * three decimals, by coincidence, from two unrelated constraints. [scrimAtText] uses `0.62` for
  * both, a ~0.02 margin above each theme's own crossing.
  *
- * **One entry is a documented, provable exception, not a relaxed threshold**: `white cover` in
+ * **Two entries are a documented, provable exception, not a relaxed threshold**: `white cover` in
  * dark theme cannot reach the PRIMARY 7:1 target at any alpha below ≈0.73 — per-entry sweeping
- * (see the fix-round report) shows it is the only entry with this property; every other entry,
- * including the actual crimson test cover (`saturated red`), clears 7:1 across the whole alpha
- * range down to dark's own gradient floor (0.35). Forcing `scrimAtText`'s dark value up to 0.73 to
- * satisfy this one synthetic, maximally-extreme entry's ASPIRATIONAL target would reproduce the
- * exact device defect this fix round closes — see [scrimAtText]'s KDoc. [primaryFloor] encodes the
- * exception narrowly: this one entry is held to 4.5:1 (the bar that is actually required — see
- * Step 3's device acceptance criteria, which gate every element, title included, at 4.5:1, not
- * 7:1), so a regression that drops it BELOW even that is still caught.
+ * (see the fix-round report) shows it is the only *chromatic* entry with this property; every
+ * other chromatic entry, including the actual crimson test cover (`saturated red`), clears 7:1
+ * across the whole alpha range down to dark's own gradient floor (0.35). Forcing `scrimAtText`'s
+ * dark value up to 0.73 to satisfy this one synthetic, maximally-extreme entry's ASPIRATIONAL
+ * target would reproduce the exact device defect this fix round closes — see [scrimAtText]'s
+ * KDoc. `greyscale cover, white mean` in dark theme hits the identical ceiling for the identical
+ * reason: the PRIMARY tone solve depends only on the composited ground's luminance, not on the
+ * seed's hue or chroma, and a near-white ground is a near-white ground whether it got there via a
+ * saturated cover with a white mean or a genuinely achromatic one (finding 14's B&W case).
+ * [primaryFloor] encodes both exceptions narrowly: each entry is held to 4.5:1 (the bar that is
+ * actually required — see Step 3's device acceptance criteria, which gate every element, title
+ * included, at 4.5:1, not 7:1), so a regression that drops either BELOW even that is still caught.
  */
 class BackdropTextTest {
 
@@ -48,17 +52,29 @@ class BackdropTextTest {
     private fun ratio(a: Color, b: Color) = ColorExtractor.contrastRatio(a, b)
 
     /**
-     * The PRIMARY target for one (entry, theme) pair — 7:1 everywhere except the one documented
-     * ceiling. See the class KDoc for why `white cover`/dark is singled out.
+     * The PRIMARY target for one (entry, theme) pair — 7:1 everywhere except the two documented
+     * ceilings. See the class KDoc for why `white cover`/dark and `greyscale cover, white
+     * mean`/dark are singled out.
      */
     private fun primaryFloor(name: String, isLight: Boolean): Double =
-        if (name == "white cover" && !isLight) 4.5 else 7.0
+        if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
 
     private val corpus = listOf(
         "black cover" to seed(25.0, 84.0, Color(0xFF000000)),
         "white cover" to seed(25.0, 84.0, Color(0xFFFFFFFF)),
         "saturated red" to seed(25.0, 84.0, Color(0xFFD32F2F)),
-        "near-grey" to seed(180.0, 2.0, Color(0xFF808080)),
+        // Achromatic seed (chroma 0) carrying a non-null mean — the shape ColorExtractor.seedOf
+        // now actually returns for a black-and-white cover (finding 14): every swatch was too
+        // close to grey to seed a hue, but the mean is still recorded so the backdrop's ground
+        // still composites correctly. The old "near-grey" entry here — a chroma-2 seed paired
+        // with a non-null mean — modeled a state the real extractor can never produce (a
+        // desaturated-but-not-zero primary always pairs with a mean; only the zero-chroma,
+        // ranked-empty branch is where the null-mean bug lived), so it proved nothing about the
+        // real path. Two entries, not one: a black mean and a white mean bind the composited
+        // ground from opposite directions (mixing toward black vs. toward white), and the
+        // device measurement that opened this finding found both directions broken.
+        "greyscale cover, black mean" to seed(0.0, 0.0, Color(0xFF000000)),
+        "greyscale cover, white mean" to seed(0.0, 0.0, Color(0xFFFFFFFF)),
         "no artwork" to seed(250.0, 40.0, null),
     )
 

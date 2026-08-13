@@ -43,6 +43,22 @@ class ColorExtractorTest {
         assertEquals(0.0, seed.primary.chroma, 0.0)
     }
 
+    @Test fun `a greyscale cover is monochrome but still carries a mean for the backdrop ground`() {
+        // Finding 14: seedOf's monochrome early return used to hand back the bare ArtSeed.NEUTRAL
+        // — artMean == null — for ANY desaturated cover, not just a missing one. That made
+        // backdropText solve against `bg` while ArtBackdrop kept drawing the real cover behind it,
+        // silently reintroducing the pre-fix contrast failure for every black-and-white sleeve.
+        // isMonochrome must stay true (a grey cover must not invent a hue) while artMean must be
+        // non-null (the backdrop still draws this cover, so text still needs the real ground).
+        val seed = ColorExtractor.seedOf(bitmapOf(0xFF202020.toInt(), 0xFF9E9E9E.toInt()))
+        assertTrue("a real greyscale cover must still be monochrome", seed.isMonochrome)
+        assertNotNull(
+            "a real greyscale cover must still record a mean, or the backdrop solve silently " +
+                "falls back to `ground = bg` while ArtBackdrop keeps drawing the cover",
+            seed.artMean,
+        )
+    }
+
     @Test fun `a null bitmap is the neutral seed`() {
         assertEquals(ArtSeed.NEUTRAL, ColorExtractor.seedOf(null))
     }
