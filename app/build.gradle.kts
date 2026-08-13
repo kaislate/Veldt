@@ -102,6 +102,8 @@ dependencies {
     // Tag reader (pure-JVM, LGPL-3.0)
     implementation(libs.ealvatag)
 
+    implementation(libs.androidx.datastore.preferences)
+
     testImplementation(libs.junit)
     // Test (Robolectric DAO test + pure coroutine tests)
     testImplementation(libs.robolectric)

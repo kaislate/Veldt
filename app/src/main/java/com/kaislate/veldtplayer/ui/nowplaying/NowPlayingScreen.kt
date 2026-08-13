@@ -68,6 +68,7 @@ import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
@@ -328,7 +329,8 @@ fun NowPlayingScreen(
     // a plain collector would keep the ticker running behind the user's back.
     val state by vm.nowPlaying.collectAsStateWithLifecycle()
     val position by vm.positionMs.collectAsStateWithLifecycle()
-    val targetPalette by vm.palette.collectAsStateWithLifecycle()
+    val targetSeed by vm.seed.collectAsStateWithLifecycle()
+    val targetPalette = targetSeed.colors(isLight = LocalIsLightTheme.current)
     val reduced = rememberReducedMotion()
 
     // Colours DRIFT to the new track instead of cutting (spec §6).

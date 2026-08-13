@@ -16,7 +16,7 @@ import com.kaislate.veldtplayer.ui.motion.Motion
  * last colour. Pure, so the reconciliation rule is unit-tested.
  */
 object PaletteSlots {
-    /** Matches the maximum number of swatches ColorExtractor.extract can return. */
+    /** Matches the cap `ColorExtractor.seedOf` puts on `ArtSeed.wave` (`MAX_WAVE_COLORS`). */
     const val SLOT_COUNT = 5
 
     fun slot(colors: List<Color>, index: Int, fallback: Color): Color =

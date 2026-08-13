@@ -98,15 +98,42 @@ private fun taperedBand(midY: Float, halfH: Float, width: Float, ts: Float, te: 
     return p
 }
 
-/** Palette: album-art vibrant swatches when available, else shades of [color]. */
-internal fun palette(color: Color, vibrant: Boolean, waveColors: List<Color>): List<Color> =
+/** Palette: album-art vibrant swatches when available, else shades of [color] pushed toward
+ *  [tint]. [tint] defaults to white — every caller except the theme-aware caustics renderer
+ *  wants the original "lighten toward white" shading and is unaffected by this parameter. */
+internal fun palette(color: Color, vibrant: Boolean, waveColors: List<Color>, tint: Color = Color.White): List<Color> =
     if (vibrant && waveColors.size >= 2) waveColors
     else listOf(
         color,
-        lerp(color, Color.White, 0.35f),
-        lerp(color, Color.White, 0.6f),
-        lerp(color, Color.White, 0.8f)
+        lerp(color, tint, 0.35f),
+        lerp(color, tint, 0.6f),
+        lerp(color, tint, 0.8f)
     )
+
+/**
+ * How a wave filament's colour should be pushed and composited, keyed on the ground it draws
+ * against. This is the fix for the whole-branch review's FINDING 1: [ArtSeedTest] proves every
+ * wave colour clears 3:1 against `bg`, but that guarantee was being thrown away downstream by
+ * an unconditional [BlendMode.Plus] — additive compositing against a near-white light-theme
+ * background (bg tone ~98) clips every channel to white, and a colour lerped UP TO 80% toward
+ * [Color.White] on top of that is invisible before it is even composited.
+ *
+ * - Dark theme: unchanged from before this fix. Lighten toward white and composite additively
+ *   ([BlendMode.Plus]) — "add light" is the correct read against a dark ground, and is the look
+ *   this style was designed around.
+ * - Light theme: darken toward black instead, and composite normally ([BlendMode.SrcOver]) so
+ *   the stroke's own alpha determines how much of the (now darker) colour shows, rather than
+ *   being added to an already-bright ground and clamped away.
+ *
+ * A pure function, not an inline branch at the draw site, so the decision itself — not just its
+ * visible effect — can be asserted in isolation ([WaveStylesColorModeTest]); a contrast test on
+ * the palette alone cannot see a defect introduced at draw time.
+ */
+internal data class WaveColorMode(val tint: Color, val blendMode: BlendMode)
+
+internal fun waveColorMode(isLight: Boolean): WaveColorMode =
+    if (isLight) WaveColorMode(tint = Color.Black, blendMode = BlendMode.SrcOver)
+    else WaveColorMode(tint = Color.White, blendMode = BlendMode.Plus)
 
 // ---------- 1. Mercury ----------
 
@@ -337,10 +364,13 @@ private val WISPTRAILX_FILAMENTS = WISPTRAIL_FILAMENTS + listOf(
 private fun DrawScope.drawCaustics(
     color: Color, ampPx: Float, phase: Float, baseY: Float, width: Float,
     vibrant: Boolean, waveColors: List<Color>, taperStartPx: Float, taperEndPx: Float,
-    filaments: List<Filament>, ampScale: Float, alphaScale: Float
+    filaments: List<Filament>, ampScale: Float, alphaScale: Float, isLight: Boolean
 ) {
     if (ampPx <= 0.5f || width <= 0f) return
-    val cols = palette(color, vibrant, waveColors)
+    // Theme-aware: see WaveColorMode's KDoc. Additive Plus against a light ground clips to
+    // white and erases the wave; SrcOver with a darkened tint keeps it visible there instead.
+    val mode = waveColorMode(isLight)
+    val cols = palette(color, vibrant, waveColors, mode.tint)
     val e = energyOf(ampPx, baseY)
     val vAmp = ampPx * 0.3f * ampScale
     for (f in filaments) {
@@ -360,24 +390,27 @@ private fun DrawScope.drawCaustics(
                 if (first) { path.moveTo(x, y); first = false } else path.lineTo(x, y)
                 x += 6f
             }
-            drawPath(path, col.copy(alpha = a), style = Stroke(width = strokeW), blendMode = BlendMode.Plus)
+            drawPath(path, col.copy(alpha = a), style = Stroke(width = strokeW), blendMode = mode.blendMode)
         }
     }
 }
 
-/** Sunlit caustics on a shallow floor: crossings bloom bright via additive filaments. */
+/** Sunlit caustics on a shallow floor: crossings bloom bright via additive filaments.
+ *  [isLight] selects the compositing/tint used against the current theme's ground — see
+ *  [WaveColorMode]. Defaults to the dark-theme look for callers that don't pass a theme. */
 fun DrawScope.drawWisptrail(
     color: Color, ampPx: Float, phase: Float, baseY: Float, width: Float,
     vibrant: Boolean = false, waveColors: List<Color> = emptyList(),
-    taperStartPx: Float = 0f, taperEndPx: Float = 0f
-) = drawCaustics(color, ampPx, phase, baseY, width, vibrant, waveColors, taperStartPx, taperEndPx, WISPTRAIL_FILAMENTS, 1.0f, 1.0f)
+    taperStartPx: Float = 0f, taperEndPx: Float = 0f, isLight: Boolean = false
+) = drawCaustics(color, ampPx, phase, baseY, width, vibrant, waveColors, taperStartPx, taperEndPx, WISPTRAIL_FILAMENTS, 1.0f, 1.0f, isLight)
 
-/** Wisptrail turned up: more filaments, taller and brighter blooms. */
+/** Wisptrail turned up: more filaments, taller and brighter blooms. See [drawWisptrail] for
+ *  [isLight]. */
 fun DrawScope.drawWisptrailX(
     color: Color, ampPx: Float, phase: Float, baseY: Float, width: Float,
     vibrant: Boolean = false, waveColors: List<Color> = emptyList(),
-    taperStartPx: Float = 0f, taperEndPx: Float = 0f
-) = drawCaustics(color, ampPx, phase, baseY, width, vibrant, waveColors, taperStartPx, taperEndPx, WISPTRAILX_FILAMENTS, 1.8f, 1.5f)
+    taperStartPx: Float = 0f, taperEndPx: Float = 0f, isLight: Boolean = false
+) = drawCaustics(color, ampPx, phase, baseY, width, vibrant, waveColors, taperStartPx, taperEndPx, WISPTRAILX_FILAMENTS, 1.8f, 1.5f, isLight)
 
 // ---------- 4. Sparks ----------
 
@@ -1132,6 +1165,11 @@ fun DrawScope.drawPulse(
  * [drawHills]. When [consume] is on, the already-played (left) side fades to
  * invisible: the animation is confined to a trailing window just behind the
  * playhead by forcing a large left taper.
+ *
+ * [isLight] is forwarded only to the wisptrail family (the pinned scrub-bar default — see
+ * [WaveScrubBar]) so its filament colour/blend mode can pick the theme-aware branch documented
+ * on [WaveColorMode]. Other styles do not (yet) need it and ignore it; the default `false`
+ * matches their original, unconditional dark-ground styling.
  */
 fun DrawScope.drawWave(
     style: String,
@@ -1144,21 +1182,22 @@ fun DrawScope.drawWave(
     waveColors: List<Color> = emptyList(),
     taperStartPx: Float = 0f,
     taperEndPx: Float = 0f,
-    consume: Boolean = false
+    consume: Boolean = false,
+    isLight: Boolean = false
 ) {
     val ts = if (consume) max(taperStartPx, width - min(width * 0.45f, 100f.dp.toPx())) else taperStartPx
     when (style) {
         "mercury" -> drawMercury(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "silk" -> drawSilk(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "silkx" -> drawSilkX(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
-        "wisptrail", "shallows" -> drawWisptrail(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
-        "wisptrailx" -> drawWisptrailX(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
+        "wisptrail", "shallows" -> drawWisptrail(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx, isLight)
+        "wisptrailx" -> drawWisptrailX(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx, isLight)
         "sparks" -> drawSparks(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "choir" -> drawChoir(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "interference" -> drawInterference(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "cyberpunk" -> drawCyberpunk(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "caldera" -> drawCaldera(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
-        "aurora" -> drawWisptrailX(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
+        "aurora" -> drawWisptrailX(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx, isLight)
         "prism" -> drawPrism(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "warp" -> drawWarp(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)
         "embers" -> drawSparks(color, ampPx, phase, baseY, width, vibrant, waveColors, ts, taperEndPx)

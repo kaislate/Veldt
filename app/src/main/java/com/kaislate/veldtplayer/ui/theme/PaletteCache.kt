@@ -35,20 +35,23 @@ import javax.inject.Singleton
  *
  * Extraction walks every pixel, so it is dispatched off the main thread here — callers only
  * have to be in a coroutine.
+ *
+ * The cache now holds a theme-independent [ArtSeed] rather than finished colours, which is
+ * why the key needs no theme component: the same seed answers both light and dark requests.
  */
 @Singleton
 class PaletteCache @Inject constructor(
     @ApplicationContext private val context: Context,
 ) {
 
-    private val cache = LruCache<Long, DominantColors>(CACHE_SIZE)
+    private val cache = LruCache<Long, ArtSeed>(CACHE_SIZE)
 
-    /** The palette for [art]'s track, or the neutral fallback when there is no artwork. */
-    suspend fun paletteFor(art: SongArt?): DominantColors {
-        if (art == null) return ColorExtractor.extract(null)
+    /** The seed for [art]'s track, or the neutral fallback when there is no artwork. */
+    suspend fun seedFor(art: SongArt?): ArtSeed {
+        if (art == null) return ColorExtractor.seedOf(null)
         cache.get(art.songId)?.let { return it }
         val bitmap = loadFullSize(art)
-        val extracted = withContext(Dispatchers.Default) { ColorExtractor.extract(bitmap) }
+        val extracted = withContext(Dispatchers.Default) { ColorExtractor.seedOf(bitmap) }
         // Only cache real extractions; a null bitmap may just mean art hasn't loaded yet.
         if (bitmap != null) cache.put(art.songId, extracted)
         return extracted

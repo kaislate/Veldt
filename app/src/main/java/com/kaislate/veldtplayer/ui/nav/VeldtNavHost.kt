@@ -8,6 +8,7 @@ import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -47,6 +48,9 @@ import com.kaislate.veldtplayer.ui.motion.rememberMorphLinger
 import com.kaislate.veldtplayer.ui.motion.rememberSongArtMorph
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
+import com.kaislate.veldtplayer.ui.settings.NoticesScreen
+import com.kaislate.veldtplayer.ui.settings.SettingsScreen
+import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 
 /**
@@ -156,7 +160,8 @@ fun VeldtNavHost() {
                         // is attached, so collecting it unconditionally would have it running
                         // for the app's whole foreground life against an empty queue.
                         if (npState.isActive && (!onNowPlaying || morphing)) {
-                            val npPalette by npVm.palette.collectAsStateWithLifecycle()
+                            val npSeed by npVm.seed.collectAsStateWithLifecycle()
+                            val npPalette = npSeed.colors(isLight = LocalIsLightTheme.current)
                             // Held as State and never unwrapped here: the 250ms position tick is
                             // read in the mini-player's DRAW phase. See MiniPlayer's `progress`.
                             val npPosition = npVm.positionMs.collectAsStateWithLifecycle()
@@ -211,6 +216,16 @@ fun VeldtNavHost() {
                                         },
                                     ) {
                                         Icon(Icons.Filled.Search, contentDescription = "Search")
+                                    }
+                                    IconButton(
+                                        // launchSingleTop for the same reason as search above.
+                                        onClick = {
+                                            navController.navigate(Destinations.SETTINGS) {
+                                                launchSingleTop = true
+                                            }
+                                        },
+                                    ) {
+                                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
                                     }
                                 },
                                 // Transparent, because nothing scrolls under this bar — the screens
@@ -345,6 +360,25 @@ fun VeldtNavHost() {
                                         Destinations.NOW_PLAYING
                                 },
                                 onCollapse = { navController.popBackStack() },
+                            )
+                        }
+                        // Plain `composable`, not `veldtDestination`: settings and the notices
+                        // it links to are not library content, so they carry no audio gate.
+                        composable(Destinations.SETTINGS) {
+                            SettingsScreen(
+                                onBack = { navController.popBackStack() },
+                                onOpenNotices = {
+                                    navController.navigate(Destinations.NOTICES) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                contentPadding = padding,
+                            )
+                        }
+                        composable(Destinations.NOTICES) {
+                            NoticesScreen(
+                                onBack = { navController.popBackStack() },
+                                contentPadding = padding,
                             )
                         }
                     }

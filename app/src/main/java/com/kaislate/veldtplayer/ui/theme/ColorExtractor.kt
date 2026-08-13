@@ -6,8 +6,8 @@ package com.kaislate.veldtplayer.ui.theme
 import android.graphics.Bitmap
 import androidx.compose.runtime.Immutable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.palette.graphics.Palette
+import com.kaislate.veldtplayer.ui.theme.hct.Hct
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -63,17 +63,17 @@ fun DominantColors.onBgFor(enabled: Boolean): Color =
     if (enabled) onBg else onBg.copy(alpha = DISABLED_ALPHA)
 
 /**
- * Derives a per-track palette from album art.
+ * Derives a theme-independent [ArtSeed] from album art.
  *
  * Original implementation, written from a behavioural specification — it is not
  * derived from any third-party source, so Veldt carries no attribution obligation
  * for this file.
  *
- * [extract] walks every pixel of the bitmap via [Palette]; it must never be called on
- * the main thread. Use `PaletteCache.paletteFor`, which dispatches it and memoises the
+ * [seedOf] walks every pixel of the bitmap via [Palette]; it must never be called on
+ * the main thread. Use `PaletteCache.seedFor`, which dispatches it and memoises the
  * result. Callers must keep the bitmap alive and unrecycled across the call.
  *
- * [Palette] cannot sample a `Config.HARDWARE` bitmap, so [extract] converts one itself
+ * [Palette] cannot sample a `Config.HARDWARE` bitmap, so [seedOf] converts one itself
  * before generating. It does NOT rely on callers passing `allowHardware(false)`: that
  * flag governs only Coil's own decoder, and `AlbumArtFetcher` returns a fully-formed
  * `DrawableResult` that bypasses the decoder entirely — so the flag would be a no-op on
@@ -81,77 +81,104 @@ fun DominantColors.onBgFor(enabled: Boolean): Color =
  */
 object ColorExtractor {
 
-    /** WCAG minimum contrast for large text and UI components. */
-    private const val MIN_CONTRAST_RATIO = 3.0
+    /** Below this chroma a swatch reads as grey, not a colour — it must not seed a hue. */
+    private const val MONOCHROME_CHROMA = 8.0
 
     /**
-     * Fraction of the remaining distance to white that one lightening step closes.
-     * Fine enough that the result lands just past [MIN_CONTRAST_RATIO] instead of
-     * overshooting into washed-out near-white.
+     * Ceiling applied to a swatch's chroma before it is weighted by population. Uncapped,
+     * one near-fluorescent pixel cluster outscores the colour the cover actually reads as;
+     * population is the honest signal, chroma only breaks ties so a large grey mass cannot
+     * win outright.
      */
-    private const val LIGHTEN_STEP = 0.08f
+    private const val CHROMA_CEILING = 48.0
 
     /**
-     * Hard bound on lightening iterations, so [ensureContrast] terminates even when the
-     * requested contrast is unreachable (white on white). 24 steps close ~86% of the
-     * distance to white — well beyond the worst case that is actually solvable.
+     * Minimum hue separation, in degrees, between kept wave stops. Without it a one-colour
+     * cover yields five near-identical stops and the scrub bar reads flat.
      */
-    private const val MAX_LIGHTEN_STEPS = 24
-
-    /**
-     * Luminance at which white-on-colour and black-on-colour contrast exactly, i.e.
-     * `(1.05 / (L + 0.05)) == ((L + 0.05) / 0.05)`. Below it a light foreground wins.
-     */
-    private const val ON_BG_CROSSOVER = 0.179
-
-    /** Index of saturation in [Palette.Swatch.getHsl]'s `{hue, saturation, lightness}`. */
-    private const val HSL_SATURATION = 1
+    private const val MIN_HUE_SEPARATION = 15.0
 
     /** Ceiling on scrub-bar gradient stops; mirrored by `PaletteSlots.SLOT_COUNT`. */
     private const val MAX_WAVE_COLORS = 5
 
-    private val NEUTRAL_BG = Color(0xFF101014)
-    private val NEUTRAL_ON_DARK = Color(0xFFF2F2F5)
-    private val NEUTRAL_ON_LIGHT = Color(0xFF0B0B0D)
-    private val NEUTRAL_ACCENT = Color(0xFF8A8A93)
+    /**
+     * Bounds of Material's "universally disliked" dark yellow-green band and the chroma
+     * above which a colour in it actually reads as bile rather than an inoffensive olive —
+     * copied from `DislikeAnalyzer.isDisliked` in Material Color Utilities (Palmer & Schloss
+     * 2010), which this codebase no longer vendors. See [escapeDislikedHue] for why: their
+     * fix adjusts TONE, and this pipeline has nowhere to keep one.
+     */
+    private const val DISLIKED_HUE_LOW = 90.0
+    private const val DISLIKED_HUE_HIGH = 111.0
+    private const val DISLIKED_CHROMA_THRESHOLD = 16.0
 
-    /** Shown before art loads and whenever there is none. */
-    private val NEUTRAL = DominantColors(
-        bg = NEUTRAL_BG,
-        onBg = NEUTRAL_ON_DARK,
-        accent = NEUTRAL_ACCENT,
-        waveColors = emptyList(),
-    )
+    /** Escape hues for [escapeDislikedHue] — the nearer edge of the disliked band. */
+    private const val DISLIKED_HUE_ESCAPE_LOW = 85.0
+    private const val DISLIKED_HUE_ESCAPE_HIGH = 115.0
 
-    fun extract(bitmap: Bitmap?): DominantColors {
-        if (bitmap == null) return NEUTRAL
-
-        // copy() returns null if the allocation fails — degrade rather than crash.
-        val readable = toReadable(bitmap) ?: return NEUTRAL
-
-        // Filters cleared: Palette's defaults reject near-black and near-white swatches,
-        // which leaves moody or monochrome artwork with no swatches at all.
+    /**
+     * The theme-independent seed for [bitmap], or [ArtSeed.NEUTRAL] when there is no
+     * artwork, it cannot be read, or every swatch Palette found is too close to grey to
+     * seed a hue.
+     */
+    fun seedOf(bitmap: Bitmap?): ArtSeed {
+        if (bitmap == null) return ArtSeed.NEUTRAL
+        val readable = toReadable(bitmap) ?: return ArtSeed.NEUTRAL
         val palette = Palette.from(readable).clearFilters().generate()
 
-        // A dark ground first, because the whole app sits on it. Every lookup carries a
-        // default, so artwork with no swatch of a given kind degrades instead of failing.
-        val bg = Color(palette.getDarkMutedColor(palette.getDarkVibrantColor(NEUTRAL_BG.toArgb())))
-        val onBg = if (relativeLuminance(bg) < ON_BG_CROSSOVER) NEUTRAL_ON_DARK else NEUTRAL_ON_LIGHT
+        // population x capped chroma. The cap matters: uncapped, one near-fluorescent pixel
+        // cluster outscores the colour the cover actually reads as. Population is the honest
+        // signal; chroma only breaks ties so a large grey mass cannot win outright.
+        val ranked = palette.swatches
+            .map { it to Hct.fromInt(it.rgb) }
+            .filter { (_, hct) -> hct.chroma >= MONOCHROME_CHROMA }
+            .sortedByDescending { (sw, hct) -> sw.population * minOf(hct.chroma, CHROMA_CEILING) }
 
-        // Most chromatic first: the head of this list is the accent, the top few are the
-        // scrub-bar gradient.
-        val byChroma = palette.swatches.sortedByDescending { it.hsl[HSL_SATURATION] }
+        // Every candidate was near-grey: theme grey. Do NOT amplify noise into a hue.
+        if (ranked.isEmpty()) return ArtSeed.NEUTRAL
 
-        // Lifted off the ground, so an accent pulled from dark artwork stays legible.
-        val accent = ensureContrast(
-            fg = Color(byChroma.firstOrNull()?.rgb ?: NEUTRAL_ACCENT.toArgb()),
-            bg = bg,
-        )
-
-        val waveColors = byChroma.map { Color(it.rgb) }.distinct().take(MAX_WAVE_COLORS)
-
-        return DominantColors(bg = bg, onBg = onBg, accent = accent, waveColors = waveColors)
+        val primaryHct = ranked.first().second
+        val primaryHue = escapeDislikedHue(primaryHct.hue, primaryHct.chroma)
+        val kept = mutableListOf(primaryHue)
+        val wave = mutableListOf<Chromaticity>()
+        for ((_, hct) in ranked.drop(1)) {
+            if (wave.size >= MAX_WAVE_COLORS) break
+            val hue = escapeDislikedHue(hct.hue, hct.chroma)
+            // Without a separation rule a one-colour cover yields five near-identical stops
+            // and the scrub bar reads flat.
+            if (kept.none { separation(it, hue) < MIN_HUE_SEPARATION }) {
+                kept += hue
+                wave += Chromaticity(hue, hct.chroma)
+            }
+        }
+        return ArtSeed(Chromaticity(primaryHue, primaryHct.chroma), wave)
     }
+
+    /**
+     * Moves [hue] off the disliked dark-yellow-green band when [chroma] is high enough for
+     * it to actually read as bile, otherwise returns [hue] unchanged.
+     *
+     * This is Veldt's OWN fix, not Material's: `DislikeAnalyzer.fixIfDisliked` (formerly
+     * vendored here) escapes the band by lightening TONE to 70, which cannot work in a
+     * pipeline that seeds only hue and chroma — [Chromaticity] has no tone field, because
+     * tone is solved later, per theme, for contrast (see [ArtSeed.colors]). Landing every
+     * disliked colour on tone 70 would also fight that solve outright: against a tone-98
+     * light ground, tone 70 does not even clear 3:1. Moving the HUE instead survives into
+     * the seed unmodified and needs no tone to work.
+     *
+     * [DISLIKED_HUE_LOW], [DISLIKED_HUE_HIGH] and [DISLIKED_CHROMA_THRESHOLD] are the same
+     * numbers `DislikeAnalyzer.isDisliked` used; only the fix itself is different.
+     */
+    private fun escapeDislikedHue(hue: Double, chroma: Double): Double {
+        if (chroma <= DISLIKED_CHROMA_THRESHOLD) return hue
+        if (hue < DISLIKED_HUE_LOW || hue > DISLIKED_HUE_HIGH) return hue
+        val bandMidpoint = (DISLIKED_HUE_LOW + DISLIKED_HUE_HIGH) / 2.0
+        return if (hue < bandMidpoint) DISLIKED_HUE_ESCAPE_LOW else DISLIKED_HUE_ESCAPE_HIGH
+    }
+
+    /** Shortest angular distance between two hues, in degrees. */
+    private fun separation(a: Double, b: Double): Double =
+        kotlin.math.abs(a - b).let { minOf(it, 360.0 - it) }
 
     /**
      * A bitmap [Palette] can actually sample. A `Config.HARDWARE` bitmap's pixels live
@@ -168,29 +195,8 @@ object ColorExtractor {
             bitmap
         }
 
-    /**
-     * Returns [fg] lightened toward white just far enough to read against [bg], or [fg]
-     * itself when it already does. Alpha is preserved. If the requested contrast is
-     * unreachable the loop still terminates and returns the lightest colour it reached.
-     */
-    fun ensureContrast(fg: Color, bg: Color): Color {
-        if (contrastRatio(fg, bg) >= MIN_CONTRAST_RATIO) return fg
-
-        var red = fg.red
-        var green = fg.green
-        var blue = fg.blue
-        repeat(MAX_LIGHTEN_STEPS) {
-            red += (1f - red) * LIGHTEN_STEP
-            green += (1f - green) * LIGHTEN_STEP
-            blue += (1f - blue) * LIGHTEN_STEP
-            val lifted = Color(red, green, blue, fg.alpha)
-            if (contrastRatio(lifted, bg) >= MIN_CONTRAST_RATIO) return lifted
-        }
-        return Color(red, green, blue, fg.alpha)
-    }
-
     /** WCAG contrast ratio: `(L_lighter + 0.05) / (L_darker + 0.05)`. */
-    private fun contrastRatio(a: Color, b: Color): Double {
+    internal fun contrastRatio(a: Color, b: Color): Double {
         val la = relativeLuminance(a)
         val lb = relativeLuminance(b)
         return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)

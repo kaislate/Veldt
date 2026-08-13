@@ -66,8 +66,8 @@ import com.kaislate.veldtplayer.ui.components.ArtPlaceholder
 import com.kaislate.veldtplayer.ui.components.paletteWash
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /** The stack's front tile — the size the mosaic (Task 7) gets on this surface. */
 private val COVER_SIZE = 60.dp
@@ -115,7 +115,7 @@ fun PlaylistsScreen(
     val reduced = rememberReducedMotion()
     // The neutral palette, as on every other browse surface: a list themed by twenty different
     // covers at once is noise. Per-artwork colour is a detail-screen and now-playing concern.
-    val palette = ColorExtractor.extract(null)
+    val palette = neutralPalette()
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) vm.import(uri.toString())
@@ -605,12 +605,13 @@ private fun RecedingCard(
  *
  * The first version of this was `palette.accent.copy(alpha = 0.20f)` painted straight onto the
  * list, which is wrong by construction rather than merely untested. Browse surfaces use the
- * NEUTRAL palette (`ColorExtractor.extract(null)`), whose accent is the grey `#8A8A93`; grey at
- * 20% over a dark ground is a visible step, and the same grey at 20% over a light one is
- * approximately the light ground. The stack — the whole reason this tab is not a bare list —
- * would have quietly degraded into a list with oddly wide left gutters the moment the app follows
- * the system theme, and no amount of device verification fixes a colour that cannot be right in
- * both.
+ * NEUTRAL palette (`neutralPalette()`, i.e. `ArtSeed.NEUTRAL.colors(isLight = LocalIsLightTheme.current)`);
+ * at the time this was written its
+ * accent was a mid grey, and grey at 20% over a dark ground is a visible step while the same grey
+ * at 20% over a light one is approximately the light ground. The stack — the whole reason this
+ * tab is not a bare list — would have quietly degraded into a list with oddly wide left gutters
+ * the moment the app follows the system theme, and no amount of device verification fixes a
+ * colour that cannot be right in both.
  *
  * So [base] is a Material CONTAINER ROLE, which is defined to be a step away from `surface` in
  * whichever scheme is active — lighter in dark, darker in light — and the palette [accent] is
@@ -618,8 +619,8 @@ private fun RecedingCard(
  * into what is behind it, whatever that is. The identity is still the palette's, which is what
  * Task 7's per-playlist colour will ride on.
  *
- * `PlaylistStackTintTest` asserts the contrast against `surface` in `lightColorScheme()` AND
- * `darkColorScheme()`, so the property is checked rather than promised.
+ * `PlaylistStackTintTest` asserts the contrast against `surface` in Compose Material3's default
+ * light AND dark colour schemes, so the property is checked rather than promised.
  */
 internal fun playlistStackTint(scheme: ColorScheme, accent: Color, near: Boolean): Color {
     // The ROLE CHOICE lives in here, not at the call site. Left in the composable it would have

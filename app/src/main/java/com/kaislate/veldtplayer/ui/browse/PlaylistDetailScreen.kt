@@ -69,9 +69,9 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.ui.components.ArtImage
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.DISABLED_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /** As tall as the album page's cover, so the two detail screens open the same way. */
 private val HEADER_HEIGHT = 300.dp
@@ -118,7 +118,7 @@ fun PlaylistDetailScreen(
         // produce it, so "not answered yet" can never be confused with "deleted".
         initialValue = PlaylistDetailUiState.Loading,
     )
-    val palette = ColorExtractor.extract(null)
+    val palette = neutralPalette()
 
     when (val current = state) {
         PlaylistDetailUiState.Loading -> PlaylistsLoading(

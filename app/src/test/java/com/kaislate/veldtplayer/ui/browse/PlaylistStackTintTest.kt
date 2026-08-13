@@ -9,6 +9,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,8 +36,9 @@ import kotlin.math.min
  */
 class PlaylistStackTintTest {
 
-    /** `ColorExtractor`'s neutral fallback accent — what every browse surface actually gets. */
-    private val neutralAccent = Color(0xFF8A8A93)
+    /** The neutral accent every browse surface actually gets, DERIVED rather than copied — a
+     *  hardcoded literal here silently stops matching the app the first time a tone changes. */
+    private val neutralAccent = ArtSeed.NEUTRAL.colors(isLight = false).accent
 
     /** A strongly coloured palette, as Task 7's per-playlist extraction will supply. */
     private val vividAccent = Color(0xFFCC3355)

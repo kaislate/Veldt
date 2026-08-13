@@ -49,7 +49,7 @@ import com.kaislate.veldtplayer.ui.motion.albumArtKey
 import com.kaislate.veldtplayer.ui.motion.rememberArtMorph
 import com.kaislate.veldtplayer.ui.motion.rememberArtMorphActive
 import com.kaislate.veldtplayer.ui.motion.sharedArt
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
+import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /** How tall the cover stands before the track list begins. */
 private val HEADER_HEIGHT = 300.dp
@@ -86,7 +86,7 @@ fun AlbumDetailScreen(
     val songsFlow = remember(albumKey) { vm.songsForAlbum(albumKey) }
     val songs by songsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     val scanning by vm.scanning.collectAsStateWithLifecycle()
-    val palette = ColorExtractor.extract(null)
+    val palette = neutralPalette()
     val listState = rememberLazyListState()
 
     if (songs.isEmpty()) {

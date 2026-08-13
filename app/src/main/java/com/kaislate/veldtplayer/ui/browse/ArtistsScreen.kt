@@ -38,8 +38,8 @@ import com.kaislate.veldtplayer.ui.motion.artistArtKey
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedArt
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
-import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /**
  * Larger than the 48dp song thumbnail. An artist row carries less information than a
@@ -67,7 +67,7 @@ fun ArtistsScreen(
     val songs by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
     val reduced = rememberReducedMotion()
-    val palette = ColorExtractor.extract(null)
+    val palette = neutralPalette()
 
     if (artists.isEmpty()) {
         // Scanning-and-empty is NOT the same as empty, and must not be reported as it.

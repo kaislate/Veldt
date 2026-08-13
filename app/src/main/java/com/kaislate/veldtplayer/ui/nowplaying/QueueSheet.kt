@@ -194,8 +194,8 @@ private fun QueueRow(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
                 // onBg for the playing row too, NOT the accent — measured on device and it
-                // is the wrong way round. `ensureContrast` only guarantees the accent 3:1
-                // against the ground, which is a tint budget; on the neutral-fallback
+                // is the wrong way round. `ArtSeed.colors` only solves the accent to 3:1
+                // (`RATIO_LARGE`) against the ground, which is a tint budget; on the neutral-fallback
                 // palettes this library produces it lands as a mid-grey and the current
                 // track ends up READING AS DISABLED next to its white siblings. The accent
                 // still marks the row — as the pill it sits on, where a 3:1 tint is exactly
