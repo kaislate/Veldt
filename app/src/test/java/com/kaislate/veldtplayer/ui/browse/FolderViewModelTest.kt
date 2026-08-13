@@ -1,0 +1,385 @@
+// Copyright (c) 2026 kaislate
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package com.kaislate.veldtplayer.ui.browse
+
+import android.content.Context
+import android.os.Environment
+import android.os.Process
+import android.os.storage.StorageManager
+import android.util.Log
+import androidx.lifecycle.viewModelScope
+import androidx.test.core.app.ApplicationProvider
+import androidx.work.Configuration
+import androidx.work.testing.SynchronousExecutor
+import androidx.work.testing.WorkManagerTestInitHelper
+import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.library.SourceRegistry
+import com.kaislate.veldtplayer.data.library.TrackSort
+import com.kaislate.veldtplayer.data.library.UNFILED_KEY
+import com.kaislate.veldtplayer.data.library.VolumeNames
+import com.kaislate.veldtplayer.data.library.db.IndexEntry
+import com.kaislate.veldtplayer.data.library.db.SongDao
+import com.kaislate.veldtplayer.data.library.db.SongEntity
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
+import com.kaislate.veldtplayer.playback.PlaybackConnection
+import com.kaislate.veldtplayer.ui.nav.Destinations
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowStorageManager
+import org.robolectric.shadows.StorageVolumeBuilder
+import java.io.File
+
+/**
+ * The folder tab as the SCREEN reaches it: the real tree derivation, the real elision, the real
+ * preference store and the real [VolumeNames] lookup.
+ *
+ * **The two-volume case is why this file exists.** Elision folds each volume down to its first
+ * interesting directory INDEPENDENTLY, and on a phone with an SD card that is `Music` on both — so
+ * a top-level row named from `displayRoot.name` gives the user two identical rows and no way to
+ * tell internal storage from the card. Nothing anywhere else asserts that join, and no device on
+ * this fleet has a card, so this fixture is the only evidence the behaviour will ever have.
+ *
+ * Robolectric because three of the four inputs touch Android: [VolumeNames] reads a real
+ * `StorageManager`, [SettingsRepository] writes a real DataStore file, and
+ * [MusicRepository.scanning] reads WorkManager.
+ */
+@RunWith(RobolectricTestRunner::class)
+// Robolectric 4.14.x ships no API-36 shadow; pinned as the other suites are. 34 also takes
+// VolumeNames' API-30+ branch, which is what a device on this floor would take.
+@Config(sdk = [34])
+@OptIn(ExperimentalCoroutinesApi::class)
+class FolderViewModelTest {
+
+    /**
+     * Emits a fixed script of song lists.
+     *
+     * **Not a `MutableStateFlow`**, for the reason `MusicRepositoryFolderTreeTest` records: a
+     * `StateFlow` conflates equal values on its own, so a fake built on one supplies conflation the
+     * production code may not have and the test ends up asserting the fake.
+     */
+    private class FakeSongDao(private val script: List<List<SongEntity>>) : SongDao {
+        override fun observeAllSongs(): Flow<List<SongEntity>> = script.asFlow()
+        override suspend fun findIdBySourceKey(sourceId: String, externalId: String): Long? = null
+        override suspend fun insertReplacing(row: SongEntity) = Unit
+        override suspend fun getAllSongs(): List<SongEntity> = emptyList()
+        override suspend fun getSongsByAlbum(album: String): List<SongEntity> = emptyList()
+        override suspend fun getSongsByArtist(artist: String): List<SongEntity> = emptyList()
+        override suspend fun search(pattern: String): List<SongEntity> = emptyList()
+        override fun observeSearch(pattern: String): Flow<List<SongEntity>> = emptyFlow()
+        override suspend fun getIndex(sourceId: String): List<IndexEntry> = emptyList()
+        override suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>) = Unit
+        override suspend fun clear() = Unit
+    }
+
+    private lateinit var context: Context
+    private lateinit var settings: SettingsRepository
+    private lateinit var shadowStorage: ShadowStorageManager
+    private var vm: FolderViewModel? = null
+    private var nextId = 1L
+
+    @Before fun setUp() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+        context = ApplicationProvider.getApplicationContext()
+        // MusicRepository.scanning() reads WorkManager; with nothing enqueued it reports false,
+        // which is what a settled library looks like.
+        WorkManagerTestInitHelper.initializeTestWorkManager(
+            context,
+            Configuration.Builder()
+                .setMinimumLoggingLevel(Log.DEBUG)
+                .setExecutor(SynchronousExecutor())
+                .build(),
+        )
+        settings = SettingsRepository(context)
+        // One DataStore is shared by every test method in this JVM, so a sort written by one test
+        // would otherwise decide another's track order. See SettingsRepositoryTest.
+        runBlocking { settings.clearForTest() }
+        shadowStorage = Shadow.extract(context.getSystemService(StorageManager::class.java))
+    }
+
+    @After fun tearDown() {
+        // Before anything else: `state` is stateIn(viewModelScope, WhileSubscribed) and is live
+        // from construction, holding flows over the DataStore this test's context owns.
+        vm?.viewModelScope?.cancel()
+        Dispatchers.resetMain()
+    }
+
+    // -------------------------------------------------------------------------------- fixtures
+
+    private fun row(relativeKey: String, title: String = "t") = SongEntity(
+        id = nextId++, sourceId = "test", externalId = "e$nextId", uri = "content://x",
+        filePath = null, relativeKey = relativeKey,
+        title = title, artist = "a", album = "b", albumArtist = null,
+        trackNumber = null, discNumber = null, year = null,
+        durationMs = 0L, dateModifiedSec = 0L, hasEmbeddedArt = false,
+    )
+
+    /** A song with no location at all — neither a relativeKey nor a filePath. */
+    private fun unlocatedRow() = SongEntity(
+        id = nextId++, sourceId = "test", externalId = "e$nextId", uri = "content://x",
+        filePath = null, relativeKey = null,
+        title = "t", artist = "a", album = "b", albumArtist = null,
+        trackNumber = null, discNumber = null, year = null,
+        durationMs = 0L, dateModifiedSec = 0L, hasEmbeddedArt = false,
+    )
+
+    private fun viewModel(vararg rows: SongEntity): FolderViewModel {
+        val repo = MusicRepository(
+            FakeSongDao(listOf(rows.toList())),
+            SourceRegistry(emptySet()),
+            context,
+        )
+        return FolderViewModel(
+            repo = repo,
+            settings = settings,
+            volumeNames = VolumeNames(context),
+            connection = PlaybackConnection(context, repo),
+        ).also { vm = it }
+    }
+
+    /**
+     * `setIsPrimary(false)` is load-bearing — `StorageVolumeBuilder` defaults it to true and a
+     * primary volume reports `external_primary` as its media-store name whatever uuid it carries,
+     * so without it the fixture describes internal storage twice. See `VolumeNamesTest`.
+     */
+    private fun addCard(fsUuid: String, description: String) {
+        shadowStorage.addStorageVolume(
+            StorageVolumeBuilder(
+                "stub-id", File("/storage/$fsUuid"), description,
+                Process.myUserHandle(), Environment.MEDIA_MOUNTED,
+            ).setFsUuid(fsUuid).setIsPrimary(false).setIsRemovable(true).build()
+        )
+    }
+
+    /** The first state carrying a derived tree. The seed has none, and `scanning` starts true. */
+    private suspend fun FolderViewModel.settled(): FolderUiState =
+        state.first { it.roots.isNotEmpty() }
+
+    // ------------------------------------------------------------------- the two-volume join
+
+    /**
+     * **The one that matters.** Two volumes, each holding `Music/` with two artists under it, so
+     * elision stops at `Music` on BOTH and the two display roots have the same `name`.
+     *
+     * The node names are asserted alongside the labels on purpose: they are what makes this fixture
+     * a real trap rather than a fixture that would pass under either rule. If they ever stop being
+     * equal the test still passes but stops testing anything, and the failure message says so.
+     *
+     * The CARD's rows come first in the fixture, which is what also makes the row ORDER load-bearing
+     * here. `FolderTree.build` introduces volumes in song order and `FolderSort.folders` orders by
+     * `name` — equal for both, so a stable sort leaves the card on top. Only ordering by the LABEL
+     * puts internal storage first, and only a fixture in this order can tell the two apart.
+     */
+    @Test fun `two volumes are told apart by their volume label, not by their folder name`() = runTest {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        val vm = viewModel(
+            row("1234-5678:Music/Beck/c.mp3"),
+            row("1234-5678:Music/Radiohead/d.mp3"),
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+        )
+
+        val listing = vm.listing(vm.settled(), null)
+
+        assertEquals(
+            "the top level is not labelled AND ordered by volume — it fell back to the folder " +
+                "name, which is 'Music' on both",
+            listOf("Internal storage", "SanDisk Ultra"),
+            listing.folders.map { it.label },
+        )
+        assertEquals(
+            "the fixture no longer collides: both display roots must be named 'Music' for the " +
+                "label rule to be under test at all",
+            listOf("Music", "Music"),
+            listing.folders.map { it.node.name },
+        )
+    }
+
+    /** And each volume row opens on that volume's own subtree, not on the other's. */
+    @Test fun `each volume row leads to its own folders`() = runTest {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+            row("1234-5678:Music/Portishead/c.mp3"),
+            row("1234-5678:Music/Tricky/d.mp3"),
+        )
+        val state = vm.settled()
+
+        assertEquals(
+            "a volume row opened the wrong volume's subtree",
+            listOf(
+                "Internal storage" to listOf("Beck", "Radiohead"),
+                "SanDisk Ultra" to listOf("Portishead", "Tricky"),
+            ),
+            vm.listing(state, null).folders.map { volume ->
+                volume.label to vm.listing(state, volume.node.key).folders.map { it.label }
+            },
+        )
+    }
+
+    // ----------------------------------------------------------------- one volume, and elision
+
+    /**
+     * One volume opens on the ARTIST folders, not on a single row reading `Music` — the whole point
+     * of root elision. These rows are NOT volume rows, so they carry their own names.
+     */
+    @Test fun `one volume opens on the elided display root's own folders`() = runTest {
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+        )
+
+        assertEquals(
+            "the tab root did not open on the elided display root",
+            listOf("Beck", "Radiohead"),
+            vm.listing(vm.settled(), null).folders.map { it.label },
+        )
+    }
+
+    /**
+     * The breadcrumb renders what elision hid, and it says which crumbs are destinations.
+     *
+     * `Internal storage` is elided and therefore INERT — there is no destination for a level the
+     * design removed, and the pop-or-navigate fallback would push a duplicate rather than pop.
+     * `Music` is the display root, which with one volume IS the tab root, so it pops to `folders`
+     * rather than to a `folder/…` entry that was never on the stack.
+     */
+    @Test fun `the breadcrumb renders the elided ancestors and routes only what is reachable`() = runTest {
+        val vm = viewModel(
+            row("external_primary:Music/Beck/Sea Change/a.mp3"),
+            row("external_primary:Music/Radiohead/x.mp3"),
+        )
+
+        val crumbs = vm.listing(vm.settled(), "external_primary:Music/Beck/Sea Change").crumbs
+
+        assertEquals(
+            "the breadcrumb lost a level elision hid, or mislabelled the volume",
+            listOf("Internal storage", "Music", "Beck", "Sea Change"),
+            crumbs.map { it.label },
+        )
+        assertEquals(
+            "an elided ancestor became tappable, or the display root does not pop to the tab root",
+            listOf(null, Destinations.FOLDERS, Destinations.folder("external_primary:Music/Beck"), null),
+            crumbs.map { it.route },
+        )
+    }
+
+    // ---------------------------------------------------------------------- what a folder lists
+
+    /** Child directories by natural name, and the folder's OWN tracks — held apart, not merged. */
+    @Test fun `a folder lists its child directories and its own tracks, each in its own order`() = runTest {
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Aaa/z.mp3"),
+            row("external_primary:Music/10 zz.mp3"),
+            row("external_primary:Music/2 aa.mp3"),
+        )
+
+        val listing = vm.listing(vm.settled(), null)
+
+        assertEquals(
+            "the child directories are not in natural name order",
+            listOf("Aaa", "Beck"),
+            listing.folders.map { it.label },
+        )
+        assertEquals(
+            "the folder's own tracks are not in natural FILE NAME order — '10' sorted before '2'",
+            listOf("2 aa.mp3", "10 zz.mp3"),
+            listing.tracks.map { it.relativeKey?.substringAfterLast('/') },
+        )
+    }
+
+    /**
+     * The stored preference reaches the track order — the assertion that fails if [FolderUiState]'s
+     * sort is carried but never applied.
+     *
+     * Both orders are asserted, because either one alone is satisfied by a listing that always uses
+     * the other: the filenames and the titles are deliberately in OPPOSITE orders.
+     */
+    @Test fun `the stored sort preference decides the track order`() = runTest {
+        val vm = viewModel(
+            row("external_primary:Music/a.mp3", title = "Zulu"),
+            row("external_primary:Music/b.mp3", title = "Alpha"),
+        )
+
+        val byFilename = vm.listing(vm.state.first { it.roots.isNotEmpty() }, null)
+        assertEquals(
+            "the default order is not by file name",
+            listOf("Zulu", "Alpha"),
+            byFilename.tracks.map { it.title },
+        )
+
+        vm.setSort(TrackSort.TITLE)
+
+        val byTitle = vm.listing(vm.state.first { it.sort == TrackSort.TITLE }, null)
+        assertEquals(
+            "the stored sort never reached FolderSort.tracks",
+            listOf("Alpha", "Zulu"),
+            byTitle.tracks.map { it.title },
+        )
+    }
+
+    // -------------------------------------------------------------------------- the odd states
+
+    /** A folder that is not in the tree yields no node, so the screen can say so rather than
+     *  drawing an empty list that looks like an empty folder. */
+    @Test fun `a key that names no folder resolves to nothing`() = runTest {
+        val vm = viewModel(row("external_primary:Music/Beck/a.mp3"))
+        val state = vm.settled()
+
+        assertNull(
+            "a key naming no folder resolved to something",
+            vm.listing(state, "external_primary:Music/Gone").node,
+        )
+        // The complement, so the assertion above is not satisfied by a listing that resolves
+        // NOTHING: the sibling key that does exist must still resolve.
+        assertEquals(
+            "a key that does exist stopped resolving",
+            "external_primary:Music/Beck",
+            vm.listing(state, "external_primary:Music/Beck").node?.key,
+        )
+    }
+
+    /**
+     * Every song unfiled: the tab is unusable and owes the user the reason. Reported as state
+     * rather than as an empty list, which would blame the music for a media-index problem.
+     */
+    @Test fun `a library whose songs have no locations reports itself unavailable`() = runTest {
+        val unfiled = viewModel(unlocatedRow(), unlocatedRow()).settled()
+        assertEquals(
+            "the all-unfiled library is not reported as having no locations",
+            listOf<Any?>(true, listOf(UNFILED_KEY)),
+            listOf<Any?>(unfiled.locationsUnavailable, unfiled.roots.map { it.displayRoot.key }),
+        )
+
+        // The complement: one located song is enough for the tab to work, so this flag must not
+        // simply be "the bucket exists".
+        vm?.viewModelScope?.cancel()
+        val mixed = viewModel(unlocatedRow(), row("external_primary:Music/a.mp3")).settled()
+        assertEquals(
+            "a library with one located song was reported unusable",
+            false,
+            mixed.locationsUnavailable,
+        )
+    }
+}

@@ -36,6 +36,8 @@ import com.kaislate.veldtplayer.ui.browse.ArtistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.ArtistsScreen
 import com.kaislate.veldtplayer.ui.browse.AudioAccessRequired
 import com.kaislate.veldtplayer.ui.browse.BrowseViewModel
+import com.kaislate.veldtplayer.ui.browse.FolderScreen
+import com.kaislate.veldtplayer.ui.browse.FolderViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.PlaylistViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
@@ -62,6 +64,7 @@ private val TAB_ROUTES = setOf(
     Destinations.ALBUMS,
     Destinations.ARTISTS,
     Destinations.PLAYLISTS,
+    Destinations.FOLDERS,
 )
 
 /**
@@ -106,6 +109,11 @@ fun VeldtNavHost() {
         // entries, and a per-entry instance would give them separate import reports — so a report
         // raised on the tab would vanish the moment the user opened the playlist it describes.
         val plVm: PlaylistViewModel = hiltViewModel()
+        // Resolved HERE for the third time, and the reason is the sharpest of the three: a folder
+        // stack is four back-stack entries deep in ordinary use, so a per-entry instance would be
+        // four view models each collecting `folderTree()` — and that flow re-derives per collector
+        // rather than sharing (see MusicRepository.folderTree). One instance, one derivation.
+        val fVm: FolderViewModel = hiltViewModel()
 
         LaunchedEffect(Unit) {
             vm.errors.collect { message -> snackbarHostState.showSnackbar(message) }
@@ -281,6 +289,37 @@ fun VeldtNavHost() {
                                 onOpenPlaylist = { id ->
                                     navController.navigate(Destinations.playlistDetail(id))
                                 },
+                                contentPadding = padding,
+                            )
+                        }
+                        veldtDestination(
+                            Destinations.FOLDERS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
+                            FolderScreen(
+                                vm = fVm,
+                                folderKey = null,
+                                onOpenFolder = { key ->
+                                    navController.navigate(Destinations.folder(key))
+                                },
+                                navController = navController,
+                                contentPadding = padding,
+                            )
+                        }
+                        // One destination PER folder, so back pops one level — see FolderScreen.
+                        // The argument is read exactly as ALBUM_DETAIL reads its own, except that
+                        // an ABSENT key is not coerced to "": null means the tab root, and `orEmpty`
+                        // here would silently open the root for a malformed folder route instead of
+                        // reporting the folder unavailable.
+                        veldtDestination(
+                            Destinations.FOLDER_DETAIL, audioGranted, audioBlocked, requestAudio, padding,
+                        ) { entry ->
+                            FolderScreen(
+                                vm = fVm,
+                                folderKey = entry.arguments?.getString(Destinations.ARG_KEY) ?: "",
+                                onOpenFolder = { key ->
+                                    navController.navigate(Destinations.folder(key))
+                                },
+                                navController = navController,
                                 contentPadding = padding,
                             )
                         }
