@@ -69,7 +69,6 @@ import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
-import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 import kotlinx.coroutines.delay
@@ -503,7 +502,7 @@ fun NowPlayingScreen(
                         // there is no second blank-tag rule anywhere in the UI.
                         text = "${state.artist} · ${state.album}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = palette.onBg.copy(alpha = SUBTITLE_ALPHA),
+                        color = palette.onBgSecondary,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,

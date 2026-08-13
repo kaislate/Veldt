@@ -34,12 +34,14 @@ data class ArtSeed(
         val bgTone = if (isLight) BG_TONE_LIGHT else BG_TONE_DARK
         val bg = Color(surface.tone(bgTone.toInt()))
 
-        val onTone = solve(bgTone, RATIO_TEXT, isLight)
+        val onTone = solve(bgTone, RATIO_TEXT, isLight)          // 7:1 (AAA body) — unchanged name, raised ratio
+        val secondaryTone = solve(bgTone, RATIO_SECONDARY, isLight)
         val accentTone = solve(bgTone, RATIO_LARGE, isLight)
 
         return DominantColors(
             bg = bg,
             onBg = Color(surface.tone(onTone.toInt())),
+            onBgSecondary = Color(surface.tone(secondaryTone.toInt())),
             accent = Color(accentP.tone(accentTone.toInt())),
             waveColors = wave.map {
                 Color(TonalPalette.fromHueAndChroma(it.hue, accentChroma(it)).tone(accentTone.toInt()))
@@ -52,8 +54,15 @@ data class ArtSeed(
         private const val ACCENT_CHROMA = 32.0
         private const val BG_TONE_DARK = 10.0
         private const val BG_TONE_LIGHT = 98.0
-        private val RATIO_TEXT = Contrast.RATIO_45
+        private val RATIO_TEXT = Contrast.RATIO_70
         private val RATIO_LARGE = Contrast.RATIO_30
+
+        /** The subtitle's ratio against `bg`. AA body text — the artist line is text, not decoration.
+         *  It is SOLVED rather than alpha-dimmed: the old approach multiplied, at a fixed 0.7 strength,
+         *  a tone that was solved for exactly 4.5:1 down toward the ground, landing near 3.1:1 with no
+         *  artwork involved. Hierarchy now comes from the RATIO difference (7:1 vs 4.5:1 on the backdrop,
+         *  and primary-vs-secondary here), not from making a label illegible. */
+        private val RATIO_SECONDARY = Contrast.RATIO_45
 
         /** Shown before art loads and whenever there is none. Monochrome by construction, so
          *  it derives per theme like everything else and cannot be a hardcoded dark constant. */
