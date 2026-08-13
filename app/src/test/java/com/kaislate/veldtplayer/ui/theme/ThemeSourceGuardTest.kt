@@ -51,6 +51,51 @@ class ThemeSourceGuardTest {
             emptyList<String>(), offenders)
     }
 
+    /**
+     * FINDING 2 (whole-branch review): `res/values/themes.xml` is a SECOND theme source, and
+     * being XML rather than Kotlin, it is invisible to the `.kt`-only scan above — that is
+     * exactly how an earlier version of this file carried a stale, false rationale ("the colour
+     * pipeline has no light branch, so the app is dark on every phone") for a premise this
+     * branch deleted. A `.kt`-only guard lets a real theme decision made outside Kotlin hide
+     * from every review sweep that greps for `.kt` files.
+     *
+     * This pins the CURRENT parent so a future edit toward a Light/DayNight parent fails here
+     * instead of silently reintroducing a second theme source that disagrees with
+     * [resolveDark]. `Theme.Veldt` is still legitimately dark-only — see the KDoc comment in
+     * themes.xml for why (it paints only the pre-Compose launch window, which cannot read the
+     * user's stored Light/Dark/Follow-system choice synchronously) — so if that ever changes,
+     * update BOTH this assertion and the themes.xml comment together; do not just delete the
+     * guard.
+     */
+    @Test fun `themes xml launch-window parent is pinned dark, not a second theme source`() {
+        val root = mainSourceRoot()
+        val themesXml = File(root, "res/values/themes.xml")
+        assertTrue("expected ${themesXml.absolutePath} to exist", themesXml.isFile)
+
+        // The actual <style ... parent="..."> declaration ONLY — not the whole file, which
+        // legitimately talks about "DayNight" and "Light" in its explanatory comment. Matching
+        // the tag itself is what keeps this guard from being tripped by prose describing the
+        // very thing it guards against.
+        val styleTag = Regex("""<style\s+name="Theme\.Veldt"[^>]*>""")
+            .find(themesXml.readText())
+            ?.value
+            ?: error("could not find the <style name=\"Theme.Veldt\" ...> declaration in " +
+                "${themesXml.absolutePath}; themes.xml was restructured — update this guard")
+
+        assertTrue(
+            "Theme.Veldt's parent changed away from the pinned-dark launch-window style. If " +
+                "that is deliberate, update this assertion AND themes.xml's comment explaining " +
+                "why (FINDING 2, whole-branch review) — do not just delete this guard.",
+            styleTag.contains("parent=\"Theme.Material3.DynamicColors.Dark\""),
+        )
+        assertTrue(
+            "themes.xml must not gain a Light/DayNight parent without this guard being " +
+                "updated: that would make it a second, undocumented theme source disagreeing " +
+                "with VeldtTheme.resolveDark().",
+            !styleTag.contains("DynamicColors.Light") && !styleTag.contains("DayNight"),
+        )
+    }
+
     @Test fun `each ThemeMode maps to the right ground`() {
         // Asserted as a triple: a resolution that collapses two modes together cannot produce
         // three distinct answers, and the failure message shows which pair merged.

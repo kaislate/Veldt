@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -33,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -122,7 +124,16 @@ private fun SettingsHeader(onBack: () -> Unit, modifier: Modifier = Modifier) {
     }
 }
 
-/** One entry of the three-way theme pill — [selected] marks the mode currently in effect. */
+/**
+ * One entry of the three-way theme pill — [selected] marks the mode currently in effect.
+ *
+ * A SINGLE `selectable` target on the row, not `clickable` on the row plus the [RadioButton]'s
+ * own `onClick`: two targets meant TalkBack announced the radio and the row as separate
+ * elements, neither one carrying the "selected" state consistently. `role = Role.RadioButton`
+ * is what makes the row itself announce as a radio option with its selected state; the
+ * [RadioButton]'s `onClick = null` stops it from being a second, redundant target nested inside
+ * the row's.
+ */
 @Composable
 private fun ThemeOptionRow(
     label: String,
@@ -134,11 +145,11 @@ private fun ThemeOptionRow(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onSelect)
+            .selectable(selected = selected, onClick = onSelect, role = Role.RadioButton)
             .padding(horizontal = SIDE_MARGIN, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        RadioButton(selected = selected, onClick = onSelect)
+        RadioButton(selected = selected, onClick = null)
         Spacer(Modifier.width(12.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge)
     }

@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.ui.components.drawWave
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.VeldtText
 import kotlin.math.PI
 import kotlin.math.abs
@@ -94,6 +95,13 @@ fun WaveScrubBar(
     modifier: Modifier = Modifier,
 ) {
     val wavePhase = rememberWavePhase(reducedMotion)
+
+    // Read once in composition, from the CompositionLocal Theme.kt provides — never by asking
+    // the system dark-mode setting directly here, which would ignore an explicit Light/Dark
+    // choice (ThemeSourceGuardTest enforces theme resolution living only in Theme.kt). Cheap
+    // and rarely-changing, so capturing it in the draw lambda below costs nothing like the
+    // phase/position reads this file is careful to avoid doing in composition.
+    val isLight = LocalIsLightTheme.current
 
     // -1f means "not dragging". A nullable Float would box on every drag frame.
     //
@@ -350,6 +358,7 @@ fun WaveScrubBar(
                     // Taper into the playhead so nothing cliffs above the thumb.
                     taperEndPx = TAPER_END_DP.dp.toPx(),
                     consume = true,
+                    isLight = isLight,
                 )
             }
 

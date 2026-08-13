@@ -1,10 +1,17 @@
 <resources>
     <!--
-      Dark parent, not DayNight, and that is the same decision VeldtTheme documents: the colour
-      pipeline has no light branch, so the app is dark on every phone. This style only ever
-      paints the window BEFORE Compose draws, and a DayNight parent would make that first frame
-      white on a light-mode device — a white flash that resolves to a dark app on every cold
-      start. Pinning it dark makes the launch frame match what follows it.
+      Dark parent, not DayNight. This style only ever paints the pre-Compose LAUNCH WINDOW —
+      the frame the OS shows before the first composition runs and VeldtTheme (see Theme.kt)
+      resolves the user's actual Light/Dark/Follow-system choice from DataStore. That choice
+      is not synchronously readable here, so this style cannot reflect it and is pinned dark.
+
+      KNOWN LIMITATION: a user who has explicitly chosen Light theme sees a dark launch frame
+      for one frame on cold start, before Compose applies their choice and repaints. This is
+      not correct, only chosen over the alternative — a DayNight parent would instead show a
+      WHITE launch frame to every Dark-theme and Follow-system-in-dark user, which is worse for
+      more people on the common path. A real fix needs a synchronously-readable cached theme
+      preference plus `setTheme()` before `super.onCreate()` in MainActivity; out of scope for
+      this pass pending a measurement of how visible the flash actually is on a device.
 
       statusBarColor stays transparent for the same window: MainActivity's enableEdgeToEdge()
       sets the runtime value, but the theme is what the launch frame is drawn with.

@@ -27,8 +27,13 @@ import com.kaislate.veldtplayer.data.settings.ThemeMode
 const val CHROME_ALPHA = 0.94f
 
 /** True when the app is painting a LIGHT ground. Read by [neutralPalette] and by any surface
- *  that must derive an art palette; provided once, by [VeldtTheme]. */
-val LocalIsLightTheme = staticCompositionLocalOf { false }
+ *  that must derive an art palette; provided once, by [VeldtTheme]. No default value: nothing
+ *  composes outside [VeldtTheme] today, and a silent `false` fallback would read as "dark" for
+ *  any composable that ever does — the same kind of error a Light-theme user would not notice
+ *  until they compared it to their actual choice. Failing loudly instead. */
+val LocalIsLightTheme = staticCompositionLocalOf<Boolean> {
+    error("LocalIsLightTheme requires VeldtTheme")
+}
 
 /**
  * Which ground [mode] resolves to. A pure function, not an inline `when` in the composable,
