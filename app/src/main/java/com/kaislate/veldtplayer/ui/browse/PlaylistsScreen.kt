@@ -619,8 +619,8 @@ private fun RecedingCard(
  * into what is behind it, whatever that is. The identity is still the palette's, which is what
  * Task 7's per-playlist colour will ride on.
  *
- * `PlaylistStackTintTest` asserts the contrast against `surface` in `lightColorScheme()` AND
- * `darkColorScheme()`, so the property is checked rather than promised.
+ * `PlaylistStackTintTest` asserts the contrast against `surface` in Compose Material3's default
+ * light AND dark colour schemes, so the property is checked rather than promised.
  */
 internal fun playlistStackTint(scheme: ColorScheme, accent: Color, near: Boolean): Color {
     // The ROLE CHOICE lives in here, not at the call site. Left in the composable it would have
