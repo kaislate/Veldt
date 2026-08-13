@@ -34,11 +34,11 @@ import kotlin.random.Random
  * key, can collide with it. It is never a route — the tab root is [Destinations.FOLDERS] — so this
  * value never reaches a back stack.
  *
- * Spelled `Char.MIN_VALUE`, which IS the NUL character, rather than as a string escape. A raw NUL
- * inside a Kotlin string literal is invisible in a diff and survives editors and tooling poorly —
- * one silently rewrote it to a space here, which would have made the sentinel an ordinary string.
+ * Spelled with the `\u0000` ESCAPE, exactly as [UNFILED_KEY] is one file over. A raw NUL typed into
+ * the literal is invisible in a diff and easy for tooling to mangle into a space, which would
+ * quietly turn the sentinel into an ordinary string a real volume could collide with.
  */
-internal val DEVICE_KEY: String = Char.MIN_VALUE + "device"
+internal const val DEVICE_KEY: String = "\u0000device"
 
 /** What the tab root is called when it lists volumes rather than one volume's folders. */
 private const val DEVICE_LABEL = "Folders"

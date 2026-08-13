@@ -284,6 +284,51 @@ class FolderViewModelTest {
         )
     }
 
+    /**
+     * The same breadcrumb, with TWO volumes — the fixture the single-volume test above cannot be.
+     *
+     * Two things only this shape can pin, and the fixture is built so each has a distinguishable
+     * wrong answer:
+     *
+     * - **The display root's crumb must point at that volume's own destination**, not at the tab
+     *   root. With one volume the two are the same thing; with two they are not, and popping to
+     *   `folders` from inside the card would jump past the `folder/1234-5678:Music` entry that is
+     *   actually on the stack.
+     * - **The elided depth must be read from the crumb's OWN volume.** The two volumes here have
+     *   deliberately DIFFERENT display roots — internal storage branches at its root (`Music` and
+     *   `Download`) so nothing is elided, while the card elides its volume node — so a lookup that
+     *   took the first root would mark the wrong crumbs inert.
+     */
+    @Test fun `a second volume's breadcrumb pops to that volume, not to the tab root`() = runTest {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        val vm = viewModel(
+            // Internal storage first, so `roots.first()` is the volume with the OTHER display depth.
+            row("external_primary:Music/a.mp3"),
+            row("external_primary:Download/b.mp3"),
+            row("1234-5678:Music/Beck/Sea Change/c.mp3"),
+            row("1234-5678:Music/Radiohead/d.mp3"),
+        )
+
+        val crumbs = vm.listing(vm.settled(), "1234-5678:Music/Beck/Sea Change").crumbs
+
+        assertEquals(
+            "the card's breadcrumb is mislabelled — the volume label, then its own path",
+            listOf("SanDisk Ultra", "Music", "Beck", "Sea Change"),
+            crumbs.map { it.label },
+        )
+        assertEquals(
+            "the display root's crumb does not pop to its own volume, or the elided depth was " +
+                "read from the wrong volume",
+            listOf(
+                null,
+                Destinations.folder("1234-5678:Music"),
+                Destinations.folder("1234-5678:Music/Beck"),
+                null,
+            ),
+            crumbs.map { it.route },
+        )
+    }
+
     // ---------------------------------------------------------------------- what a folder lists
 
     /** Child directories by natural name, and the folder's OWN tracks — held apart, not merged. */
@@ -357,6 +402,44 @@ class FolderViewModelTest {
             "a key that does exist stopped resolving",
             "external_primary:Music/Beck",
             vm.listing(state, "external_primary:Music/Beck").node?.key,
+        )
+    }
+
+    /**
+     * The empty string resolves to nothing, which is what makes `VeldtNavHost`'s `?: ""` safe.
+     *
+     * `null` is this screen's value for the TAB ROOT, so an absent route argument must not arrive
+     * as null. `""` is the substitute, and it only works because no node can be keyed on it — every
+     * key begins with a volume name, and a volume name is never empty. Asserted rather than
+     * assumed: nothing in this source set can drive the nav host, so this is where that line's
+     * premise is checkable at all.
+     */
+    @Test fun `the empty key is not the tab root — it names no folder`() = runTest {
+        val vm = viewModel(row("external_primary:Music/Beck/a.mp3"))
+
+        assertNull(
+            "the empty string resolved to a folder, so an absent route argument would open it",
+            vm.listing(vm.settled(), "").node,
+        )
+    }
+
+    /**
+     * The seed reports a scan IN FLIGHT, before the first emission arrives.
+     *
+     * Seeded false, an empty library renders "No folders yet" — with a Scan button WorkManager's
+     * KEEP would no-op — for the frames between audio access being granted and the first tree
+     * landing. That is the bug `BrowseViewModel.scanning`'s KDoc records, and nothing else here
+     * would notice the seed being quietly changed back. Read from `value` with no collector, which
+     * is exactly the window the screen sees on its first frame.
+     */
+    @Test fun `the tab assumes a scan is coming until the library says otherwise`() {
+        val vm = viewModel(row("external_primary:Music/Beck/a.mp3"))
+
+        assertEquals(
+            "the seeded state reports no scan, so the first frames of a fresh install say " +
+                "'No folders yet' over a library that is still being read",
+            true,
+            vm.state.value.scanning,
         )
     }
 

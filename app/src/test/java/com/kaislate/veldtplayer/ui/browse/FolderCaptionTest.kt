@@ -37,19 +37,27 @@ class FolderCaptionTest {
     /**
      * The whole caption, in one assertion, on a folder that has all three clauses.
      *
-     * The counts are DEEP: `Music` holds no track of its own and would read "0 tracks" from the
-     * direct list, over the two that are actually under it.
+     * **Both counts are DEEP, and the fixture separates deep from direct for each of them.** `Music`
+     * holds no track of its own, so the track clause reads "0 tracks" off the direct list. And
+     * `Sea Change` is a GRANDchild: `Music` has two children but three folders under it, so
+     * `node.children.size` and `node.deepFolderCount` are different numbers here. Without that
+     * grandchild the two are equal and the folder clause is pinned at neither depth — the shape
+     * this test's own message claims to exclude.
      */
     @Test fun `a parent folder reports its deep folders, tracks and running time`() {
         val root = node(
-            song("external_primary:Music/Beck/a.mp3", durationMs = 2 * 3_600_000L + 51 * 60_000L),
+            song(
+                "external_primary:Music/Beck/Sea Change/a.mp3",
+                durationMs = 2 * 3_600_000L + 51 * 60_000L,
+            ),
             song("external_primary:Music/Radiohead/b.mp3", durationMs = 30_000L),
         )
-        // `external_primary` -> `Music` -> {Beck, Radiohead}. The caption is asked of `Music`.
+        // `external_primary` -> `Music` -> {Beck -> Sea Change, Radiohead}. Asked of `Music`:
+        // two children, three descendants.
         val music = root.children.single()
         assertEquals(
             "the caption is not built from the DEEP aggregates, or a clause is missing",
-            "2 folders · 2 tracks · 2h 51m",
+            "3 folders · 2 tracks · 2h 51m",
             folderCaption(music),
         )
     }
@@ -65,6 +73,7 @@ class FolderCaptionTest {
             song("external_primary:Music/Beck/a.mp3", durationMs = 60_000L),
         ).children.single()
         assertEquals(
+            "a zero clause was printed, or a singular clause was pluralised",
             listOf("1 track", "1 folder · 1 track · 1m"),
             listOf(folderCaption(leaf), folderCaption(oneEach)),
         )

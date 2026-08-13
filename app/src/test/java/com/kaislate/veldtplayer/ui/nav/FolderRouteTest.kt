@@ -15,6 +15,26 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class FolderRouteTest {
 
+    /**
+     * The ENCODED FORM, asserted as a literal — the decode assertion below cannot see the one
+     * character that matters.
+     *
+     * `Uri.decode("a/b")` is `"a/b"`, so a round-trip assertion passes just as happily when `/` is
+     * left bare — `Uri.encode(key, "/")` encodes the `%`, the `#` and the spaces and satisfies it.
+     * That mutant is not cosmetic: `folder/external_primary:Music/Beck` is THREE path segments, and
+     * Navigation Compose compiles `folder/{key}` to an argument pattern that does not cross `/`, so
+     * every folder tap in the app would silently fail to navigate while the suite read green.
+     */
+    @Test fun `every separator is percent-encoded, so the route stays one path segment`() {
+        assertEquals(
+            "the folder key is not fully encoded — a bare '/' splits the route into extra path " +
+                "segments and Navigation Compose will not match it",
+            "folder/external_primary%3AMusic%2FA%20%25%20B%20%231%2FDisc%202",
+            Destinations.folder("external_primary:Music/A % B #1/Disc 2"),
+        )
+    }
+
+    /** The complement: whatever the encoding is, the key must come back out of it unchanged. */
     @Test fun `a key with separators, percent, hash and spaces survives the round trip`() {
         val key = "external_primary:Music/A % B #1/Disc 2"
         val route = Destinations.folder(key)

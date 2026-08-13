@@ -306,10 +306,16 @@ fun VeldtNavHost() {
                             )
                         }
                         // One destination PER folder, so back pops one level — see FolderScreen.
-                        // The argument is read exactly as ALBUM_DETAIL reads its own, except that
-                        // an ABSENT key is not coerced to "": null means the tab root, and `orEmpty`
-                        // here would silently open the root for a malformed folder route instead of
-                        // reporting the folder unavailable.
+                        //
+                        // The argument is read exactly as ALBUM_DETAIL reads its own, `?: ""` and
+                        // all. The fallback still earns its place here, though, and for a reason
+                        // that does not apply there: on this screen `null` is not "no key", it is
+                        // the TAB ROOT. Letting an absent argument through as null would open the
+                        // root under a `folder/…` route. `""` is a key no tree can hold — every
+                        // node's key starts with a volume name, which is never empty — so it
+                        // resolves to nothing and lands on "Folder unavailable" instead. Pinned in
+                        // FolderViewModelTest, at the view model, since nothing in this source set
+                        // can drive the nav host itself.
                         veldtDestination(
                             Destinations.FOLDER_DETAIL, audioGranted, audioBlocked, requestAudio, padding,
                         ) { entry ->
