@@ -48,6 +48,24 @@ class MusicRepository @Inject constructor(
     fun artists(): Flow<List<Artist>> = songs().map { LibraryDerivations.deriveArtists(it) }
 
     /**
+     * The folder tree, derived once per emission (global constraint 14).
+     *
+     * The derivation is heavier than [LibraryDerivations.deriveAlbums] — it splits strings and
+     * builds a tree — and during a scan these emissions arrive per upsert batch. Derive here and
+     * cache; never per row, never per recomposition. `distinctUntilChanged()` on the song list is
+     * what stops an identical re-emission from rebuilding the whole tree and remounting every row.
+     *
+     * Two halves of constraint 14, and this flow only supplies one of them. `map` runs the build
+     * exactly once per distinct emission **per collector**, upstream of the UI — so no row and no
+     * `FolderTree.find` call ever rebuilds. Surviving RECOMPOSITION is the collector's half: the
+     * ViewModel must hold this in a `stateIn`/`StateFlow` rather than re-collecting it, and a
+     * second concurrent collector re-derives rather than sharing. Both are the caller's to get
+     * right; if a second consumer ever appears, this wants `shareIn` instead of a comment.
+     */
+    fun folderTree(): Flow<List<FolderNode>> =
+        songs().distinctUntilChanged().map { FolderTree.build(it) }
+
+    /**
      * One album's tracks, in disc-then-track order. [key] is an [Album.key]; it is
      * re-normalized because normalize is idempotent on a well-formed key, so accepting a
      * stray raw display name costs nothing and saves a silent empty result.

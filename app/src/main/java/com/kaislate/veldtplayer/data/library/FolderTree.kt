@@ -30,6 +30,14 @@ data class FolderNode(
 )
 
 /**
+ * A volume's root as the UI should present it, plus the ancestors elision skipped.
+ *
+ * [elided] is not decoration — the breadcrumb renders it, which is what keeps elision from ever
+ * costing the user the truth about where they are.
+ */
+data class FolderRoot(val displayRoot: FolderNode, val elided: List<FolderNode>)
+
+/**
  * The library as it is on disk, derived from the song list and nothing else.
  *
  * **No filesystem access** (global constraint 5) — that is not a simplification but the only
@@ -98,6 +106,42 @@ object FolderTree {
             deepDurationMs = b.songs.sumOf { it.durationMs } + children.sumOf { it.deepDurationMs },
             deepFolderCount = children.size + children.sumOf { it.deepFolderCount },
         )
+    }
+
+    /**
+     * Fold away pass-through ancestors **at the top of each volume only**.
+     *
+     * A library that lives entirely in `Music/` opens on the artist folders rather than on a single
+     * row reading `Music`. Elision stops at the first folder that either holds audio of its own or
+     * has more than one child — walking past either would hide something.
+     *
+     * Honestly unstable in one narrow way: dropping a file into `Download/` moves the elided root
+     * back to the volume root and the rows gain a level. Accepted, because it affects one level at
+     * the top rather than the whole tree, the breadcrumb keeps it truthful, and the alternative is
+     * a mandatory tap through `Internal storage → Music` every single day. Owner decision,
+     * 2026-08-14.
+     *
+     * Interior chains are deliberately NOT collapsed — see the class KDoc.
+     */
+    fun elideRoots(roots: List<FolderNode>): List<FolderRoot> = roots.map { root ->
+        // The Unfiled bucket is synthetic and has no ancestors to skip.
+        //
+        // **This guard is currently unreachable and is kept deliberately.** [build] only emits the
+        // bucket when it has at least one song and never gives it children, so the loop below
+        // already declines to walk it and removing this line changes no observable behaviour —
+        // verified by executing that mutation, 2026-08-13: all six elision tests stayed green. It
+        // stays because the invariant it depends on lives in another function: the day [build]
+        // emits an empty or child-bearing bucket, eliding it would silently swallow the one root
+        // whose songs have nowhere else to appear. Do not read its presence as evidence that the
+        // Unfiled tests are pinning it — they are not, and cannot.
+        if (root.key == UNFILED_KEY) return@map FolderRoot(root, emptyList())
+        val skipped = ArrayList<FolderNode>()
+        var node = root
+        while (node.songs.isEmpty() && node.children.size == 1) {
+            skipped += node
+            node = node.children.single()
+        }
+        FolderRoot(node, skipped)
     }
 
     /** The node with [key], or null. Linear in the tree; callers cache (global constraint 14). */
