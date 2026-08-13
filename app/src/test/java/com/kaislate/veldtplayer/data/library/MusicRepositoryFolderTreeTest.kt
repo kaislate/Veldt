@@ -32,11 +32,13 @@ import org.robolectric.annotation.Config
  * green against all three of them.
  *
  * The consequence is that **emission count is not a reliable proxy for derivation count**, and no
- * test here claims otherwise. What the assertions actually establish is that each emission carries
- * the tree its song list implies, and that an identical re-emission produces no second one. Whether
- * `FolderTree.build` ran once or twice behind an emission is not observable without injecting a
- * counting builder, which would distort the production shape to make a test possible — see the
- * unpinned-risk note on the de-duplication test.
+ * test here claims otherwise. What the assertions establish is narrower than "the tree is right":
+ * `the tree is derived from the songs flow` pins the folder STRUCTURE by name, while the two
+ * sequence tests pin which SONGS each emission carries, in tree order — [contents] walks songs and
+ * does not compare shape, so two differently-shaped trees holding the same songs in the same order
+ * would satisfy them. Whether `FolderTree.build` ran once or twice behind a given emission is a
+ * third thing, and that one genuinely is unobservable without injecting a counting builder, which
+ * would distort the production shape to make a test possible.
  *
  * Robolectric only because [MusicRepository]'s constructor takes a `Context`; nothing in this flow
  * touches it.
@@ -105,14 +107,20 @@ class MusicRepositoryFolderTreeTest {
     /**
      * De-duplication, asserted as the sequence of tree CONTENTS rather than as a count.
      *
-     * **Unpinned regression risk, stated because the alternative is a message that lies.** This does
-     * not exclude `distinctUntilChanged()` being moved DOWNSTREAM of the `map`. That variant still
-     * yields exactly this one emission of exactly these contents — it just builds the tree twice and
-     * then deep-compares two whole trees to throw one away. The difference is invisible from
-     * outside the flow: it is wasted work, not a wrong value, and the only way to observe it is to
-     * inject a counting builder, which would bend the production shape to make a test possible. The
-     * placement rationale lives in `MusicRepository.folderTree()`'s KDoc and is upheld by review
-     * rather than by this suite.
+     * **Deliberately not pinned: `distinctUntilChanged()` moved DOWNSTREAM of the `map`.** This
+     * fixture does not exclude it — with these two song lists the downstream form emits the same
+     * single tree — but that is a property of the fixture, not an impossibility. Downstream, the
+     * comparison is between two `List<FolderNode>`, and two DIFFERENT song lists can build EQUAL
+     * trees, because the tree groups by folder and erases the global ordering `songs()` imposes.
+     * `[Music/x, Other/y, Music/z]` then `[Music/x, Music/z, Other/y]` are different lists with
+     * equal trees: production emits twice, the downstream form once. A content assertion catches
+     * that — no spy, no production seam.
+     *
+     * **It is left uncovered on purpose.** Such a test would pin "an equal tree is re-emitted",
+     * which is not a property we want to guarantee: Task 5's `stateIn` conflates a repeated equal
+     * value away regardless, so the test would freeze an incidental artefact of operator order into
+     * the contract. The placement rationale lives in `MusicRepository.folderTree()`'s KDoc and is
+     * upheld by review. Weighed and declined, not missed.
      */
     @Test fun `an identical re-emission does not re-derive the tree`() = runTest {
         // Two separately-constructed lists that are EQUAL but not the same instance, because that

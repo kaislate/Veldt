@@ -109,7 +109,16 @@ class FolderTreeTest {
             song("external_primary:Music/Album/Disc 1/b.mp3"),
         ))
         val album = FolderTree.find(roots, "external_primary:Music/Album")!!
-        assertEquals(1, album.songs.size)
+        // The count here is INERT on its own and is kept only so "lost its own track" prints as a
+        // distinct 0. An implementation that attaches every song one level too shallow moves BOTH
+        // songs — `a.mp3` up to `Music/`, `Disc 1/b.mp3` down into `Album/` — and leaves this size
+        // at 1, so a count cannot tell "one song, the direct one" from "one song, a descendant's".
+        // Only the name separates them. Proven by executing that mutant, 2026-08-13.
+        assertEquals(
+            "songs included a descendant's track, or lost its own",
+            listOf<Any?>(1, listOf("a.mp3")),
+            listOf<Any?>(album.songs.size, album.songs.fileNames()),
+        )
     }
 
     @Test fun `a folder with no direct audio but audio descendants EXISTS and is not empty-looking`() {
@@ -141,7 +150,17 @@ class FolderTreeTest {
     @Test fun `a locationless song goes to Unfiled, never silently dropped`() {
         val roots = FolderTree.build(listOf(song(null, null), song("external_primary:Music/a.mp3")))
         val unfiled = roots.firstOrNull { it.key == UNFILED_KEY }
-        assertEquals(1, unfiled?.songs?.size)
+        // WHICH song landed in the bucket — the bucket's whole point. A count of 1 is produced just
+        // as readily by the LOCATED song being swept in instead, which would empty the real tree
+        // while this test stayed green, so the partition is asserted from both sides at once.
+        assertEquals(
+            "the wrong song landed in Unfiled, or the located one was swept in with it",
+            listOf(listOf("<no location>"), listOf("a.mp3")),
+            listOf(
+                unfiled?.songs.fileNames(),
+                FolderTree.find(roots, "external_primary:Music")?.songs.fileNames(),
+            ),
+        )
     }
 
     @Test fun `Unfiled is ABSENT when every song has a location`() {
