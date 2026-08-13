@@ -42,10 +42,19 @@ class FolderElisionTest {
             song("external_primary:Music/Beck/a.mp3"),
         ))
         val display = FolderTree.elideRoots(roots).single().displayRoot
+        // The size is INERT against this test's own named mutant. Dropping `songs.isEmpty() &&`
+        // lands elision on `Beck`, which also holds exactly one song, so the count reads 1 either
+        // way — `expected:<[1, Music]> but was:<[1, Beck]>`. Today the name carries the test on its
+        // own; the file name is paired in so that stays true if the name is ever dropped, and so
+        // the failure names the track that would have been hidden.
         assertEquals(
             "elision walked past a folder with direct audio, hiding 'loose.mp3'",
-            listOf(1, "Music"),
-            listOf(display.songs.size, display.name),
+            listOf<Any?>(1, "Music", listOf("loose.mp3")),
+            listOf<Any?>(
+                display.songs.size,
+                display.name,
+                display.songs.map { it.relativeKey?.substringAfterLast('/') },
+            ),
         )
     }
 

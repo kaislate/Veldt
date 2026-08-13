@@ -125,6 +125,9 @@ class FolderTreeTest {
         // Omitting these makes the tree unwalkable: Music/ itself usually holds no audio at all.
         val roots = FolderTree.build(listOf(song("external_primary:Music/Beck/a.mp3")))
         val music = FolderTree.find(roots, "external_primary:Music")!!
+        // Counts, and here the count IS the property: "holds nothing directly, holds something
+        // below" is a question about how many and not about which. There is no element to pair —
+        // the direct list is empty, which is the point. Not an instance of the inert-count pattern.
         assertEquals(
             listOf(0, 1),
             listOf(music.songs.size, music.deepSongCount),
@@ -176,6 +179,9 @@ class FolderTreeTest {
         // failure PathSegments exists to prevent.
         val roots = FolderTree.build(listOf(song(null, "/storage/emulated/0/x.mp3")))
         val root = FolderTree.find(roots, "external_primary")!!
+        // The count is already paired with the element side that matters: the assertion is "one
+        // song sits AT the volume root and NO child folder was invented", and the phantom-child
+        // failure shows up in the names, not in a number.
         assertEquals(
             listOf(1, emptyList<String>()),
             listOf(root.songs.size, root.children.map { it.name }),
