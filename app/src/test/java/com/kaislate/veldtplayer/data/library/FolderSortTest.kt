@@ -90,6 +90,60 @@ class FolderSortTest {
         )
     }
 
+    @Test fun `title order uses the tag title, not the file name`() {
+        // The file names and the titles are deliberately in OPPOSITE orders, so a TITLE branch
+        // that fell through to FILENAME would produce the exact reverse and fail loudly.
+        val sorted = FolderSort.tracks(
+            listOf(
+                song("01 - zebra.mp3", title = "Zebra"),
+                song("02 - apple.mp3", title = "Apple"),
+                song("03 - mango.mp3", title = "Mango"),
+            ),
+            TrackSort.TITLE, descending = false,
+        )
+        assertEquals(listOf("Apple", "Mango", "Zebra"), sorted.map { it.title })
+        assertEquals(
+            listOf("02 - apple.mp3", "03 - mango.mp3", "01 - zebra.mp3"),
+            sorted.map { it.fileNameOrEmpty() },
+        )
+    }
+
+    @Test fun `date-modified order is NEWEST FIRST — the "what did I just add" default`() {
+        val sorted = FolderSort.tracks(
+            listOf(
+                song("old.mp3", modified = 100L),
+                song("new.mp3", modified = 300L),
+                song("mid.mp3", modified = 200L),
+            ),
+            TrackSort.DATE_MODIFIED, descending = false,
+        )
+        assertEquals(listOf("new.mp3", "mid.mp3", "old.mp3"), sorted.map { it.fileNameOrEmpty() })
+    }
+
+    @Test fun `date-modified descending means OLDEST first — the double negative is deliberate`() {
+        // DATE_MODIFIED is built with compareByDescending and `descending` then reverses the whole
+        // list, so the two negatives cancel. Both directions are pinned here on purpose: a later
+        // reader "simplifying" compareByDescending to compareBy would silently invert the default
+        // for every user, and nothing else in this class would notice.
+        val songs = listOf(
+            song("old.mp3", modified = 100L),
+            song("new.mp3", modified = 300L),
+            song("mid.mp3", modified = 200L),
+        )
+        assertEquals(
+            "default must be newest first",
+            listOf("new.mp3", "mid.mp3", "old.mp3"),
+            FolderSort.tracks(songs, TrackSort.DATE_MODIFIED, descending = false)
+                .map { it.fileNameOrEmpty() },
+        )
+        assertEquals(
+            "descending must flip it to oldest first",
+            listOf("old.mp3", "mid.mp3", "new.mp3"),
+            FolderSort.tracks(songs, TrackSort.DATE_MODIFIED, descending = true)
+                .map { it.fileNameOrEmpty() },
+        )
+    }
+
     @Test fun `the deep flatten is DEPTH-FIRST PRE-ORDER — discs never interleave`() {
         // The case that motivates the whole feature. A breadth-first or globally-flat-sorted
         // alternative interleaves the two discs, which is the exact failure this repairs.
