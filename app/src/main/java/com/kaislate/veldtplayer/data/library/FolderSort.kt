@@ -100,6 +100,14 @@ object FolderSort {
                 // digit, na and nb both empty, and i and j are then reassigned to themselves, so
                 // the loop spins at 100% CPU forever. A hang is the one failure mode no assertion
                 // can catch, so fail fast and let the resulting wrong ordering be caught instead.
+                //
+                // **It must be `break`, not `return 0`, and not a fall-through to the character
+                // comparison.** Both alternatives look tidier and both silently disarm the guard:
+                // they make the widened-condition variant either behave identically to correct
+                // code or come out transitive anyway, so the transitivity test goes GREEN and the
+                // defect this guard exists to expose is hidden again. `break` falls to the
+                // remaining-length return below, which leaves the comparator detectably wrong.
+                // Verified by executing all three, 2026-08-14.
                 if (ia == i || jb == j) break
                 // Compared as text with leading zeros stripped, so arbitrarily long runs cannot
                 // overflow a Long the way parsing them would.

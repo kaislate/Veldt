@@ -73,6 +73,18 @@ class FolderSortTest {
             "NATURAL.compare must never return 0 for two DIFFERENT strings",
             0, FolderSort.NATURAL.compare("beck", "Beck"),
         )
+        // Case is FOLDED for the primary comparison, not merely broken by the byte-exact tiebreak,
+        // and that needs its own assertion because NOTHING above can see it. Drop the fold and this
+        // test still passes: 'B' 0x42 precedes 'b' 0x62, so [Beck, beck] comes out unchanged and
+        // compare("beck","Beck") is still non-zero. The expected value is reachable by the very
+        // mutation the test's own name claims to cover.
+        //
+        // Unfolded, every capitalised name sorts before every lowercase one — `Zebra` ahead of
+        // `apple` in every folder list in the app.
+        assertTrue(
+            "case must be FOLDED for ordering — unfolded, Zebra sorts before apple",
+            FolderSort.NATURAL.compare("apple", "Zebra") < 0,
+        )
     }
 
     @Test fun `NATURAL is transitive — a non-ASCII digit must not sort as a number AND as a letter`() {
@@ -142,27 +154,39 @@ class FolderSortTest {
     @Test fun `track-number order is available and uses disc then track`() {
         // The fixture is arranged AGAINST file-name order on purpose, and must stay that way.
         //
-        //   file    disc  track
-        //   a.mp3     2     1
-        //   c.mp3     1     2
-        //   d.mp3     1     1
-        //   y.mp3   null  null     <- untagged, and supplied BEFORE x.mp3
-        //   x.mp3   null  null     <- untagged
+        //   file     disc  track
+        //   a.mp3      2     1
+        //   c.mp3      1     2
+        //   d.mp3      1     1
+        //   e.mp3      1   null     <- tagged disc, UNTAGGED track
+        //   10.mp3   null  null     <- untagged, and supplied BEFORE 2.mp3
+        //   2.mp3    null  null     <- untagged
         //
-        // Correct (disc, then track, then file name) is [d, c, a, x, y]. Every degenerate
+        // Correct (disc, then track, then file name) is [d, c, e, a, 2, 10]. Every degenerate
         // alternative differs, which is what makes the single assertion below able to fail:
-        //   - file name only  -> [a, c, d, x, y]   (TRACK_NUMBER collapsed into FILENAME)
-        //   - disc only       -> [c, d, a, x, y]   (the track key deleted)
-        //   - track only      -> [a, d, c, x, y]   (the disc key deleted)
-        //   - no tiebreak     -> [d, c, a, y, x]   (the file-name key deleted)
-        //   - input order     -> [a, c, d, y, x]   (no sort at all)
+        //   - file name only    -> [2, 10, a, c, d, e]   (TRACK_NUMBER collapsed into FILENAME)
+        //   - disc only         -> [c, d, e, a, 2, 10]   (the track key deleted)
+        //   - track only        -> [a, d, c, e, 2, 10]   (the disc key deleted)
+        //   - no tiebreak       -> [d, c, e, a, 10, 2]   (the file-name key deleted)
+        //   - plain compareTo   -> [d, c, e, a, 10, 2]   (tiebreak not NATURAL)
+        //   - track ?: 0        -> [e, d, c, a, 2, 10]   (untagged track sorts FIRST, not last)
+        //   - input order       -> [a, c, d, e, 10, 2]   (no sort at all)
         //
-        // x.mp3 and y.mp3 are UNTAGGED and that is the point of them. Both keys are null, so both
-        // fall to Int.MAX_VALUE and tie, and the file-name tiebreak is the only thing left to order
-        // them — which is precisely the situation in a folder of untagged files, where EVERY song
-        // ties. Without the tiebreak the whole TRACK_NUMBER sort degrades to `sortedWith`
-        // stability, i.e. MediaStore's own order, which is what the user chose this sort to escape.
-        // They are supplied y-before-x so stability alone yields the wrong answer.
+        // Three fixture properties are load-bearing:
+        //
+        // 1. 10.mp3 and 2.mp3 are UNTAGGED — both keys null, both falling to Int.MAX_VALUE — so
+        //    they tie and the file-name tiebreak is the only key left. That is the situation in a
+        //    folder of untagged files, where EVERY song ties and the sort would otherwise degrade
+        //    to `sortedWith` stability, i.e. MediaStore's own order, which is what the user chose
+        //    this sort to escape. Supplied 10-before-2 so stability alone gives the wrong answer.
+        // 2. They are named 10 and 2 rather than x and y so the tiebreak's COMPARATOR is pinned as
+        //    well as its existence: under plain `compareTo` "10.mp3" precedes "2.mp3", which is the
+        //    exact failure this whole feature exists to repair. One pair now kills deletion,
+        //    plain-compareTo and input-order at once.
+        // 3. e.mp3 has a disc but NO track, which is the only song here exercising the track key's
+        //    null default. Without it, `trackNumber ?: Int.MAX_VALUE` could be changed to `?: 0`
+        //    and stay green — an untagged track would jump to the FRONT of its disc instead of the
+        //    back — even though the identical mutation on discNumber was already caught.
         //
         // TWO separate holes were closed here and neither may be reopened. The brief's original
         // fixture had c.mp3 on disc 2/track 1 and a.mp3 on disc 1/track 2 expecting [a, c] — which
@@ -176,13 +200,14 @@ class FolderSortTest {
                 song("a.mp3", track = 1, disc = 2),
                 song("c.mp3", track = 2, disc = 1),
                 song("d.mp3", track = 1, disc = 1),
-                song("y.mp3"),
-                song("x.mp3"),
+                song("e.mp3", disc = 1),
+                song("10.mp3"),
+                song("2.mp3"),
             ),
             TrackSort.TRACK_NUMBER, descending = false,
         )
         assertEquals(
-            listOf("d.mp3", "c.mp3", "a.mp3", "x.mp3", "y.mp3"),
+            listOf("d.mp3", "c.mp3", "e.mp3", "a.mp3", "2.mp3", "10.mp3"),
             sorted.map { it.fileNameOrEmpty() },
         )
     }
@@ -222,6 +247,28 @@ class FolderSortTest {
         )
     }
 
+    @Test fun `zero padding is stripped, and a leftover remainder still orders`() {
+        // Two survivors inside compareNatural that no other assertion in this class claims.
+        //
+        // 1. `trimStart('0')`. Zero-padded and unpadded numbers must compare by VALUE, so "01"
+        //    and "1" are the same number and "01" precedes "2". Delete the trim and the runs are
+        //    compared by raw length instead: "01" is two characters against "2"'s one, so the
+        //    padded track sorts AFTER — `01 - a.mp3` filed behind `2 - b.mp3` in a folder mixing
+        //    padded and unpadded names, which is a mix real libraries have.
+        assertTrue(
+            "leading zeros must be stripped — 01 is the number 1 and precedes 2",
+            FolderSort.NATURAL.compare("01", "2") < 0,
+        )
+        // 2. The trailing `(a.length - i) - (b.length - j)`. After two runs compare equal, whatever
+        //    is left over decides: "01x" and "1" agree on the number, and "01x" has characters
+        //    remaining, so it sorts after. Replace that return with 0 and the byte-exact tiebreak
+        //    decides instead — '0' before '1' — flipping the pair.
+        assertTrue(
+            "equal numeric runs, then the string with characters left over sorts after",
+            FolderSort.NATURAL.compare("01x", "1") > 0,
+        )
+    }
+
     @Test fun `title order uses the tag title, not the file name`() {
         // The file names and the titles are deliberately in OPPOSITE orders, so a TITLE branch
         // that fell through to FILENAME would produce the exact reverse and fail loudly.
@@ -241,22 +288,26 @@ class FolderSortTest {
     }
 
     @Test fun `date-modified order is NEWEST FIRST — the "what did I just add" default`() {
-        // tie-a and tie-b SHARE an mtime, and are supplied b-before-a so that stability alone
+        // 10.mp3 and 2.mp3 SHARE an mtime, and are supplied 10-before-2 so that stability alone
         // yields the wrong order. That is not a contrived case: `dateModifiedSec` is
         // second-granularity and a bulk copy or unzip stamps a whole album identically, so the
         // file-name tiebreak is the common path rather than the rare one. With three distinct
         // mtimes the tiebreak was never consulted and could be deleted with the suite green.
+        //
+        // The names are 10 and 2 rather than tie-a and tie-b so that the tiebreak's COMPARATOR is
+        // pinned too: `.thenBy(NATURAL)` weakened to a plain `.thenBy` puts "10.mp3" before
+        // "2.mp3", and with neutral names that mutation survived green.
         val sorted = FolderSort.tracks(
             listOf(
                 song("old.mp3", modified = 100L),
                 song("new.mp3", modified = 300L),
-                song("tie-b.mp3", modified = 200L),
-                song("tie-a.mp3", modified = 200L),
+                song("10.mp3", modified = 200L),
+                song("2.mp3", modified = 200L),
             ),
             TrackSort.DATE_MODIFIED, descending = false,
         )
         assertEquals(
-            listOf("new.mp3", "tie-a.mp3", "tie-b.mp3", "old.mp3"),
+            listOf("new.mp3", "2.mp3", "10.mp3", "old.mp3"),
             sorted.map { it.fileNameOrEmpty() },
         )
     }
