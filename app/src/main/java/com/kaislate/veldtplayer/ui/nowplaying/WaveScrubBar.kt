@@ -33,6 +33,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
@@ -83,12 +84,20 @@ import kotlinx.coroutines.withTimeoutOrNull
  * screen), and leaves the chain's shape, and therefore the drag detector's node and its
  * `dragFraction` sentinel, untouched. Removing an element instead would re-create every element
  * after it and could strand a drag mid-gesture.
+ *
+ * [secondaryText] is the elapsed/remaining readout colour, solved by the CALLER against the
+ * ground the text actually sits on (`ArtSeed.backdropText`, solved against the backdrop's
+ * composited colour under its scrim) rather than computed here. This bar has no idea it is
+ * drawn over a scrimmed backdrop rather than a flat surface — that is the caller's knowledge,
+ * not this one's — so the scrim-aware colour arrives as a plain parameter instead of being
+ * derived from [palette] internally.
  */
 @Composable
 fun WaveScrubBar(
     positionMs: Long,
     durationMs: Long,
     palette: DominantColors,
+    secondaryText: Color,
     reducedMotion: Boolean,
     tapToSeek: Boolean,
     onSeek: (Long) -> Unit,
@@ -384,12 +393,12 @@ fun WaveScrubBar(
             Text(
                 formatTime(readoutMs),
                 style = VeldtText.numeric,
-                color = palette.onBg.copy(alpha = READOUT_ALPHA),
+                color = secondaryText,
             )
             Text(
                 formatTime(durationMs),
                 style = VeldtText.numeric,
-                color = palette.onBg.copy(alpha = READOUT_ALPHA),
+                color = secondaryText,
             )
         }
     }
@@ -476,7 +485,6 @@ private const val TRACK_ALPHA = 0.22f
 private const val THUMB_RADIUS_DP = 5f
 private const val THUMB_RADIUS_DRAGGING_DP = 8f
 private const val READOUT_INSET_DP = 4
-private const val READOUT_ALPHA = 0.8f
 private const val WAVE_STYLE = "wisptrail"
 
 /**

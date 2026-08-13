@@ -113,6 +113,80 @@ private const val SCRIM_BOTTOM_DARK = 0.80f
 private const val SCRIM_TOP_LIGHT = 0.55f
 private const val SCRIM_BOTTOM_LIGHT = 0.95f
 
+/**
+ * The weakest scrim alpha any TEXT actually sits under — **not** the weakest alpha on the
+ * surface. That distinction is the whole reason this function exists and [SCRIM_TOP_LIGHT] /
+ * [SCRIM_TOP_DARK] are not used for solving text contrast: those are the gradient's value at
+ * y=0, the very top of the frame, and no glyph renders there — the album art does. Title,
+ * artist, and the elapsed/remaining labels all sit below that (see the layout comment on
+ * [ArtBackdrop]: "weighted to the bottom because that is where the transport and the track
+ * title sit"), under a strictly stronger scrim as the gradient descends toward
+ * [SCRIM_BOTTOM_LIGHT] / [SCRIM_BOTTOM_DARK].
+ *
+ * **PER THEME, not one shared value — a single constant was tried first and measured wrong.**
+ * The two themes' gradients are not the same shape: light runs [SCRIM_TOP_LIGHT]..
+ * [SCRIM_BOTTOM_LIGHT] (`0.55..0.95`), dark runs [SCRIM_TOP_DARK]..[SCRIM_BOTTOM_DARK]
+ * (`0.35..0.80`). A single `alpha` parameter passed to `ArtSeed.backdropText` therefore cannot be
+ * "the weakest value" for both at once — the two gradients disagree about what alpha corresponds
+ * to the same fractional height, so a value calibrated against one theme's gradient is
+ * necessarily wrong-by-construction for the other's.
+ *
+ * A single shared `0.75f` was measured on device (Task 3, round 1): light theme cleared with
+ * room to spare (title 8.52:1, artist 5.59:1, elapsed 5.77:1, all ≥4.5:1) but dark theme's
+ * artist/album fell short at 4.38:1. The arithmetic explains why, and confirms it is a modelling
+ * error rather than noise: with `artMean ≈ (211,47,47)` (the crimson test cover) and dark
+ * `bg` at tone 10, solving at `alpha=0.75` predicts a composited-ground red channel of ≈75; the
+ * *measured* ground (from the captured frame) was 86–108, which back-solves to `alpha≈0.52–0.63`
+ * — i.e. the real gradient supplies noticeably LESS scrim at the text band than `0.75` assumed.
+ * `0.75` was therefore *optimistic* for dark (it modelled more masking than the renderer actually
+ * applies at ~60% down the frame, where the text sits) even though the identical value was
+ * *conservative* for light (light's own gradient supplies ≈0.79 at the same 60% mark, well above
+ * 0.75). One number cannot be simultaneously conservative for a gradient running up to 0.95 and
+ * accurate for one running only up to 0.80 — the fix is not a better single number, it is two.
+ *
+ * **Each value is now derived from that theme's own corpus sweep** (`BackdropTextTest`'s 5-cover
+ * corpus, re-swept independently per theme rather than as one shared alpha) — the smallest value
+ * that clears the theme's own ACHIEVABLE bar with a small margin, staying low (more artwork, the
+ * conservative direction) rather than reaching for extra headroom the real gradient does not
+ * supply:
+ *
+ * - **Light** — binding case: **black cover**, primary (7:1). The whole corpus (both ratios, all
+ *   5 covers) first clears at `alpha=0.599`; `0.62` is that crossing plus a ~0.02 margin, the
+ *   same margin-above-crossing Task 2 used. `0.62` corresponds to ~17% down light's own gradient
+ *   — near the top, where the title plausibly sits — and stays well below light's own measured
+ *   real value (≈0.79 at 60% down), so it remains a genuine floor with room to spare, matching
+ *   the device's "passes handsomely" result.
+ * - **Dark** — binding case: **white cover**, but only for the ACHIEVABLE bar. `white cover`'s
+ *   SECONDARY (4.5:1, the bar Step 3 actually gates every element on, title included — 7:1 is an
+ *   internal headroom target, not the WCAG requirement) clears the whole dark corpus at
+ *   `alpha=0.599` — the same crossing as light's, to three decimal places, though driven by an
+ *   unrelated constraint (dark's own `BG_TONE_DARK=10` / `RATIO_45` versus light's
+ *   `BG_TONE_LIGHT=98` / `RATIO_70`). `0.62` is that crossing plus the same ~0.02 margin.
+ *   `white cover`'s PRIMARY (7:1) does **not** clear until `alpha≈0.73` — but per-entry sweeping
+ *   (see the fix-round report) shows `white cover` is the *only* corpus entry primary struggles
+ *   with at any alpha down to `0.35`; every other entry, including `saturated red` (the actual
+ *   crimson test cover), clears 7:1 comfortably across the whole range. Requiring `0.73` to
+ *   satisfy one synthetic, maximally-extreme entry's ASPIRATIONAL target would recreate the exact
+ *   defect just measured — reaching for headroom the real gradient does not supply at the real
+ *   text position (`0.73` is ~89% down dark's gradient; `0.62` is ~60% down, matching the
+ *   text-band position the device arithmetic above points to). `BackdropTextTest` documents this
+ *   one entry as a known, provable ceiling (`Contrast.lighter` clamped at tone 100 still only
+ *   reaches ~4.8:1 against that ground) and holds it to the 4.5:1 bar that actually matters
+ *   instead.
+ *
+ * **The two themes land on the same number, `0.62`, by coincidence of two unrelated crossings —
+ * not because this collapsed back into one shared constant.** Each is derived from its own
+ * theme's `bg` tone, its own theme's binding corpus case, and would move independently if either
+ * changed; nothing here ties them together. Had the crossings differed, so would these values —
+ * see the individual bullets above for why each number is what it is.
+ */
+private const val SCRIM_AT_TEXT_LIGHT = 0.62f
+private const val SCRIM_AT_TEXT_DARK = 0.62f
+
+/** Which [scrimAtText] floor this theme's own gradient supports. See the KDoc above. */
+internal fun scrimAtText(isLight: Boolean): Float =
+    if (isLight) SCRIM_AT_TEXT_LIGHT else SCRIM_AT_TEXT_DARK
+
 /** The scrim alphas for one theme. A pair, so a collapse to one branch is visible in a test. */
 data class BackdropScrim(val top: Float, val bottom: Float)
 

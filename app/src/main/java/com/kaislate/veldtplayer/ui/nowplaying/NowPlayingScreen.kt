@@ -64,12 +64,13 @@ import com.kaislate.veldtplayer.playback.NowPlayingState
 import com.kaislate.veldtplayer.playback.RepeatMode
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
 import com.kaislate.veldtplayer.ui.components.ArtImage
+import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
-import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
+import com.kaislate.veldtplayer.ui.theme.backdropText
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 import kotlinx.coroutines.delay
@@ -330,11 +331,22 @@ fun NowPlayingScreen(
     val state by vm.nowPlaying.collectAsStateWithLifecycle()
     val position by vm.positionMs.collectAsStateWithLifecycle()
     val targetSeed by vm.seed.collectAsStateWithLifecycle()
-    val targetPalette = targetSeed.colors(isLight = LocalIsLightTheme.current)
+    val isLight = LocalIsLightTheme.current
+    val targetPalette = targetSeed.colors(isLight = isLight)
     val reduced = rememberReducedMotion()
 
     // Colours DRIFT to the new track instead of cutting (spec §6).
     val palette = rememberAnimatedPalette(targetPalette)
+
+    // Solved against the ANIMATED palette.bg, not targetPalette.bg: the backdrop drifts to the
+    // new track's colours over ~600ms (see rememberAnimatedPalette above), and solving against
+    // the target would snap the text to its destination colour while the ground it sits on is
+    // still mid-drift. This is pure arithmetic re-run every frame the animation touches, so the
+    // text drifts along with the ground for free. scrimAtText(isLight), not
+    // backdropScrim(isLight).top: the latter is the gradient's value at y=0 where no glyph
+    // renders, and it is PER THEME because light's and dark's gradients are different shapes —
+    // see scrimAtText's KDoc for the device-measured fix-round that made it so.
+    val text = targetSeed.backdropText(palette.bg, scrimAtText(isLight), isLight)
 
     // Accumulated, and acted on at RELEASE. Reacting to a single drag delta would fire
     // onCollapse once per pointer event past the threshold, popping several entries off the
@@ -493,7 +505,7 @@ fun NowPlayingScreen(
                     Text(
                         text = state.title,
                         style = MaterialTheme.typography.headlineSmall,
-                        color = palette.onBg,
+                        color = text.primary,
                         textAlign = TextAlign.Center,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -503,7 +515,7 @@ fun NowPlayingScreen(
                         // there is no second blank-tag rule anywhere in the UI.
                         text = "${state.artist} · ${state.album}",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = palette.onBg.copy(alpha = SUBTITLE_ALPHA),
+                        color = text.secondary,
                         textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -514,6 +526,7 @@ fun NowPlayingScreen(
                     positionMs = position,
                     durationMs = state.durationMs,
                     palette = palette,
+                    secondaryText = text.secondary,
                     reducedMotion = reduced,
                     // The bar stays through the fade — it is part of the record — but it must
                     // not still be a SEEK target when it is the only live control left on a

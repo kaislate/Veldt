@@ -40,6 +40,7 @@ object PaletteSlots {
 fun rememberAnimatedPalette(target: DominantColors): DominantColors {
     val bg by animateColorAsState(target.bg, Motion.palette, label = "paletteBg")
     val onBg by animateColorAsState(target.onBg, Motion.palette, label = "paletteOnBg")
+    val onBgSecondary by animateColorAsState(target.onBgSecondary, Motion.palette, label = "paletteOnBgSecondary")
     val accent by animateColorAsState(target.accent, Motion.palette, label = "paletteAccent")
 
     // Fixed slot count keeps the composition structure stable across track changes.
@@ -54,5 +55,5 @@ fun rememberAnimatedPalette(target: DominantColors): DominantColors {
     val count = target.waveColors.size.coerceIn(0, PaletteSlots.SLOT_COUNT)
     val waves = listOf(w0, w1, w2, w3, w4).take(count)
 
-    return DominantColors(bg = bg, onBg = onBg, accent = accent, waveColors = waves)
+    return DominantColors(bg = bg, onBg = onBg, onBgSecondary = onBgSecondary, accent = accent, waveColors = waves)
 }

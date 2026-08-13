@@ -1,0 +1,119 @@
+// Copyright (c) 2026 kaislate
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+package com.kaislate.veldtplayer.ui.theme
+
+import androidx.compose.ui.graphics.Color
+import com.kaislate.veldtplayer.ui.components.scrimAtText
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Test
+
+/**
+ * Text over the now-playing backdrop, which is NOT `bg`: it is the blurred cover with `bg` over it
+ * at a scrim. `ArtSeed.colors` solves against `bg`, so on a chromatic cover in light theme the
+ * measured contrasts were title 3.69:1, artist 2.37:1, elapsed 2.80:1 — all short of 4.5:1.
+ *
+ * These assertions cannot prove legibility of a rendered frame; only a device measurement can, and
+ * that is Task 3. What they prove is that the SOLVE targets the real ground.
+ *
+ * This is also the corpus that established [scrimAtText]'s values: an earlier draft solved
+ * against `scrim.top` (the alpha at y=0, where the album art sits, not text) and found that no
+ * foreground tone can clear 7:1/4.5:1 against the ground that produces at that alpha — a real
+ * ceiling (`Contrast.ratioOfTones`), not an implementation bug. A single shared `scrimAlpha` of
+ * `0.75` (found by sweeping this corpus jointly across both themes) fixed light theme but, per a
+ * device measurement in Task 3's fix round, was optimistic for dark — see [scrimAtText]'s KDoc for
+ * the full arithmetic. Re-sweeping THIS SAME CORPUS separately per theme is what produced the
+ * per-theme values: light's own crossing is `alpha=0.599` (black-cover primary, 7:1); dark's own
+ * ACHIEVABLE crossing is also `alpha=0.599` (white-cover secondary, 4.5:1) — the same number to
+ * three decimals, by coincidence, from two unrelated constraints. [scrimAtText] uses `0.62` for
+ * both, a ~0.02 margin above each theme's own crossing.
+ *
+ * **Two entries are a documented, provable exception, not a relaxed threshold**: `white cover` in
+ * dark theme cannot reach the PRIMARY 7:1 target at any alpha below ≈0.73 — per-entry sweeping
+ * (see the fix-round report) shows it is the only *chromatic* entry with this property; every
+ * other chromatic entry, including the actual crimson test cover (`saturated red`), clears 7:1
+ * across the whole alpha range down to dark's own gradient floor (0.35). Forcing `scrimAtText`'s
+ * dark value up to 0.73 to satisfy this one synthetic, maximally-extreme entry's ASPIRATIONAL
+ * target would reproduce the exact device defect this fix round closes — see [scrimAtText]'s
+ * KDoc. `greyscale cover, white mean` in dark theme hits the identical ceiling for the identical
+ * reason: the PRIMARY tone solve depends only on the composited ground's luminance, not on the
+ * seed's hue or chroma, and a near-white ground is a near-white ground whether it got there via a
+ * saturated cover with a white mean or a genuinely achromatic one (finding 14's B&W case).
+ * [primaryFloor] encodes both exceptions narrowly: each entry is held to 4.5:1 (the bar that is
+ * actually required — see Step 3's device acceptance criteria, which gate every element, title
+ * included, at 4.5:1, not 7:1), so a regression that drops either BELOW even that is still caught.
+ */
+class BackdropTextTest {
+
+    private fun seed(hue: Double, chroma: Double, art: Color?) =
+        ArtSeed(Chromaticity(hue, chroma), emptyList(), art)
+
+    private fun ratio(a: Color, b: Color) = ColorExtractor.contrastRatio(a, b)
+
+    /**
+     * The PRIMARY target for one (entry, theme) pair — 7:1 everywhere except the two documented
+     * ceilings. See the class KDoc for why `white cover`/dark and `greyscale cover, white
+     * mean`/dark are singled out.
+     */
+    private fun primaryFloor(name: String, isLight: Boolean): Double =
+        if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
+
+    private val corpus = listOf(
+        "black cover" to seed(25.0, 84.0, Color(0xFF000000)),
+        "white cover" to seed(25.0, 84.0, Color(0xFFFFFFFF)),
+        "saturated red" to seed(25.0, 84.0, Color(0xFFD32F2F)),
+        // Achromatic seed (chroma 0) carrying a non-null mean — the shape ColorExtractor.seedOf
+        // now actually returns for a black-and-white cover (finding 14): every swatch was too
+        // close to grey to seed a hue, but the mean is still recorded so the backdrop's ground
+        // still composites correctly. The old "near-grey" entry here — a chroma-2 seed paired
+        // with a non-null mean — modeled a state the real extractor can never produce (a
+        // desaturated-but-not-zero primary always pairs with a mean; only the zero-chroma,
+        // ranked-empty branch is where the null-mean bug lived), so it proved nothing about the
+        // real path. Two entries, not one: a black mean and a white mean bind the composited
+        // ground from opposite directions (mixing toward black vs. toward white), and the
+        // device measurement that opened this finding found both directions broken.
+        "greyscale cover, black mean" to seed(0.0, 0.0, Color(0xFF000000)),
+        "greyscale cover, white mean" to seed(0.0, 0.0, Color(0xFFFFFFFF)),
+        "no artwork" to seed(250.0, 40.0, null),
+    )
+
+    private fun groundOf(s: ArtSeed, bg: Color, alpha: Float): Color {
+        val a = s.artMean ?: return bg
+        fun mix(x: Float, y: Float) = x + (y - x) * alpha
+        return Color(mix(a.red, bg.red), mix(a.green, bg.green), mix(a.blue, bg.blue))
+    }
+
+    @Test fun `both tones clear their ratios against the COMPOSITED ground, in both themes`() {
+        val failures = corpus.flatMap { (name, s) ->
+            listOf(true, false).flatMap { light ->
+                val alpha = scrimAtText(light)
+                val bg = s.colors(light).bg
+                val ground = groundOf(s, bg, alpha)
+                val t = s.backdropText(bg, alpha, light)
+                listOfNotNull(
+                    ratio(t.primary, ground).let {
+                        if (it >= primaryFloor(name, light)) null else "$name/${light}/primary=%.2f".format(it)
+                    },
+                    ratio(t.secondary, ground).let { if (it >= 4.5) null else "$name/${light}/secondary=%.2f".format(it) },
+                )
+            }
+        }
+        assertEquals("tones failed against the composited ground: $failures", emptyList<String>(), failures)
+    }
+
+    @Test fun `hierarchy survives — the two tones stay distinct`() {
+        val s = seed(25.0, 84.0, Color(0xFFD32F2F))
+        val t = s.backdropText(s.colors(true).bg, scrimAtText(true), isLight = true)
+        assertNotEquals("a collapse to one tone erases the title/artist distinction", t.primary, t.secondary)
+    }
+
+    @Test fun `no artwork is identical to solving against bg — the common path cannot regress`() {
+        val s = seed(250.0, 40.0, null)
+        val bg = s.colors(true).bg
+        val t = s.backdropText(bg, scrimAtText(true), isLight = true)
+        val c = s.colors(true)
+        // artMean == null means ground == bg, so the tones must match colors()' own solves.
+        assertEquals(listOf(c.onBg, c.onBgSecondary), listOf(t.primary, t.secondary))
+    }
+}

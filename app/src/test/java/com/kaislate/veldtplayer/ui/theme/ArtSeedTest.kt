@@ -47,6 +47,27 @@ class ArtSeedTest {
         assertEquals("onBg failed AA in: $failures", emptyList<String>(), failures)
     }
 
+    @Test fun `the secondary tone clears AA against the background in BOTH themes`() {
+        val failures = corpus.flatMap { (name, s) ->
+            listOf(true, false).mapNotNull { light ->
+                val c = s.colors(isLight = light)
+                val r = ratio(c.onBgSecondary, c.bg)
+                if (r >= AA_TEXT) null else "$name ${if (light) "light" else "dark"} = %.2f".format(r)
+            }
+        }
+        assertEquals("onBgSecondary failed AA in: $failures", emptyList<String>(), failures)
+    }
+
+    @Test fun `primary and secondary are distinct, so hierarchy survives without dimming`() {
+        val c = seed(250.0, 40.0).colors(isLight = true)
+        // The pair: a collapse to one tone makes the failure message name it.
+        assertNotEquals(
+            "primary and secondary must differ, or the artist line reads as the title",
+            c.onBg, c.onBgSecondary,
+        )
+        assertTrue("primary must be the stronger of the two", ratio(c.onBg, c.bg) > ratio(c.onBgSecondary, c.bg))
+    }
+
     @Test fun `accent clears AA-large against the background in BOTH themes`() {
         val failures = corpus.flatMap { (name, s) ->
             listOf(true, false).mapNotNull { light ->

@@ -43,7 +43,6 @@ import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.theme.DISABLED_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
-import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 
 private val ROW_ART = 40.dp
 private val ROW_ART_CORNER = 6.dp
@@ -114,7 +113,7 @@ fun QueueSheet(
             Text(
                 text = "Playback stopped — start a track from your library to resume.",
                 style = MaterialTheme.typography.bodySmall,
-                color = palette.onBg.copy(alpha = SUBTITLE_ALPHA),
+                color = palette.onBgSecondary,
                 modifier = Modifier.padding(
                     start = SHEET_INSET + ROW_INSET,
                     end = SHEET_INSET + ROW_INSET,
@@ -209,7 +208,7 @@ private fun QueueRow(
                 // "<unknown>" for a missing tag and no isBlank() check in the app catches it.
                 text = song.displayArtist(),
                 style = MaterialTheme.typography.bodySmall,
-                color = palette.onBg.copy(alpha = SUBTITLE_ALPHA),
+                color = palette.onBgSecondary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )

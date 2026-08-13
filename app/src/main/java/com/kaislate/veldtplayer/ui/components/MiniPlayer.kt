@@ -39,7 +39,6 @@ import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
 import com.kaislate.veldtplayer.ui.theme.DominantColors
-import com.kaislate.veldtplayer.ui.theme.SUBTITLE_ALPHA
 import com.kaislate.veldtplayer.ui.theme.onBgFor
 
 /** Thickness of the progress hairline that doubles as the chrome's top edge. */
@@ -173,7 +172,7 @@ fun MiniPlayer(
                 Text(
                     state.artist,
                     style = MaterialTheme.typography.bodySmall,
-                    color = palette.onBg.copy(alpha = SUBTITLE_ALPHA),
+                    color = palette.onBgSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
