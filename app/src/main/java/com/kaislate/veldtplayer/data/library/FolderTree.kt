@@ -33,9 +33,10 @@ data class FolderNode(
  * The library as it is on disk, derived from the song list and nothing else.
  *
  * **No filesystem access** (global constraint 5) — that is not a simplification but the only
- * design available under scoped storage, where `File.listFiles()` on `/storage/emulated/0` returns
- * null for a non-legacy app. A tree fed by a different enumeration would also disagree with the
- * Songs tab, and two disagreeing views of one library is worse than a missing view.
+ * design available under scoped storage, where enumerating the directory tree directly under
+ * `/storage/emulated/0` returns null for a non-legacy app. A tree fed by a different enumeration
+ * would also disagree with the Songs tab, and two disagreeing views of one library is worse than a
+ * missing view.
  *
  * **The tree has one root per volume**, structurally. `LocalSource` queries `VOLUME_EXTERNAL`,
  * which spans primary storage and removable SD on API 29+, so this is not an edge case.

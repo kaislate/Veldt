@@ -32,6 +32,21 @@ class FolderTreeTest {
         durationMs = durationMs, dateModifiedSec = 0L, hasEmbeddedArt = false,
     )
 
+    /**
+     * WHICH songs are in this folder, by file name — never how many (global constraint 10).
+     *
+     * A size assertion cannot tell "one song, the right one" from "one song, the wrong one", and
+     * for the two multi-volume tests below that is the entire property under test: a `location()`
+     * regression that attributed every track to the wrong volume would leave both folder sizes at
+     * 1 and sail past a count. Null-safe on the receiver so a missing folder reads as `null` in
+     * the failure message rather than throwing before it can be printed.
+     */
+    private fun List<Song>?.fileNames(): List<String>? = this?.map {
+        it.relativeKey?.substringAfterLast('/')
+            ?: it.filePath?.substringAfterLast('/')
+            ?: "<no location>"
+    }
+
     @Test fun `a song lands in the folder its path names`() {
         val roots = FolderTree.build(listOf(song("external_primary:Music/Beck/a.mp3")))
         val beck = FolderTree.find(roots, "external_primary:Music/Beck")
@@ -46,10 +61,12 @@ class FolderTreeTest {
         )
         val primary = FolderTree.find(roots, "external_primary:Music/Beck")
         val card = FolderTree.find(roots, "1234-5678:Music/Beck")
+        // Asserted as WHICH file is on which volume, not how many are on each: the counts stay
+        // [1, 1] under a volume-attribution regression, so only the names can catch one.
         assertEquals(
-            "two volumes' Music/Beck merged into one folder",
-            listOf(1, 1),
-            listOf(primary?.songs?.size, card?.songs?.size),
+            "two volumes' Music/Beck merged into one folder, or swapped volumes",
+            listOf(listOf("a.mp3"), listOf("b.mp3")),
+            listOf(primary?.songs.fileNames(), card?.songs.fileNames()),
         )
     }
 
@@ -58,11 +75,11 @@ class FolderTreeTest {
             listOf(song("external_primary:Music/beck/a.mp3"), song("external_primary:Music/Beck/b.mp3"))
         )
         assertEquals(
-            "'beck' and 'Beck' merged — folder identity must stay byte-exact",
-            listOf(1, 1),
+            "'beck' and 'Beck' merged or swapped — folder identity must stay byte-exact",
+            listOf(listOf("a.mp3"), listOf("b.mp3")),
             listOf(
-                FolderTree.find(roots, "external_primary:Music/beck")?.songs?.size,
-                FolderTree.find(roots, "external_primary:Music/Beck")?.songs?.size,
+                FolderTree.find(roots, "external_primary:Music/beck")?.songs.fileNames(),
+                FolderTree.find(roots, "external_primary:Music/Beck")?.songs.fileNames(),
             ),
         )
     }
