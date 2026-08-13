@@ -230,7 +230,7 @@ class LocalSource @Inject constructor(
                 " OR ${MediaStore.Audio.Media.IS_AUDIOBOOK} != 0)"
 
         /** Separates the volume from the volume-relative path. See [composeRelativeKey]. */
-        private const val VOLUME_SEPARATOR = ":"
+        internal const val VOLUME_SEPARATOR = ":"
 
         /**
          * Rung namespaces for [stableKey]. They exist because the three rungs share one flat key
