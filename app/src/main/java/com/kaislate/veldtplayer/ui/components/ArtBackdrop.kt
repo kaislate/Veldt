@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.data.art.SongArt
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.DominantColors
+import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 
 /** Blur radius for the tiers that have `RenderEffect`. Wide enough to erase all detail. */
 private val BLUR_RADIUS = 48.dp
@@ -87,9 +88,44 @@ private const val SHADER_ALPHA = 0.45f
 /**
  * The scrim every tier shares, top and bottom of a vertical gradient over `palette.bg`.
  * Weighted to the bottom because that is where the transport and the track title sit.
+ *
+ * **These are the DARK values and they are unchanged** — the app's signature look is dark, and a
+ * blurred cover is dark enough that light text clears its ratio at 0.35/0.80.
  */
-private const val SCRIM_TOP = 0.35f
-private const val SCRIM_BOTTOM = 0.80f
+private const val SCRIM_TOP_DARK = 0.35f
+private const val SCRIM_BOTTOM_DARK = 0.80f
+
+/**
+ * The LIGHT scrim, and it has to be much heavier. Measured on a device before and after.
+ *
+ * `ArtSeed.colors(isLight = true)` solves `onBg` for 4.5:1 against `bg`, which is tone 98 —
+ * luminance ≈ 0.93. But this file does not draw `bg`; it draws the blurred cover with `bg` over
+ * it at these alphas. With the dark values, a saturated cover left the composited backdrop at
+ * luminance **0.49** where the title sits, and the measured contrasts were title 3.07:1,
+ * artist 2.12:1, elapsed label 2.46:1 — all short of 4.5:1, two of them short of 3:1.
+ *
+ * Dark mode never showed it (a blurred cover is dark, so light text reads regardless) and no test
+ * could: every audio file on the test devices was cover-less, so the artwork branch never ran.
+ *
+ * The top stays comparatively open so the cover is still visibly the subject of the screen; the
+ * bottom carries nearly all of the correction, because that is where every glyph is.
+ */
+private const val SCRIM_TOP_LIGHT = 0.55f
+private const val SCRIM_BOTTOM_LIGHT = 0.95f
+
+/** The scrim alphas for one theme. A pair, so a collapse to one branch is visible in a test. */
+data class BackdropScrim(val top: Float, val bottom: Float)
+
+/**
+ * Which scrim this theme needs.
+ *
+ * A pure function rather than a `if (isLight)` at the draw site: it is a decision, decisions
+ * belong in tested functions, and a composable expression is unreachable without Compose UI test
+ * infrastructure this project does not have.
+ */
+internal fun backdropScrim(isLight: Boolean): BackdropScrim =
+    if (isLight) BackdropScrim(SCRIM_TOP_LIGHT, SCRIM_BOTTOM_LIGHT)
+    else BackdropScrim(SCRIM_TOP_DARK, SCRIM_BOTTOM_DARK)
 
 /** Where the drift is parked when the user has animations off — mid-sweep, not at an end. */
 private const val DRIFT_REST = 0.5f
@@ -194,16 +230,20 @@ fun ArtBackdrop(
             BackdropTier.Upscale -> UpscaledArt(art, palette, drift, Modifier.fillMaxSize())
         }
 
-        // Scrim last, over everything, so text stays legible on any artwork on any tier.
+        // Scrim last, over everything, and THEME-AWARE — see [backdropScrim]. The light theme
+        // needs a much heavier one: `onBg` is solved against `bg`, but what is actually behind the
+        // text is the blurred cover with `bg` over it, and on a light ground a saturated cover
+        // pulls that composite far below the luminance the solve assumed.
         // Weighted to the bottom because that is where the transport and the title sit.
+        val scrim = backdropScrim(LocalIsLightTheme.current)
         Box(
             Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         listOf(
-                            palette.bg.copy(alpha = SCRIM_TOP),
-                            palette.bg.copy(alpha = SCRIM_BOTTOM),
+                            palette.bg.copy(alpha = scrim.top),
+                            palette.bg.copy(alpha = scrim.bottom),
                         )
                     )
                 )
