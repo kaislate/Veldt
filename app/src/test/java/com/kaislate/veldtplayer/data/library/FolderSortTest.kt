@@ -75,11 +75,21 @@ class FolderSortTest {
     }
 
     @Test fun `track-number order is available and uses disc then track`() {
+        // The fixture is arranged AGAINST file-name order on purpose, and must stay that way.
+        // `a.mp3` is on the LATER disc, so the correct answer [c.mp3, a.mp3] disagrees with
+        // natural file-name order [a.mp3, c.mp3] — which is what makes this test able to fail
+        // when TRACK_NUMBER falls through to FILENAME. It also disagrees with a track-only sort
+        // (which would give [a.mp3, c.mp3], since a.mp3 is track 1), so both the disc-before-track
+        // property and the not-just-the-filename property are pinned by this one assertion.
+        // Do not "tidy" the discs and tracks back into agreement with the names: an earlier
+        // version had c.mp3 on disc 2 / track 1 and a.mp3 on disc 1 / track 2, expecting
+        // [a.mp3, c.mp3], and that expectation was ALSO plain file-name order — so the whole
+        // TRACK_NUMBER branch could be deleted and this test still passed.
         val sorted = FolderSort.tracks(
-            listOf(song("c.mp3", track = 1, disc = 2), song("a.mp3", track = 2, disc = 1)),
+            listOf(song("a.mp3", track = 1, disc = 2), song("c.mp3", track = 2, disc = 1)),
             TrackSort.TRACK_NUMBER, descending = false,
         )
-        assertEquals(listOf("a.mp3", "c.mp3"), sorted.map { it.fileNameOrEmpty() })
+        assertEquals(listOf("c.mp3", "a.mp3"), sorted.map { it.fileNameOrEmpty() })
     }
 
     @Test fun `descending reverses every sort`() {
