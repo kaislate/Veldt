@@ -113,6 +113,30 @@ private const val SCRIM_BOTTOM_DARK = 0.80f
 private const val SCRIM_TOP_LIGHT = 0.55f
 private const val SCRIM_BOTTOM_LIGHT = 0.95f
 
+/**
+ * The weakest scrim alpha any TEXT actually sits under — **not** the weakest alpha on the
+ * surface. That distinction is the whole reason this constant exists and [SCRIM_TOP_LIGHT] /
+ * [SCRIM_TOP_DARK] are not used for solving text contrast: those are the gradient's value at
+ * y=0, the very top of the frame, and no glyph renders there — the album art does. Title,
+ * artist, and the elapsed/remaining labels all sit below that (see the layout comment on
+ * [ArtBackdrop]: "weighted to the bottom because that is where the transport and the track
+ * title sit"), under a strictly stronger scrim as the gradient descends toward
+ * [SCRIM_BOTTOM_LIGHT] / [SCRIM_BOTTOM_DARK]. Solving contrast against the top-of-surface value
+ * therefore solves for a ground no glyph ever lands on, and makes the problem harder than the
+ * real render ever presents.
+ *
+ * One value, not one per theme, because `ArtSeed.backdropText` takes a single `scrimAlpha` and
+ * the two themes' pure-black/pure-white corpus extremes bind from opposite sides — the white
+ * cover in dark theme is the tighter constraint here, not the black cover in light theme that
+ * motivated the original (wrong) `0.55` floor.
+ *
+ * Chosen by sweeping `BackdropTextTest`'s full corpus (both themes, 7:1/4.5:1 targets) rather
+ * than by feel: contrast first clears everywhere at `alpha ≈ 0.73` (white-cover/dark primary
+ * crosses 7:1 there); `0.75` was picked as a round value with margin above that boundary rather
+ * than sitting on it. See `BackdropTextTest` and Task 2's report for the full sweep.
+ */
+internal const val SCRIM_AT_TEXT = 0.75f
+
 /** The scrim alphas for one theme. A pair, so a collapse to one branch is visible in a test. */
 data class BackdropScrim(val top: Float, val bottom: Float)
 

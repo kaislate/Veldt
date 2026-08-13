@@ -123,6 +123,12 @@ object ColorExtractor {
         // Every candidate was near-grey: theme grey. Do NOT amplify noise into a hue.
         if (ranked.isEmpty()) return ArtSeed.NEUTRAL
 
+        // The backdrop composites the blurred cover with `bg` per channel in sRGB (see
+        // ArtSeed.backdropText), so the mean must be taken the same way — over every swatch
+        // Palette found, unfiltered, since a near-grey region is still part of what is under
+        // the blur even though it cannot seed a hue.
+        val artMean = meanColor(palette.swatches)
+
         val primaryHct = ranked.first().second
         val primaryHue = escapeDislikedHue(primaryHct.hue, primaryHct.chroma)
         val kept = mutableListOf(primaryHue)
@@ -137,7 +143,27 @@ object ColorExtractor {
                 wave += Chromaticity(hue, hct.chroma)
             }
         }
-        return ArtSeed(Chromaticity(primaryHue, primaryHct.chroma), wave)
+        return ArtSeed(Chromaticity(primaryHue, primaryHct.chroma), wave, artMean)
+    }
+
+    /**
+     * Population-weighted mean of [swatches], per channel in sRGB. [swatches] is never empty
+     * here: this is only called once [seedOf] has confirmed `ranked` — itself filtered from
+     * the same list — is non-empty.
+     */
+    private fun meanColor(swatches: List<Palette.Swatch>): Color {
+        val totalPopulation = swatches.sumOf { it.population }.toDouble()
+        var r = 0.0
+        var g = 0.0
+        var b = 0.0
+        for (swatch in swatches) {
+            val weight = swatch.population / totalPopulation
+            val c = Color(swatch.rgb)
+            r += c.red * weight
+            g += c.green * weight
+            b += c.blue * weight
+        }
+        return Color(r.toFloat(), g.toFloat(), b.toFloat())
     }
 
     /**

@@ -6,6 +6,8 @@ package com.kaislate.veldtplayer.ui.theme
 import android.graphics.Bitmap
 import com.kaislate.veldtplayer.ui.theme.hct.Hct
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -73,5 +75,11 @@ class ColorExtractorTest {
             "the seed hue must not land in the disliked dark yellow-green band, was ${seed.primary.hue}",
             seed.primary.hue !in 90.0..111.0,
         )
+    }
+
+    @Test fun `a cover records its mean colour, and no artwork records none`() {
+        val withArt = ColorExtractor.seedOf(bitmapOf(0xFFD32F2F.toInt()))
+        assertNotNull("a real cover must record a mean for the backdrop solve", withArt.artMean)
+        assertNull("no artwork must record no mean, so the ground stays bg", ColorExtractor.seedOf(null).artMean)
     }
 }

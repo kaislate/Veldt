@@ -4,7 +4,9 @@
 package com.kaislate.veldtplayer.ui.theme
 
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import com.kaislate.veldtplayer.ui.theme.hct.Contrast
+import com.kaislate.veldtplayer.ui.theme.hct.Hct
 import com.kaislate.veldtplayer.ui.theme.hct.TonalPalette
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -16,6 +18,8 @@ data class ArtSeed(
     val primary: Chromaticity,
     /** Secondary hues for the wave. Never contains [primary]. */
     val wave: List<Chromaticity> = emptyList(),
+    /** Population-weighted mean of the artwork's swatches; null when there is no artwork. */
+    val artMean: Color? = null,
 ) {
     /** Derived, not stored, so it cannot disagree with [Chromaticity.chroma]. */
     val isMonochrome: Boolean get() = primary.chroma == 0.0
@@ -50,7 +54,7 @@ data class ArtSeed(
     }
 
     companion object {
-        private const val SURFACE_CHROMA = 8.0
+        internal const val SURFACE_CHROMA = 8.0
         private const val ACCENT_CHROMA = 32.0
         private const val BG_TONE_DARK = 10.0
         private const val BG_TONE_LIGHT = 98.0
@@ -91,10 +95,39 @@ data class ArtSeed(
          * (0.4 tone) is a buffer for gamut mapping, not for a lost fraction of a tone from
          * plain truncation, which can exceed it.
          */
-        private fun solve(bgTone: Double, ratio: Double, isLight: Boolean): Double {
+        internal fun solve(bgTone: Double, ratio: Double, isLight: Boolean): Double {
             val solved = if (isLight) Contrast.darker(bgTone, ratio) else Contrast.lighter(bgTone, ratio)
             if (solved < 0) return if (isLight) 0.0 else 100.0
             return if (isLight) floor(solved) else ceil(solved)
         }
     }
+}
+
+/** Primary and secondary text for a surface whose ground is the artwork under [bg]. */
+data class BackdropText(val primary: Color, val secondary: Color)
+
+/**
+ * Text tones solved against the ground this text ACTUALLY lands on.
+ *
+ * [ArtSeed.colors] solves against `bg`, which is right for every surface that draws `bg`. The
+ * now-playing backdrop does not: it draws the blurred cover with `bg` over it at [scrimAlpha].
+ * Solving against `bg` there produced measured contrasts of 3.69 / 2.37 / 2.80:1 in light theme
+ * on a crimson cover.
+ *
+ * [scrimAlpha] is the scrim's WEAKEST value, so the result is a floor rather than an estimate —
+ * every glyph sits under at least that much scrim (spec §4.4).
+ */
+fun ArtSeed.backdropText(bg: Color, scrimAlpha: Float, isLight: Boolean): BackdropText {
+    val ground = artMean?.let { a ->
+        fun mix(x: Float, y: Float) = x + (y - x) * scrimAlpha
+        Color(mix(a.red, bg.red), mix(a.green, bg.green), mix(a.blue, bg.blue))
+    } ?: bg
+    // A tone IS luminance (L*), and contrast depends only on luminance — so converting the
+    // composited colour to a tone lets the vendored solver work against an arbitrary ground.
+    val groundTone = Hct.fromInt(ground.toArgb()).tone
+    val surface = TonalPalette.fromHueAndChroma(primary.hue, minOf(primary.chroma, ArtSeed.SURFACE_CHROMA))
+    return BackdropText(
+        primary = Color(surface.tone(ArtSeed.solve(groundTone, Contrast.RATIO_70, isLight).toInt())),
+        secondary = Color(surface.tone(ArtSeed.solve(groundTone, Contrast.RATIO_45, isLight).toInt())),
+    )
 }
