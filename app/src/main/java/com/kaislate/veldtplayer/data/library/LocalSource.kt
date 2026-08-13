@@ -17,8 +17,10 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * The P1 [LibrarySource]: enumerates on-device audio via `MediaStore.Audio.Media`
- * (music only). Emits **MediaStore-derived** [Song]s — no tag parsing here; the
+ * The P1 [LibrarySource]: enumerates on-device audio via `MediaStore.Audio.Media` —
+ * music, podcasts and audiobooks, per [LIBRARY_SELECTION], and deliberately NOT the
+ * ringtones, alarms and notification sounds that share that collection.
+ * Emits **MediaStore-derived** [Song]s — no tag parsing here; the
  * scanner (Task 6) augments each row via [com.kaislate.veldtplayer.data.library.tag.EAlvaTagReader]
  * using the surfaced [Song.filePath].
  *
@@ -120,7 +122,7 @@ class LocalSource @Inject constructor(
             context.contentResolver.query(
                 base,
                 cols,
-                "${MediaStore.Audio.Media.IS_MUSIC} != 0",
+                LIBRARY_SELECTION,
                 null,
                 "${MediaStore.Audio.Media.TITLE} COLLATE NOCASE ASC",
             )?.use { c ->
@@ -200,6 +202,33 @@ class LocalSource @Inject constructor(
     }
 
     companion object {
+        /**
+         * The audio Veldt treats as library content: music, podcasts and audiobooks.
+         *
+         * **An allowlist, deliberately, rather than a relaxation of `IS_MUSIC != 0`** — and that
+         * distinction is the entire hazard here. MediaStore's audio collection is not "music plus
+         * spoken word"; it also holds ringtones, alarms and notification sounds. Widening the filter
+         * by simply dropping the music clause sweeps every one of those into Songs, Artists and
+         * Albums. This is observed, not hypothetical: both test devices carry exactly one non-music
+         * audio row and on both it is a notification sound (`is_music=0`, `is_notification=1`).
+         *
+         * Parenthesised so that appending an `AND` clause later cannot silently rebind against the
+         * ORs and re-admit everything.
+         *
+         * No version guard needed at `minSdk = 29`: `IS_PODCAST` has existed since API 1 and
+         * `IS_AUDIOBOOK` arrived in API 29. Both were confirmed queryable on both test devices —
+         * `IS_AUDIOBOOK` returned a value rather than erroring.
+         *
+         * Media TYPE is not modelled anywhere downstream. An audiobook becomes one "album" per book
+         * with the narrator as artist, which is the grouping MediaStore's own tags imply. Whether
+         * spoken word deserves its own dimension is a real question, but it cannot be answered
+         * without content to answer it against — see ROADMAP-NOTES.
+         */
+        val LIBRARY_SELECTION: String =
+            "(${MediaStore.Audio.Media.IS_MUSIC} != 0" +
+                " OR ${MediaStore.Audio.Media.IS_PODCAST} != 0" +
+                " OR ${MediaStore.Audio.Media.IS_AUDIOBOOK} != 0)"
+
         /** Separates the volume from the volume-relative path. See [composeRelativeKey]. */
         private const val VOLUME_SEPARATOR = ":"
 
