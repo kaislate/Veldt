@@ -52,6 +52,8 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.ui.components.drawWave
 import com.kaislate.veldtplayer.ui.motion.Motion
+import com.kaislate.veldtplayer.ui.theme.BackdropMarks
+import com.kaislate.veldtplayer.ui.theme.BackdropText
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.VeldtText
@@ -85,19 +87,25 @@ import kotlinx.coroutines.withTimeoutOrNull
  * `dragFraction` sentinel, untouched. Removing an element instead would re-create every element
  * after it and could strand a drag mid-gesture.
  *
- * [secondaryText] is the elapsed/remaining readout colour, solved by the CALLER against the
- * ground the text actually sits on (`ArtSeed.backdropText`, solved against the backdrop's
- * composited colour under its scrim) rather than computed here. This bar has no idea it is
- * drawn over a scrimmed backdrop rather than a flat surface — that is the caller's knowledge,
- * not this one's — so the scrim-aware colour arrives as a plain parameter instead of being
- * derived from [palette] internally.
+ * [text] and [marks] are every colour this bar draws EXCEPT the multi-hue wave tints, solved by
+ * the CALLER against the ground each element actually sits on (`ArtSeed.backdropText` and
+ * `ArtSeed.backdropMarks`, both against the backdrop's composited colour under its scrim) rather
+ * than computed here. This bar has no idea it is drawn over a scrimmed backdrop rather than a
+ * flat surface — that is the caller's knowledge, not this one's — so the scrim-aware colours
+ * arrive as plain parameters instead of being derived from [palette] internally. [palette]
+ * remains only for [DominantColors.waveColors], which is a set of HUES rather than a solved
+ * contrast role.
+ *
+ * Nothing here dims a live mark. The track line was `onBg` at 22% alpha and measured **1.38:1**
+ * on a device; it is now [BackdropMarks.quiet], solved for 3:1 against the real ground.
  */
 @Composable
 fun WaveScrubBar(
     positionMs: Long,
     durationMs: Long,
     palette: DominantColors,
-    secondaryText: Color,
+    text: BackdropText,
+    marks: BackdropMarks,
     reducedMotion: Boolean,
     tapToSeek: Boolean,
     onSeek: (Long) -> Unit,
@@ -266,7 +274,7 @@ fun WaveScrubBar(
                     if (focused) {
                         Modifier.border(
                             width = FOCUS_RING_DP.dp,
-                            color = palette.accent.copy(alpha = FOCUS_RING_ALPHA),
+                            color = marks.accent.copy(alpha = FOCUS_RING_ALPHA),
                             shape = RoundedCornerShape(FOCUS_RING_RADIUS_DP.dp),
                         )
                     } else {
@@ -345,7 +353,7 @@ fun WaveScrubBar(
 
             // Unplayed remainder: a quiet track line the wave grows along.
             drawLine(
-                color = palette.onBg.copy(alpha = TRACK_ALPHA),
+                color = marks.quiet,
                 start = Offset(playheadX, baseY),
                 end = Offset(size.width, baseY),
                 strokeWidth = TRACK_STROKE_DP.dp.toPx(),
@@ -355,7 +363,7 @@ fun WaveScrubBar(
             if (playheadX > 1f) {
                 drawWave(
                     style = WAVE_STYLE,
-                    color = palette.accent,
+                    color = marks.accent,
                     ampPx = AMPLITUDE_DP.dp.toPx(),
                     // Read here, in the draw phase, never in composition. See rememberWavePhase.
                     phase = wavePhase.value,
@@ -373,7 +381,7 @@ fun WaveScrubBar(
 
             // Playhead LAST so it always sits on top of the wave.
             drawCircle(
-                color = palette.onBg,
+                color = text.primary,
                 radius = (if (reducedMotion) targetThumbRadiusDp else thumbRadiusDp.value)
                     .dp.toPx(),
                 center = Offset(playheadX, baseY),
@@ -393,12 +401,12 @@ fun WaveScrubBar(
             Text(
                 formatTime(readoutMs),
                 style = VeldtText.numeric,
-                color = secondaryText,
+                color = text.secondary,
             )
             Text(
                 formatTime(durationMs),
                 style = VeldtText.numeric,
-                color = secondaryText,
+                color = text.secondary,
             )
         }
     }
@@ -481,7 +489,6 @@ private const val BASELINE_FROM_BOTTOM_DP = 26
 private const val AMPLITUDE_DP = 22
 private const val TAPER_END_DP = 16
 private const val TRACK_STROKE_DP = 2
-private const val TRACK_ALPHA = 0.22f
 private const val THUMB_RADIUS_DP = 5f
 private const val THUMB_RADIUS_DRAGGING_DP = 8f
 private const val READOUT_INSET_DP = 4

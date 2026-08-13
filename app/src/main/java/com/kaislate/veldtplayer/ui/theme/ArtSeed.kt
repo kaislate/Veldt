@@ -80,7 +80,7 @@ data class ArtSeed(
          * that case, and every browse surface renders it — a hue invented here is not a
          * subtle bug, it is the whole app's neutral accent turning some arbitrary colour.
          */
-        private fun accentChroma(c: Chromaticity): Double =
+        internal fun accentChroma(c: Chromaticity): Double =
             if (c.chroma == 0.0) 0.0 else maxOf(c.chroma, ACCENT_CHROMA)
 
         /**
@@ -118,16 +118,66 @@ data class BackdropText(val primary: Color, val secondary: Color)
  * every glyph sits under at least that much scrim (spec §4.4).
  */
 fun ArtSeed.backdropText(bg: Color, scrimAlpha: Float, isLight: Boolean): BackdropText {
-    val ground = artMean?.let { a ->
-        fun mix(x: Float, y: Float) = x + (y - x) * scrimAlpha
-        Color(mix(a.red, bg.red), mix(a.green, bg.green), mix(a.blue, bg.blue))
-    } ?: bg
-    // A tone IS luminance (L*), and contrast depends only on luminance — so converting the
-    // composited colour to a tone lets the vendored solver work against an arbitrary ground.
-    val groundTone = Hct.fromInt(ground.toArgb()).tone
-    val surface = TonalPalette.fromHueAndChroma(primary.hue, minOf(primary.chroma, ArtSeed.SURFACE_CHROMA))
+    val groundTone = compositedGroundTone(bg, scrimAlpha)
+    val surface = surfacePalette()
     return BackdropText(
         primary = Color(surface.tone(ArtSeed.solve(groundTone, Contrast.RATIO_70, isLight).toInt())),
         secondary = Color(surface.tone(ArtSeed.solve(groundTone, Contrast.RATIO_45, isLight).toInt())),
     )
+}
+
+/**
+ * Non-text marks for the same surface [backdropText] serves.
+ *
+ * Text was only half of the defect. The wave, the scrub track and the shuffle/repeat toggles are
+ * all drawn on the composited backdrop too, and all of them derived from a colour solved against
+ * `bg` — `palette.accent` (3:1 vs `bg`) for the "on" state and the wave, `palette.onBg` at a
+ * fractional alpha for the "off" state and the track. Device-measured on the crimson probe AFTER
+ * the text fix landed: track 1.38:1 light / 1.50:1 dark, toggle-off 2.19 / 2.54, toggle-on 2.66 /
+ * 2.47, wave 1.60 in light. WCAG 1.4.11 wants 3:1 for exactly these — the marks are the only way
+ * to perceive a control's state.
+ *
+ * **The two roles carry DIFFERENT ratios for the same reason the two text tones do.** A toggle's
+ * on/off distinction has to survive being the only difference between two states of one glyph. If
+ * both roles solved to 3:1 they would differ in chroma alone, which is WCAG 1.4.1 (use of colour)
+ * and invisible to anyone who cannot separate those hues. [accent] at 4.5:1 against [quiet] at
+ * 3:1 keeps a luminance gap AND the hue gap, so the state reads two independent ways — and, as in
+ * [backdropText], the hierarchy is a property of the arithmetic rather than of an alpha that dims
+ * one side below legibility.
+ */
+data class BackdropMarks(
+    /** "On" toggles and the wave: emphasised, and the one role that keeps the cover's own chroma. */
+    val accent: Color,
+    /** The scrub track and "off" toggles — quiet, but operable, so NOT alpha-dimmed and NOT exempt. */
+    val quiet: Color,
+)
+
+fun ArtSeed.backdropMarks(bg: Color, scrimAlpha: Float, isLight: Boolean): BackdropMarks {
+    val groundTone = compositedGroundTone(bg, scrimAlpha)
+    val accentP = TonalPalette.fromHueAndChroma(primary.hue, ArtSeed.accentChroma(primary))
+    return BackdropMarks(
+        accent = Color(accentP.tone(ArtSeed.solve(groundTone, Contrast.RATIO_45, isLight).toInt())),
+        quiet = Color(surfacePalette().tone(ArtSeed.solve(groundTone, Contrast.RATIO_30, isLight).toInt())),
+    )
+}
+
+/** The palette `bg` itself comes from, so anything solved from it keeps the cover's tint. */
+private fun ArtSeed.surfacePalette(): TonalPalette =
+    TonalPalette.fromHueAndChroma(primary.hue, minOf(primary.chroma, ArtSeed.SURFACE_CHROMA))
+
+/**
+ * The tone of the ground this surface ACTUALLY draws: the artwork lerped under [bg] at
+ * [scrimAlpha], per-channel in sRGB because that is what the renderer does.
+ *
+ * A tone IS luminance (L*), and contrast depends only on luminance — so converting the composited
+ * colour to a tone is what lets the vendored solver work against an arbitrary ground rather than
+ * only against tones of our own palette. Shared by [backdropText] and [backdropMarks] so the two
+ * cannot come to disagree about where the ground is.
+ */
+private fun ArtSeed.compositedGroundTone(bg: Color, scrimAlpha: Float): Double {
+    val ground = artMean?.let { a ->
+        fun mix(x: Float, y: Float) = x + (y - x) * scrimAlpha
+        Color(mix(a.red, bg.red), mix(a.green, bg.green), mix(a.blue, bg.blue))
+    } ?: bg
+    return Hct.fromInt(ground.toArgb()).tone
 }
