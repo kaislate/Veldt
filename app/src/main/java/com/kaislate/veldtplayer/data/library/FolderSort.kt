@@ -17,11 +17,31 @@ enum class TrackSort { FILENAME, TRACK_NUMBER, TITLE, DATE_MODIFIED }
  * scrambles an untagged album while the filenames sitting right there read `01 …`, `02 …`. Owner
  * decision, 2026-08-14.
  *
- * **[NATURAL] is numeric-aware and TOTAL.** `String.CASE_INSENSITIVE_ORDER` puts `Disc 10` before
- * `Disc 2` — wrong on exactly the names this feature exists to display. Case is folded for the
- * primary comparison and then fallen back on byte-exact, so two names differing only in case land
- * adjacent and stay DISTINCT. Folding case into identity is forbidden (global constraint 7); this
- * folds it for ORDER only, which is the whole difference.
+ * **[NATURAL] is numeric-aware, and it is a valid total order** in the sense `sortedWith` requires:
+ * antisymmetric, transitive, and returning 0 only for equal strings.
+ * `String.CASE_INSENSITIVE_ORDER` puts `Disc 10` before `Disc 2` — wrong on exactly the names this
+ * feature exists to display. Case is folded for the primary comparison and then fallen back on
+ * byte-exact, so two names differing only in case land adjacent and stay DISTINCT. Folding case
+ * into identity is forbidden (global constraint 7); this folds it for ORDER only, which is the
+ * whole difference.
+ *
+ * **The numeric branch is deliberately ASCII-only, and that is a correctness requirement rather
+ * than a simplification.** `Char.isDigit()` is true for every Unicode Nd digit, but a digit run is
+ * compared by UTF-16 code unit with only ASCII `'0'` stripped as padding. A non-ASCII digit would
+ * therefore compare as a NUMBER against another digit run and as an ordinary high code unit
+ * against a letter — two incompatible roles, which is intransitive. That is not cosmetic:
+ * `Arrays.sort` switches from binary insertion sort to TimSort at 32 elements and throws
+ * `IllegalArgumentException: Comparison method violates its general contract!` once it detects a
+ * cycle, and below 32 elements it silently produces an arbitrary order that changes with input
+ * order. The executed cycle, using U+0665 ARABIC-INDIC DIGIT FIVE:
+ *
+ * - `U+0665` < `"10"` — digit branch, run length 1 < 2
+ * - `"10"` < `"a"` — character branch, `'1'` 0x31 < `'a'` 0x61
+ * - `"a"` < `U+0665` — character branch, `'a'` 0x61 < 0x0665
+ *
+ * [folders] sorts user directory names and [tracks] sorts user file names, so this is reachable
+ * from ordinary library data in an Arabic, Persian or Hindi library. **Do not widen this branch
+ * back to `isDigit()`** — `FolderSortTest` pins the cycle above.
  */
 object FolderSort {
 
@@ -30,18 +50,25 @@ object FolderSort {
         if (c != 0) c else a.compareTo(b)   // byte-exact tiebreak keeps the comparator total
     }
 
-    /** Digit runs compare as numbers, everything else char-by-char, case-insensitively. */
+    /**
+     * ASCII digit runs compare as numbers, everything else char-by-char, case-insensitively.
+     *
+     * **ASCII, not [Char.isDigit] — see the KDoc on [FolderSort].** Widening this to every Unicode
+     * Nd digit makes the comparator intransitive and can make TimSort throw.
+     */
+    private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
+
     private fun compareNatural(a: String, b: String): Int {
         var i = 0
         var j = 0
         while (i < a.length && j < b.length) {
             val ca = a[i]
             val cb = b[j]
-            if (ca.isDigit() && cb.isDigit()) {
+            if (ca.isAsciiDigit() && cb.isAsciiDigit()) {
                 var ia = i
-                while (ia < a.length && a[ia].isDigit()) ia++
+                while (ia < a.length && a[ia].isAsciiDigit()) ia++
                 var jb = j
-                while (jb < b.length && b[jb].isDigit()) jb++
+                while (jb < b.length && b[jb].isAsciiDigit()) jb++
                 // Compared as text with leading zeros stripped, so arbitrarily long runs cannot
                 // overflow a Long the way parsing them would.
                 val na = a.substring(i, ia).trimStart('0')

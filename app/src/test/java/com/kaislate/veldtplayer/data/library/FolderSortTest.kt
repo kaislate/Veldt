@@ -5,6 +5,8 @@ package com.kaislate.veldtplayer.data.library
 
 import com.kaislate.veldtplayer.data.library.model.Song
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -53,21 +55,84 @@ class FolderSortTest {
     }
 
     @Test fun `the comparator is TOTAL — two names differing only in case both survive`() {
+        // Input is [beck, Beck] and the expected output is [Beck, beck], so this asserts ORDER and
+        // not merely membership. That matters: `sortedWith` is stable and never drops elements, so
+        // a size check and a Set check are unfalsifiable by ANY comparator change — the earlier
+        // version of this test asserted exactly those two things and stayed green when the
+        // byte-exact tiebreak was deleted. The ordered list is what makes the tiebreak load-bearing.
         val sorted = FolderSort.folders(listOf(folder("beck"), folder("Beck")))
         assertEquals(
             "a case-only difference collapsed — both folders must survive, adjacent and distinct",
             2, sorted.size,
         )
-        assertEquals(setOf("beck", "Beck"), sorted.map { it.name }.toSet())
+        assertEquals(
+            "the byte-exact tiebreak is gone — a case-only difference no longer orders",
+            listOf("Beck", "beck"), sorted.map { it.name },
+        )
+        assertNotEquals(
+            "NATURAL.compare must never return 0 for two DIFFERENT strings",
+            0, FolderSort.NATURAL.compare("beck", "Beck"),
+        )
+    }
+
+    @Test fun `NATURAL is transitive — a non-ASCII digit must not sort as a number AND as a letter`() {
+        // U+0665 ARABIC-INDIC DIGIT FIVE. `Char.isDigit()` is true for it, but a digit run is
+        // compared by code unit with only ASCII '0' stripped, so before the branch was restricted
+        // to ASCII this character compared as a NUMBER against a digit run and as an ordinary high
+        // code unit against a letter. The executed cycle was:
+        //     compare("٥", "10") < 0   digit branch, run length 1 < 2
+        //     compare("10", "a")      < 0   char branch, '1' 0x31 < 'a' 0x61
+        //     compare("a", "٥")  < 0   char branch, 'a' 0x61 < 0x0665
+        // i.e. "٥" < "10" < "a" < "٥". TimSort detects such a cycle at >= 32 elements and
+        // throws "Comparison method violates its general contract!"; below 32 it silently returns an
+        // arbitrary order. Asserting that a sort merely COMPLETES would not catch the silent case,
+        // so this asserts the pairwise comparisons are mutually consistent instead.
+        val arabicFive = "٥"
+        val names = listOf(arabicFive, "10", "a", "2", "٢", "b", "01", "Disc ٥")
+
+        for (x in names) {
+            for (y in names) {
+                assertEquals(
+                    "antisymmetry broken: compare($x,$y) and compare($y,$x) must be opposite signs",
+                    Integer.signum(FolderSort.NATURAL.compare(x, y)),
+                    -Integer.signum(FolderSort.NATURAL.compare(y, x)),
+                )
+            }
+        }
+        for (x in names) {
+            for (y in names) {
+                for (z in names) {
+                    val xy = FolderSort.NATURAL.compare(x, y)
+                    val yz = FolderSort.NATURAL.compare(y, z)
+                    val xz = FolderSort.NATURAL.compare(x, z)
+                    if (xy < 0 && yz < 0) {
+                        assertTrue("not transitive: $x < $y < $z, yet compare($x,$z) = $xz", xz < 0)
+                    }
+                    if (xy > 0 && yz > 0) {
+                        assertTrue("not transitive: $x > $y > $z, yet compare($x,$z) = $xz", xz > 0)
+                    }
+                }
+            }
+        }
     }
 
     @Test fun `filename order uses the numbers on the files, not the tags`() {
         // The whole premise: tags say otherwise and the filenames are right.
+        //
+        // Every key that could decide this ordering is set to CONTRADICT the file names, so the
+        // FILENAME branch cannot be satisfied by any of them:
+        //   - titles     Aaa/Bbb/Ccc ascend as the file names descend
+        //   - trackNumber 1/2/3       ascends as the file names descend
+        //   - dateModified 300/200/100 makes the newest file the one that must sort LAST
+        // The mtimes are load-bearing and were added deliberately: with them all left at the 0L
+        // default the date key was constant, DATE_MODIFIED's comparator fell through to its own
+        // secondary file-name key, and substituting it for the FILENAME branch left this test
+        // green. Do not drop them back to the default.
         val sorted = FolderSort.tracks(
             listOf(
-                song("10 - j.mp3", title = "Aaa", track = 1),
-                song("02 - b.mp3", title = "Bbb", track = 2),
-                song("01 - a.mp3", title = "Ccc", track = 3),
+                song("10 - j.mp3", title = "Aaa", track = 1, modified = 300L),
+                song("02 - b.mp3", title = "Bbb", track = 2, modified = 200L),
+                song("01 - a.mp3", title = "Ccc", track = 3, modified = 100L),
             ),
             TrackSort.FILENAME, descending = false,
         )
@@ -76,20 +141,35 @@ class FolderSortTest {
 
     @Test fun `track-number order is available and uses disc then track`() {
         // The fixture is arranged AGAINST file-name order on purpose, and must stay that way.
-        // `a.mp3` is on the LATER disc, so the correct answer [c.mp3, a.mp3] disagrees with
-        // natural file-name order [a.mp3, c.mp3] — which is what makes this test able to fail
-        // when TRACK_NUMBER falls through to FILENAME. It also disagrees with a track-only sort
-        // (which would give [a.mp3, c.mp3], since a.mp3 is track 1), so both the disc-before-track
-        // property and the not-just-the-filename property are pinned by this one assertion.
-        // Do not "tidy" the discs and tracks back into agreement with the names: an earlier
-        // version had c.mp3 on disc 2 / track 1 and a.mp3 on disc 1 / track 2, expecting
-        // [a.mp3, c.mp3], and that expectation was ALSO plain file-name order — so the whole
-        // TRACK_NUMBER branch could be deleted and this test still passed.
+        //
+        //   file    disc  track
+        //   a.mp3     2     1
+        //   c.mp3     1     2
+        //   d.mp3     1     1
+        //
+        // Correct (disc, then track) is [d.mp3, c.mp3, a.mp3]. Every degenerate alternative
+        // differs, which is what makes the single assertion below able to fail:
+        //   - file name only  -> [a, c, d]   (TRACK_NUMBER collapsed into FILENAME)
+        //   - disc only       -> [c, d, a]   (the track key deleted; d and c settle by file name)
+        //   - track only      -> [a, d, c]   (the disc key deleted)
+        //   - input order     -> [a, c, d]   (no sort at all)
+        //
+        // TWO separate holes were closed here and neither may be reopened. The brief's original
+        // fixture had c.mp3 on disc 2/track 1 and a.mp3 on disc 1/track 2 expecting [a, c] — which
+        // was also plain file-name order, so the whole TRACK_NUMBER branch could be deleted and
+        // this stayed green. Reversing that fixed the file-name hole but left both songs on
+        // DIFFERENT discs, so the disc key alone decided and the track key was never consulted —
+        // deleting `.thenBy { trackNumber }` also stayed green. d.mp3 exists to share disc 1 with
+        // c.mp3 and force the track key to break the tie. Keep at least two songs on one disc.
         val sorted = FolderSort.tracks(
-            listOf(song("a.mp3", track = 1, disc = 2), song("c.mp3", track = 2, disc = 1)),
+            listOf(
+                song("a.mp3", track = 1, disc = 2),
+                song("c.mp3", track = 2, disc = 1),
+                song("d.mp3", track = 1, disc = 1),
+            ),
             TrackSort.TRACK_NUMBER, descending = false,
         )
-        assertEquals(listOf("c.mp3", "a.mp3"), sorted.map { it.fileNameOrEmpty() })
+        assertEquals(listOf("d.mp3", "c.mp3", "a.mp3"), sorted.map { it.fileNameOrEmpty() })
     }
 
     @Test fun `descending reverses every sort`() {
@@ -155,12 +235,32 @@ class FolderSortTest {
     }
 
     @Test fun `the deep flatten is DEPTH-FIRST PRE-ORDER — discs never interleave`() {
-        // The case that motivates the whole feature. A breadth-first or globally-flat-sorted
-        // alternative interleaves the two discs, which is the exact failure this repairs.
+        // The case that motivates the whole feature.
+        //
+        //   Album/                 00 - intro.mp3, zz - outro.mp3
+        //     Disc 2/              d2a.mp3, d2b.mp3
+        //     Disc 1/              d1a.mp3, d1b.mp3
+        //       Bonus/             b1.mp3, b2.mp3
+        //
+        // TWO fixture properties are deliberate and the test is unfalsifiable without them:
+        //
+        // 1. THREE levels. `Bonus/` is nested inside `Disc 1/` rather than beside it. On a
+        //    two-level tree breadth-first and depth-first pre-order emit the SAME sequence, so a
+        //    BFS mutation could not fail. `Bonus/`'s songs must appear between `Disc 1/`'s and
+        //    `Disc 2/`'s, which is exactly what BFS gets wrong — it defers them to the end.
+        //
+        // 2. `zz - outro.mp3` sorts AFTER every descendant's name. A globally-flat sort of all
+        //    eight names would drag it to the end and pull b1/b2 to the front; keeping it pinned
+        //    to second position, directly under its own folder's other song, is what a flat sort
+        //    cannot reproduce. Without it every name happened to sort into tree order anyway and
+        //    a flat sort passed — the alternative this test's own name calls the exact failure
+        //    the folder view exists to repair.
+        //
+        // Do not flatten the nesting and do not rename `zz - outro.mp3` to sort earlier.
         val album = FolderNode(
             key = "external_primary:Music/Album", volume = "external_primary",
             segments = listOf("Music", "Album"), name = "Album",
-            songs = listOf(song("00 - intro.mp3")),
+            songs = listOf(song("00 - intro.mp3"), song("zz - outro.mp3")),
             children = listOf(
                 FolderNode(
                     key = "external_primary:Music/Album/Disc 2", volume = "external_primary",
@@ -172,15 +272,29 @@ class FolderSortTest {
                 FolderNode(
                     key = "external_primary:Music/Album/Disc 1", volume = "external_primary",
                     segments = listOf("Music", "Album", "Disc 1"), name = "Disc 1",
-                    children = emptyList(),
+                    children = listOf(
+                        FolderNode(
+                            key = "external_primary:Music/Album/Disc 1/Bonus",
+                            volume = "external_primary",
+                            segments = listOf("Music", "Album", "Disc 1", "Bonus"), name = "Bonus",
+                            children = emptyList(),
+                            songs = listOf(song("b1.mp3"), song("b2.mp3")),
+                            deepSongCount = 2, deepDurationMs = 0L, deepFolderCount = 0,
+                        ),
+                    ),
                     songs = listOf(song("d1a.mp3"), song("d1b.mp3")),
-                    deepSongCount = 2, deepDurationMs = 0L, deepFolderCount = 0,
+                    deepSongCount = 4, deepDurationMs = 0L, deepFolderCount = 1,
                 ),
             ),
-            deepSongCount = 5, deepDurationMs = 0L, deepFolderCount = 2,
+            deepSongCount = 8, deepDurationMs = 0L, deepFolderCount = 3,
         )
         assertEquals(
-            listOf("00 - intro.mp3", "d1a.mp3", "d1b.mp3", "d2a.mp3", "d2b.mp3"),
+            listOf(
+                "00 - intro.mp3", "zz - outro.mp3",   // Album's own, before any descendant
+                "d1a.mp3", "d1b.mp3",                 // Disc 1 (sorted before Disc 2)
+                "b1.mp3", "b2.mp3",                   // Disc 1/Bonus — BFS would defer these
+                "d2a.mp3", "d2b.mp3",                 // Disc 2
+            ),
             FolderSort.deepFlatten(album, TrackSort.FILENAME, descending = false)
                 .map { it.fileNameOrEmpty() },
         )
