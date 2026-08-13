@@ -71,7 +71,10 @@ import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.backdropText
-import com.kaislate.veldtplayer.ui.theme.onBgFor
+import com.kaislate.veldtplayer.ui.theme.BackdropMarks
+import com.kaislate.veldtplayer.ui.theme.BackdropText
+import com.kaislate.veldtplayer.ui.theme.backdropMarks
+import com.kaislate.veldtplayer.ui.theme.whenEnabled
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 import kotlinx.coroutines.delay
 
@@ -88,7 +91,6 @@ private val TRANSPORT_GAP = 8.dp
 private val PLAY_BUTTON = 72.dp
 private val PLAY_GLYPH = 44.dp
 
-private const val INACTIVE_ALPHA = 0.5f
 
 /** How long the surface must go untouched before the chrome fades away. */
 private const val AMBIENT_DELAY_MS = 8_000L
@@ -347,6 +349,9 @@ fun NowPlayingScreen(
     // renders, and it is PER THEME because light's and dark's gradients are different shapes —
     // see scrimAtText's KDoc for the device-measured fix-round that made it so.
     val text = targetSeed.backdropText(palette.bg, scrimAtText(isLight), isLight)
+    // Same ground, same reason — see BackdropMarks. Text was only half of what this surface
+    // draws; the wave, the scrub track and the two toggles were still solved against `bg`.
+    val marks = targetSeed.backdropMarks(palette.bg, scrimAtText(isLight), isLight)
 
     // Accumulated, and acted on at RELEASE. Reacting to a single drag delta would fire
     // onCollapse once per pointer event past the threshold, popping several entries off the
@@ -477,7 +482,7 @@ fun NowPlayingScreen(
                 Text(
                     text = "Nothing playing",
                     style = MaterialTheme.typography.headlineSmall,
-                    color = palette.onBg,
+                    color = text.primary,
                     textAlign = TextAlign.Center,
                 )
             } else {
@@ -526,7 +531,8 @@ fun NowPlayingScreen(
                     positionMs = position,
                     durationMs = state.durationMs,
                     palette = palette,
-                    secondaryText = text.secondary,
+                    text = text,
+                    marks = marks,
                     reducedMotion = reduced,
                     // The bar stays through the fade — it is part of the record — but it must
                     // not still be a SEEK target when it is the only live control left on a
@@ -541,7 +547,8 @@ fun NowPlayingScreen(
 
                 Transport(
                     state = state,
-                    palette = palette,
+                    text = text,
+                    marks = marks,
                     interactive = chromeUsable,
                     onShuffle = { vm.setShuffle(!state.shuffle) },
                     onPrevious = vm::previous,
@@ -590,7 +597,7 @@ fun NowPlayingScreen(
                 // labelled the rest of the time — a screen reader has no other way to find
                 // out that the screen is currently in ambient mode.
                 contentDescription = if (collapseWakes) "Show controls" else "Collapse",
-                tint = palette.onBg,
+                tint = text.primary,
             )
         }
 
@@ -612,7 +619,7 @@ fun NowPlayingScreen(
                 Icon(
                     Icons.AutoMirrored.Filled.QueueMusic,
                     contentDescription = "Queue",
-                    tint = palette.onBg,
+                    tint = text.primary,
                 )
             }
         }
@@ -669,7 +676,8 @@ fun NowPlayingScreen(
 @Composable
 private fun Transport(
     state: NowPlayingState,
-    palette: DominantColors,
+    text: BackdropText,
+    marks: BackdropMarks,
     interactive: Boolean,
     onShuffle: () -> Unit,
     onPrevious: () -> Unit,
@@ -694,22 +702,21 @@ private fun Transport(
                 // the only thing that distinguishes on from off, and a tint is invisible
                 // to a screen reader.
                 contentDescription = if (state.shuffle) "Shuffle on" else "Shuffle off",
-                tint = if (state.shuffle) palette.accent
-                else palette.onBg.copy(alpha = INACTIVE_ALPHA),
+                tint = if (state.shuffle) marks.accent else marks.quiet,
             )
         }
         IconButton(onClick = onPrevious, enabled = canPrevious) {
             Icon(
                 Icons.Filled.SkipPrevious,
                 contentDescription = "Previous",
-                tint = palette.onBgFor(canPrevious),
+                tint = text.primary.whenEnabled(canPrevious),
             )
         }
         IconButton(onClick = onToggle, enabled = live, modifier = Modifier.size(PLAY_BUTTON)) {
             Icon(
                 imageVector = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 contentDescription = if (state.isPlaying) "Pause" else "Play",
-                tint = palette.onBgFor(live),
+                tint = text.primary.whenEnabled(live),
                 modifier = Modifier.size(PLAY_GLYPH),
             )
         }
@@ -717,7 +724,7 @@ private fun Transport(
             Icon(
                 Icons.Filled.SkipNext,
                 contentDescription = "Next",
-                tint = palette.onBgFor(canNext),
+                tint = text.primary.whenEnabled(canNext),
             )
         }
         IconButton(onClick = onRepeat, enabled = interactive) {
@@ -729,8 +736,7 @@ private fun Transport(
                     RepeatMode.ALL -> "Repeat all"
                     RepeatMode.ONE -> "Repeat one"
                 },
-                tint = if (state.repeat == RepeatMode.OFF)
-                    palette.onBg.copy(alpha = INACTIVE_ALPHA) else palette.accent,
+                tint = if (state.repeat == RepeatMode.OFF) marks.quiet else marks.accent,
             )
         }
     }

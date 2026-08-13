@@ -49,6 +49,21 @@ fun DominantColors.onBgFor(enabled: Boolean): Color =
     if (enabled) onBg else onBg.copy(alpha = DISABLED_ALPHA)
 
 /**
+ * The same disabled signal for a colour that was solved against a backdrop rather than against
+ * `bg` — [onBgFor]'s counterpart for surfaces that use [BackdropText]/[BackdropMarks].
+ *
+ * **This is the one place a fractional alpha still belongs on a solved colour**, and it is worth
+ * naming why, because removing exactly that pattern is what finding 14 and finding 15 were.
+ * Dimming a live mark destroys a contrast guarantee that something still depends on. Dimming a
+ * DISABLED control is the signal itself: WCAG 1.4.3 and 1.4.11 both exempt inactive components,
+ * so there is no guarantee left to destroy, and the dimming is the only thing telling a sighted
+ * user the button is dead. `INACTIVE_ALPHA` was the confusion between the two — it dimmed
+ * shuffle and repeat in their OFF state, which are fully operable, and measured 2.19:1.
+ */
+fun Color.whenEnabled(enabled: Boolean): Color =
+    if (enabled) this else copy(alpha = DISABLED_ALPHA)
+
+/**
  * Derives a theme-independent [ArtSeed] from album art.
  *
  * Original implementation, written from a behavioural specification — it is not
