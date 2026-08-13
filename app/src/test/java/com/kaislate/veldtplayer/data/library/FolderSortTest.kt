@@ -146,13 +146,23 @@ class FolderSortTest {
         //   a.mp3     2     1
         //   c.mp3     1     2
         //   d.mp3     1     1
+        //   y.mp3   null  null     <- untagged, and supplied BEFORE x.mp3
+        //   x.mp3   null  null     <- untagged
         //
-        // Correct (disc, then track) is [d.mp3, c.mp3, a.mp3]. Every degenerate alternative
-        // differs, which is what makes the single assertion below able to fail:
-        //   - file name only  -> [a, c, d]   (TRACK_NUMBER collapsed into FILENAME)
-        //   - disc only       -> [c, d, a]   (the track key deleted; d and c settle by file name)
-        //   - track only      -> [a, d, c]   (the disc key deleted)
-        //   - input order     -> [a, c, d]   (no sort at all)
+        // Correct (disc, then track, then file name) is [d, c, a, x, y]. Every degenerate
+        // alternative differs, which is what makes the single assertion below able to fail:
+        //   - file name only  -> [a, c, d, x, y]   (TRACK_NUMBER collapsed into FILENAME)
+        //   - disc only       -> [c, d, a, x, y]   (the track key deleted)
+        //   - track only      -> [a, d, c, x, y]   (the disc key deleted)
+        //   - no tiebreak     -> [d, c, a, y, x]   (the file-name key deleted)
+        //   - input order     -> [a, c, d, y, x]   (no sort at all)
+        //
+        // x.mp3 and y.mp3 are UNTAGGED and that is the point of them. Both keys are null, so both
+        // fall to Int.MAX_VALUE and tie, and the file-name tiebreak is the only thing left to order
+        // them — which is precisely the situation in a folder of untagged files, where EVERY song
+        // ties. Without the tiebreak the whole TRACK_NUMBER sort degrades to `sortedWith`
+        // stability, i.e. MediaStore's own order, which is what the user chose this sort to escape.
+        // They are supplied y-before-x so stability alone yields the wrong answer.
         //
         // TWO separate holes were closed here and neither may be reopened. The brief's original
         // fixture had c.mp3 on disc 2/track 1 and a.mp3 on disc 1/track 2 expecting [a, c] — which
@@ -166,10 +176,15 @@ class FolderSortTest {
                 song("a.mp3", track = 1, disc = 2),
                 song("c.mp3", track = 2, disc = 1),
                 song("d.mp3", track = 1, disc = 1),
+                song("y.mp3"),
+                song("x.mp3"),
             ),
             TrackSort.TRACK_NUMBER, descending = false,
         )
-        assertEquals(listOf("d.mp3", "c.mp3", "a.mp3"), sorted.map { it.fileNameOrEmpty() })
+        assertEquals(
+            listOf("d.mp3", "c.mp3", "a.mp3", "x.mp3", "y.mp3"),
+            sorted.map { it.fileNameOrEmpty() },
+        )
     }
 
     @Test fun `descending reverses every sort`() {
@@ -177,6 +192,33 @@ class FolderSortTest {
         assertEquals(
             listOf("02 - b.mp3", "01 - a.mp3"),
             FolderSort.tracks(songs, TrackSort.FILENAME, descending = true).map { it.fileNameOrEmpty() },
+        )
+    }
+
+    @Test fun `an ASCII digit run STOPS at a non-ASCII digit — scanners match the branch`() {
+        // The companion to the transitivity test, and it exists because that test CANNOT see this.
+        //
+        // `compareNatural` uses the ASCII-digit predicate in three places: the branch condition and
+        // the two run scanners. Narrowing only the condition — leaving the scanners on
+        // `Char.isDigit()` — still enters the numeric branch on the leading ASCII '1', then lets
+        // the scanner absorb the trailing U+0665 into the run. "1٥" is then compared as a single
+        // two-character "number" against "12": equal lengths, so it falls to a code-unit compare of
+        // '٥' 0x0665 against '2' 0x32 and returns POSITIVE, where the run must stop at the '1' and
+        // return negative on the shorter run.
+        //
+        // That variant is transitive — it sweeps clean — so nothing in the transitivity test moves.
+        // This is a consistency defect, and it needs its own assertion or the scanners are
+        // unpinned.
+        assertTrue(
+            "an ASCII digit run must stop at a non-ASCII digit, not absorb it into the number",
+            FolderSort.NATURAL.compare("1٥", "12") < 0,
+        )
+        // Same property, second pair: the run is the single digit 1, so it sorts before the run 2.
+        // With the scanners widened the run becomes "1٥", which is LONGER than "2" and so sorts
+        // after it — sign flipped again.
+        assertTrue(
+            "the run is 1, which sorts before 2 — the trailing U+0665 must not lengthen it",
+            FolderSort.NATURAL.compare("1٥", "2") < 0,
         )
     }
 
@@ -199,15 +241,24 @@ class FolderSortTest {
     }
 
     @Test fun `date-modified order is NEWEST FIRST — the "what did I just add" default`() {
+        // tie-a and tie-b SHARE an mtime, and are supplied b-before-a so that stability alone
+        // yields the wrong order. That is not a contrived case: `dateModifiedSec` is
+        // second-granularity and a bulk copy or unzip stamps a whole album identically, so the
+        // file-name tiebreak is the common path rather than the rare one. With three distinct
+        // mtimes the tiebreak was never consulted and could be deleted with the suite green.
         val sorted = FolderSort.tracks(
             listOf(
                 song("old.mp3", modified = 100L),
                 song("new.mp3", modified = 300L),
-                song("mid.mp3", modified = 200L),
+                song("tie-b.mp3", modified = 200L),
+                song("tie-a.mp3", modified = 200L),
             ),
             TrackSort.DATE_MODIFIED, descending = false,
         )
-        assertEquals(listOf("new.mp3", "mid.mp3", "old.mp3"), sorted.map { it.fileNameOrEmpty() })
+        assertEquals(
+            listOf("new.mp3", "tie-a.mp3", "tie-b.mp3", "old.mp3"),
+            sorted.map { it.fileNameOrEmpty() },
+        )
     }
 
     @Test fun `date-modified descending means OLDEST first — the double negative is deliberate`() {

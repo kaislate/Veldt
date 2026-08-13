@@ -40,8 +40,30 @@ enum class TrackSort { FILENAME, TRACK_NUMBER, TITLE, DATE_MODIFIED }
  * - `"a"` < `U+0665` — character branch, `'a'` 0x61 < 0x0665
  *
  * [folders] sorts user directory names and [tracks] sorts user file names, so this is reachable
- * from ordinary library data in an Arabic, Persian or Hindi library. **Do not widen this branch
- * back to `isDigit()`** — `FolderSortTest` pins the cycle above.
+ * from ordinary library data in an Arabic, Persian or Hindi library.
+ *
+ * **The branch condition and both run scanners must always be changed together.** They are two
+ * halves of one predicate and each half is pinned by its own test, because the two partial edits
+ * fail in completely different ways:
+ *
+ * - **Condition widened to `isDigit()`, scanners left ASCII** — restores the cycle above, and
+ *   would additionally HANG rather than fail an assertion; see the guard in [compareNatural].
+ * - **Condition left ASCII, scanners widened to `isDigit()`** — an ASCII run absorbs a trailing
+ *   non-ASCII digit, so `"1"` + U+0665 is compared as one number and `compare("1٥", "12")` flips
+ *   sign. This one is a CONSISTENCY defect, not an intransitivity: that variant sweeps clean for
+ *   transitivity. It is pinned separately for exactly that reason — the transitivity test cannot
+ *   see it.
+ *
+ * **Accepted limitation, not a claim of correctness.** With the branch ASCII-only a non-ASCII digit
+ * run orders LEXICOGRAPHICALLY rather than numerically, so `Disc ١٠` now sorts before `Disc ٢`.
+ * The feature's own premise — numeric-aware ordering of the directory names a user actually has —
+ * therefore does not hold for Arabic-Indic or Devanagari digits. This is a deliberate trade and
+ * the better of two bad options: a comparator that mis-orders ten Arabic-Indic folders beats one
+ * that is intransitive and can throw mid-sort or silently permute. It is **not** the right
+ * long-term answer. A full fix detects a whole same-script digit run and maps it through
+ * `Character.digit`, which gives each run one consistent numeric role instead of two contradictory
+ * ones. Design question open with the owner as of 2026-08-14 — do not pre-empt it by widening the
+ * branch back.
  */
 object FolderSort {
 
@@ -54,7 +76,8 @@ object FolderSort {
      * ASCII digit runs compare as numbers, everything else char-by-char, case-insensitively.
      *
      * **ASCII, not [Char.isDigit] — see the KDoc on [FolderSort].** Widening this to every Unicode
-     * Nd digit makes the comparator intransitive and can make TimSort throw.
+     * Nd digit makes the comparator intransitive and can make TimSort throw. Every use of it in
+     * [compareNatural] — the branch condition and both run scanners — must change together.
      */
     private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
 
@@ -69,6 +92,15 @@ object FolderSort {
                 while (ia < a.length && a[ia].isAsciiDigit()) ia++
                 var jb = j
                 while (jb < b.length && b[jb].isAsciiDigit()) jb++
+                // Unreachable while the branch condition above and these two scanners use the SAME
+                // predicate: an ASCII digit at [i] guarantees ia > i. It is here because a later
+                // edit can drift them apart, and one direction of that drift does not merely give a
+                // wrong answer — it does not terminate. Widening the condition back to `isDigit()`
+                // while leaving these scanners ASCII makes ia == i and jb == j for a non-ASCII
+                // digit, na and nb both empty, and i and j are then reassigned to themselves, so
+                // the loop spins at 100% CPU forever. A hang is the one failure mode no assertion
+                // can catch, so fail fast and let the resulting wrong ordering be caught instead.
+                if (ia == i || jb == j) break
                 // Compared as text with leading zeros stripped, so arbitrarily long runs cannot
                 // overflow a Long the way parsing them would.
                 val na = a.substring(i, ia).trimStart('0')
