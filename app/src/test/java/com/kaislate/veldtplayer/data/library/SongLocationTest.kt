@@ -73,6 +73,46 @@ class SongLocationTest {
         )
     }
 
+    @Test fun `rung 2 maps a SECONDARY user profile mount to primary storage`() {
+        // /storage/emulated/<n>/ — <n> is the Android user number, not a volume id. MediaStore
+        // reports external_primary to an app instance whatever user it runs as.
+        val loc = song(null, "/storage/emulated/1/Music/a.mp3").location()
+        assertEquals(
+            SongLocation("external_primary", listOf("Music"), "a.mp3"),
+            loc,
+        )
+    }
+
+    @Test fun `every user profile's primary storage is ONE volume — the user number is not identity`() {
+        // The regression this pair exists for: matching only `emulated/0` tore a secondary
+        // profile's primary storage off into a '?' root holding the phantom directories
+        // storage/, emulated/ and 1/, which are folders on no device.
+        val user0 = song(null, "/storage/emulated/0/Music/a.mp3").location()
+        val user1 = song(null, "/storage/emulated/1/Music/a.mp3").location()
+        assertEquals(
+            "primary storage split by user number: /storage/emulated/0 and /storage/emulated/1 " +
+                "resolved to different volumes, so a secondary profile gets a phantom '?' root",
+            listOf("external_primary", "external_primary"),
+            listOf(user0?.volume, user1?.volume),
+        )
+    }
+
+    @Test fun `the self symlink is NOT claimed as a volume named self`() {
+        // /storage/self/primary is a per-process symlink, not a volume. Mis-filed either way, but
+        // an honest '?' beats a fake volume that reads as a legitimate card.
+        val loc = song(null, "/storage/self/primary/Music/a.mp3").location()
+        assertEquals(VOLUME_UNKNOWN, loc?.volume)
+        assertEquals(listOf("storage", "self", "primary", "Music"), loc?.segments)
+    }
+
+    @Test fun `a storage path with no volume component at all degrades to unknown`() {
+        // Closes an otherwise untested KDoc claim: there is no '/' after the id, so there is no
+        // volume to name and the whole path is kept.
+        val loc = song(null, "/storage/x.mp3").location()
+        assertEquals(VOLUME_UNKNOWN, loc?.volume)
+        assertEquals(listOf("storage"), loc?.segments)
+    }
+
     @Test fun `rung 2 on a genuinely UNRECOGNISED mount keeps the path but marks the volume unknown`() {
         // Degradation, not a drop: the track still has a place in the tree. /mnt/... is not under
         // any /storage/<id>/ root, so there is no volume id to recover and "?" is the honest answer.

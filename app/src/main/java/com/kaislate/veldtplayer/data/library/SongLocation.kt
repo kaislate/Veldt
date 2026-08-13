@@ -8,35 +8,48 @@ import com.kaislate.veldtplayer.data.library.model.Song
 /** The volume of a track whose absolute path sits under no mount root we recognise. */
 const val VOLUME_UNKNOWN: String = "?"
 
-/** Mount root of primary storage. Device-observed as the prefix of every `DATA` path on the fleet. */
-private const val PRIMARY_MOUNT = "/storage/emulated/0/"
-
 /** MediaStore's name for primary storage — `MediaStore.VOLUME_EXTERNAL_PRIMARY`, inlined so this
  *  file stays framework-free and JVM-testable. Asserted against the constant in Task 4. */
 internal const val VOLUME_PRIMARY = "external_primary"
 
-/** Mount root under which every removable volume appears as `/storage/<id>/`. */
+/** Mount root under which every volume appears as `/storage/<id>/`. */
 private const val STORAGE_MOUNT = "/storage/"
 
-/** The `<id>` of [PRIMARY_MOUNT], which is emphatically NOT a removable volume id. */
+/**
+ * The `<id>` of emulated primary storage, whose real form is `/storage/emulated/<n>/` where `<n>`
+ * is the Android user number. **Not a volume id** — the user number, not `emulated`, is the part
+ * that varies, and neither is what MediaStore calls the volume.
+ */
 private const val EMULATED = "emulated"
+
+/**
+ * The `<id>` of `/storage/self/primary/…`, a per-process symlink to the current user's primary
+ * storage. **Not a volume id**: treating it as one invents a volume named `self`.
+ */
+private const val SELF = "self"
 
 /**
  * The volume [path] sits on, paired with the part of [path] that is relative to it.
  *
- * Three cases, and the middle one exists because of a concrete split-root defect:
+ * Three cases, and each of the first two exists because of a concrete split-root defect:
  *
- * 1. `/storage/emulated/0/…` → [VOLUME_PRIMARY]. Primary storage.
- * 2. `/storage/<id>/…` (`<id>` not `emulated`) → `<id>`, lowercased. A removable card. **Without
- *    this case a single card is torn into two tree roots**: its `Music/a.mp3` has
+ * 1. `/storage/emulated/<n>/…` → [VOLUME_PRIMARY], with `<n>` stripped along with the prefix.
+ *    `<n>` is the **Android user number**, not part of any volume's identity: MediaStore reports
+ *    `external_primary` to an app instance whatever user it runs as. Matching only `<n> == 0`
+ *    tears a secondary profile's primary storage off into a `?` root full of the phantom
+ *    directories `storage/`, `emulated/` and `1/`, which are folders on no device.
+ * 2. `/storage/<id>/…` (`<id>` neither [EMULATED] nor [SELF]) → `<id>`, lowercased. A removable
+ *    card. **Without this case a single card is torn into two tree roots**: its `Music/a.mp3` has
  *    `RELATIVE_PATH == "Music/"` so `composeRelativeKey` succeeds and rung 1 files it under volume
  *    `1234-5678`, while its `root.mp3` has `RELATIVE_PATH == "/"` which `composeRelativeKey` trims
  *    to empty and rejects — so it falls to this rung, and if this rung answered [VOLUME_UNKNOWN]
  *    the same physical card would appear twice, the second time as `?` containing the phantom
  *    directories `storage/` and `1234-5678/` that exist on no card.
- * 3. Anything else (`/mnt/weird/x.mp3`, and a bare `/storage/x.mp3` with no volume component) →
- *    [VOLUME_UNKNOWN], with the whole path kept as segments. Degradation, not a drop: the track
- *    still has a place in the tree.
+ * 3. Anything else → [VOLUME_UNKNOWN], with the whole path kept as segments. Degradation, not a
+ *    drop: the track still has a place in the tree, just not a confidently wrong one. This covers
+ *    a foreign mount (`/mnt/weird/x.mp3`), a bare `/storage/x.mp3` with no volume component at
+ *    all, and `/storage/self/primary/…` — see [SELF], where an honest `?` beats inventing a
+ *    volume named `self` that would read as a legitimate card.
  *
  * **The lowercase in case 2 applies to the volume identifier and to nothing else.** It is there so
  * this rung agrees with rung 1, whose volume comes from MediaStore's `VOLUME_NAME` and is lowercase
@@ -46,18 +59,24 @@ private const val EMULATED = "emulated"
  * what keeps one card one root. Do not extend this fold to segments, and do not remove it from the
  * volume — both directions are bugs, in opposite ways.
  */
-private fun volumeOf(path: String): Pair<String, String> = when {
-    path.startsWith(PRIMARY_MOUNT) -> VOLUME_PRIMARY to path.removePrefix(PRIMARY_MOUNT)
-    path.startsWith(STORAGE_MOUNT) -> {
-        val rest = path.removePrefix(STORAGE_MOUNT)
-        val slash = rest.indexOf('/')
-        val id = if (slash > 0) rest.substring(0, slash).lowercase() else ""
-        // `/storage/emulated/1/…` (a secondary user) is deliberately NOT claimed as volume
-        // "emulated": a confidently wrong volume is worse than an honest unknown.
-        if (id.isEmpty() || id == EMULATED) VOLUME_UNKNOWN to path
-        else id to rest.substring(slash + 1)
+private fun volumeOf(path: String): Pair<String, String> {
+    if (!path.startsWith(STORAGE_MOUNT)) return VOLUME_UNKNOWN to path
+    val rest = path.removePrefix(STORAGE_MOUNT)
+    val slash = rest.indexOf('/')
+    // No `/` after the id means there is no volume component at all — `/storage/x.mp3`. Unknown.
+    if (slash <= 0) return VOLUME_UNKNOWN to path
+    val id = rest.substring(0, slash).lowercase()
+    val tail = rest.substring(slash + 1)
+    return when (id) {
+        EMULATED -> {
+            // Strip the user number too. Any `<n>`, not just 0 — see case 1 above.
+            val userSlash = tail.indexOf('/')
+            if (userSlash <= 0) VOLUME_UNKNOWN to path
+            else VOLUME_PRIMARY to tail.substring(userSlash + 1)
+        }
+        SELF -> VOLUME_UNKNOWN to path
+        else -> id to tail
     }
-    else -> VOLUME_UNKNOWN to path
 }
 
 /**
