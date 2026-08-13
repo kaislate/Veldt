@@ -13,3 +13,7 @@ LICENSE).
   An eight-class subset (HCT/CAM16 colour appearance, tonal palettes, contrast solving)
   is vendored under app/src/main/java/com/kaislate/veldtplayer/ui/theme/hct/.
   Each file retains its original Apache-2.0 header.
+
+* com.ealva:ealvatag (audio tag reading) — a runtime dependency, not vendored source.
+  GNU Lesser General Public License v3.0 (LGPL-3.0). Full text:
+  https://www.gnu.org/licenses/lgpl-3.0.html
