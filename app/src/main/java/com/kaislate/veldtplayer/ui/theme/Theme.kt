@@ -31,15 +31,6 @@ const val CHROME_ALPHA = 0.94f
 val LocalIsLightTheme = staticCompositionLocalOf { false }
 
 /**
- * Veldt follows [mode]: Light, Dark, or the system.
- *
- * This used to force `darkColorScheme()`, because every colour the app painted came from a
- * pipeline with one branch and a light Material scaffold underneath it would have produced a
- * near-black mini-player welded to a white list. That is no longer true: [ArtSeed.colors]
- * derives a ground for either theme by solving for a contrast ratio, so both the Material
- * surfaces and the painted ones agree.
- */
-/**
  * Which ground [mode] resolves to. A pure function, not an inline `when` in the composable,
  * because it is a DECISION and decisions belong in tested functions (GC 10) — and because a
  * `when` inside `@Composable` is unreachable without Compose UI test infrastructure.
@@ -50,6 +41,15 @@ internal fun resolveDark(mode: ThemeMode, systemDark: Boolean): Boolean = when (
     ThemeMode.SYSTEM -> systemDark
 }
 
+/**
+ * Veldt follows [mode]: Light, Dark, or the system.
+ *
+ * This used to force `darkColorScheme()`, because every colour the app painted came from a
+ * pipeline with one branch and a light Material scaffold underneath it would have produced a
+ * near-black mini-player welded to a white list. That is no longer true: [ArtSeed.colors]
+ * derives a ground for either theme by solving for a contrast ratio, so both the Material
+ * surfaces and the painted ones agree.
+ */
 @Composable
 fun VeldtTheme(mode: ThemeMode, content: @Composable () -> Unit) {
     val dark = resolveDark(mode, systemDark = isSystemInDarkTheme())
