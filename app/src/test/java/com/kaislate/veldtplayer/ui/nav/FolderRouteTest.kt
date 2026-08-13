@@ -31,7 +31,8 @@ class FolderRouteTest {
      * be found in the navigation graph"*, and the constant pool marks it
      * `$i$a$-requireNotNull-NavControllerImpl$navigate$5` — a `requireNotNull` inside `navigate`,
      * which throws `IllegalArgumentException` straight out of the click handler. So the mutant this
-     * test exists to kill takes the app down on the first folder tap while the suite reads green.
+     * test exists to kill would have taken the app down on the first folder tap, and until this
+     * assertion existed the suite read green through it.
      */
     @Test fun `every separator is percent-encoded, so the route stays one path segment`() {
         assertEquals(

@@ -11,9 +11,14 @@ import android.util.Log
 import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
+import androidx.work.ListenableWorker
+import androidx.work.WorkerFactory
+import androidx.work.WorkerParameters
 import androidx.work.testing.SynchronousExecutor
 import androidx.work.testing.WorkManagerTestInitHelper
+import com.google.common.util.concurrent.ListenableFuture
 import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.library.scan.LibraryScanWorker
 import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.TrackSort
 import com.kaislate.veldtplayer.data.library.UNFILED_KEY
@@ -48,6 +53,8 @@ import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowStorageManager
 import org.robolectric.shadows.StorageVolumeBuilder
 import java.io.File
+import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 
 /**
  * The folder tab as the SCREEN reaches it: the real tree derivation, the real elision, the real
@@ -97,15 +104,50 @@ class FolderViewModelTest {
     private var vm: FolderViewModel? = null
     private var nextId = 1L
 
+    /**
+     * A worker that starts and never finishes, as `ScanSingleFlightTest` uses.
+     *
+     * Two things make it necessary rather than tidy. The real [LibraryScanWorker] is a
+     * `@HiltWorker` with an `@AssistedInject` constructor, so the default factory cannot build it
+     * and the work would go straight to FAILED — which `MusicRepository.scanning()` reads as *no
+     * scan*, the very value the test below has to distinguish itself from. And [SynchronousExecutor]
+     * runs the worker inline on enqueue, so a worker that completed would flip the flag back down
+     * before anything could observe it. A future that never resolves holds the work RUNNING.
+     */
+    private class StuckWorker(ctx: Context, params: WorkerParameters) :
+        ListenableWorker(ctx, params) {
+        override fun startWork(): ListenableFuture<Result> = NeverFuture()
+    }
+
+    private class NeverFuture : ListenableFuture<ListenableWorker.Result> {
+        override fun addListener(listener: Runnable, executor: Executor) = Unit
+        override fun cancel(mayInterruptIfRunning: Boolean) = false
+        override fun isCancelled() = false
+        override fun isDone() = false
+        override fun get(): ListenableWorker.Result = throw UnsupportedOperationException()
+        override fun get(timeout: Long, unit: TimeUnit): ListenableWorker.Result =
+            throw UnsupportedOperationException()
+    }
+
+    private class StuckFactory : WorkerFactory() {
+        override fun createWorker(
+            appContext: Context,
+            workerClassName: String,
+            workerParameters: WorkerParameters,
+        ): ListenableWorker = StuckWorker(appContext, workerParameters)
+    }
+
     @Before fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         context = ApplicationProvider.getApplicationContext()
-        // MusicRepository.scanning() reads WorkManager; with nothing enqueued it reports false,
-        // which is what a settled library looks like.
+        // MusicRepository.scanning() reads WorkManager. With nothing enqueued it reports false,
+        // which is what a settled library looks like; the substitute factory is what lets one test
+        // here put a scan IN FLIGHT and keep it there. See StuckWorker.
         WorkManagerTestInitHelper.initializeTestWorkManager(
             context,
             Configuration.Builder()
                 .setMinimumLoggingLevel(Log.DEBUG)
+                .setWorkerFactory(StuckFactory())
                 .setExecutor(SynchronousExecutor())
                 .build(),
         )
@@ -454,9 +496,16 @@ class FolderViewModelTest {
      * is exactly the window the screen sees on its first frame.
      *
      * **And it has to come back DOWN**, which is the half a seed assertion alone cannot see: pinned
-     * true and nothing else, `scanning = true` hardcoded in the combine passes, and the tab sits in
-     * `ScanningState` for the life of the process. The complement is what makes this a claim about
-     * the WIRING rather than about the seed.
+     * true and nothing else, `scanning = true` hardcoded in the combine passes. What that costs is
+     * narrower than "the tab is stuck" — `state.scanning` reaches only two branches in
+     * `FolderScreen`, and the first is guarded by `roots.isEmpty()`, so a POPULATED library still
+     * lists its folders. It is an EMPTY library that would then sit under the spinner and never
+     * offer its Scan button.
+     *
+     * This test cannot pin the other direction. Nothing here enqueues work, so the repository
+     * honestly reports `false` and `scanning = false` hardcoded produces the same value — see
+     * `a scan in flight is reported over a library that already has folders`, which is the half
+     * that catches it.
      */
     @Test fun `the tab assumes a scan is coming until the library says otherwise`() = runTest {
         val vm = viewModel(row("external_primary:Music/Beck/a.mp3"))
@@ -468,9 +517,39 @@ class FolderViewModelTest {
             vm.state.value.scanning,
         )
         assertEquals(
-            "the flag never came down — it is not wired to the repository, so the tab would sit " +
-                "in ScanningState forever",
+            "the flag never came down — an empty library would sit under the scanning spinner " +
+                "with no way to ask for a scan",
             false,
+            vm.settled().scanning,
+        )
+    }
+
+    /**
+     * A scan IN FLIGHT is reported — the half the test above is structurally unable to see.
+     *
+     * That test's fixture never enqueues anything, so `MusicRepository.scanning()` truthfully
+     * answers `false` for its whole run and `scanning = false` hardcoded in the combine yields the
+     * same value. Executed: that mutation survived the entire 653-test suite. `false` is a value
+     * the wrong implementation also produces, which is exactly what an assertion may not rest on.
+     *
+     * So this one enqueues real work through the real verb — `vm.scan()` reaches
+     * `MusicRepository.requestScan()` and `LibraryScanWorker.enqueue` — and asserts a value only a
+     * live read can produce. The work is enqueued BEFORE the first collector subscribes, so the
+     * claim does not depend on WorkManager's flow re-emitting under a test scheduler: `state` is
+     * `WhileSubscribed`, so the first emission it ever makes already sees the running scan.
+     *
+     * The library is deliberately POPULATED. This is the case the surviving mutant broke and the
+     * one the test above cannot reach: a rescan over folders the user can already see.
+     */
+    @Test fun `a scan in flight is reported over a library that already has folders`() = runTest {
+        val vm = viewModel(row("external_primary:Music/Beck/a.mp3"))
+
+        vm.scan()
+
+        assertEquals(
+            "the scanning flag is not read from the repository at all — a rescan over a " +
+                "populated library would never render ScanningState",
+            true,
             vm.settled().scanning,
         )
     }
