@@ -25,10 +25,18 @@ import org.robolectric.annotation.Config
  * its `distinctUntilChanged()`, both left the whole suite green, so "derived once per emission" was
  * a claim about code shape rather than behaviour.
  *
- * **Emission count is derivation count here, and that is exact rather than approximate.** `map`
- * invokes its transform once per upstream emission and emits the result, so counting what
- * `folderTree()` produces counts what `FolderTree.build` was asked to do. No spy is needed and none
- * would be more truthful.
+ * **These tests assert what each emission CONTAINS, never how many arrived** (global constraint 10).
+ * That is not stylistic. A `map` whose transform memoizes — building once and returning the same
+ * tree forever — emits exactly the right number of times while serving a permanently stale tree, so
+ * a count-based suite calls it correct. Two of these tests previously counted, and that mutant went
+ * green against all three of them.
+ *
+ * The consequence is that **emission count is not a reliable proxy for derivation count**, and no
+ * test here claims otherwise. What the assertions actually establish is that each emission carries
+ * the tree its song list implies, and that an identical re-emission produces no second one. Whether
+ * `FolderTree.build` ran once or twice behind an emission is not observable without injecting a
+ * counting builder, which would distort the production shape to make a test possible — see the
+ * unpinned-risk note on the de-duplication test.
  *
  * Robolectric only because [MusicRepository]'s constructor takes a `Context`; nothing in this flow
  * touches it.
@@ -94,6 +102,18 @@ class MusicRepositoryFolderTreeTest {
         )
     }
 
+    /**
+     * De-duplication, asserted as the sequence of tree CONTENTS rather than as a count.
+     *
+     * **Unpinned regression risk, stated because the alternative is a message that lies.** This does
+     * not exclude `distinctUntilChanged()` being moved DOWNSTREAM of the `map`. That variant still
+     * yields exactly this one emission of exactly these contents — it just builds the tree twice and
+     * then deep-compares two whole trees to throw one away. The difference is invisible from
+     * outside the flow: it is wasted work, not a wrong value, and the only way to observe it is to
+     * inject a counting builder, which would bend the production shape to make a test possible. The
+     * placement rationale lives in `MusicRepository.folderTree()`'s KDoc and is upheld by review
+     * rather than by this suite.
+     */
     @Test fun `an identical re-emission does not re-derive the tree`() = runTest {
         // Two separately-constructed lists that are EQUAL but not the same instance, because that
         // is what Room does — a fresh list per emission. An identity check would pass here while
@@ -101,29 +121,40 @@ class MusicRepositoryFolderTreeTest {
         val first = listOf(row(1, "external_primary:Music/a.mp3"))
         val second = listOf(row(1, "external_primary:Music/a.mp3"))
         assertEquals(
-            "an identical re-emission rebuilt the whole tree — distinctUntilChanged is missing, or is downstream of the map",
-            1,
-            repo(first, second).folderTree().toList().size,
+            "an identical re-emission produced a second one — distinctUntilChanged is missing",
+            listOf(listOf("external_primary:Music/a.mp3")),
+            repo(first, second).folderTree().toList().map { contents(it) },
         )
     }
 
     /**
-     * The other half, and the honest one: a CHANGED emission does re-derive.
+     * The other half, and the honest one: a CHANGED emission carries the CHANGED tree.
      *
-     * This is what stops `distinctUntilChanged()` from being read as a bound on scan cost. The two
-     * lists here are the same LENGTH and differ only in content, which is what makes the test able
-     * to fail — a de-duplication keyed on something cheap like `size` would swallow the second
-     * emission and is exactly the wrong fix for the burst this does not solve. During a real first
-     * scan every batch changes the row set, so every batch rebuilds; the bound on that is the
-     * ViewModel's `stateIn`, not anything here.
+     * Asserting the contents rather than the arrival count is what makes this test able to fail at
+     * all. A `map` that memoizes — building once, then handing back the same tree forever — emits
+     * the right number of times while the folder tab silently never updates after a scan; against a
+     * count this test went green while its own message read "the tree would go stale".
+     *
+     * The two lists are also the same LENGTH and differ only in content, so a de-duplication
+     * cheapened to compare `size` swallows the second emission — the wrong fix for a scan burst that
+     * `distinctUntilChanged` does not bound in the first place. During a real first scan every batch
+     * changes the row set, so every batch rebuilds; the bound on that is the ViewModel's `stateIn`,
+     * not anything here.
      */
-    @Test fun `a changed emission DOES re-derive`() = runTest {
+    @Test fun `a changed emission carries the changed tree`() = runTest {
         val first = listOf(row(1, "external_primary:Music/a.mp3"))
         val second = listOf(row(1, "external_primary:Music/b.mp3"))
         assertEquals(
-            "a genuinely changed song list was suppressed — the tree would go stale",
-            2,
-            repo(first, second).folderTree().toList().size,
+            "the second emission did not carry the changed songs — suppressed, or a memoized tree",
+            listOf(
+                listOf("external_primary:Music/a.mp3"),
+                listOf("external_primary:Music/b.mp3"),
+            ),
+            repo(first, second).folderTree().toList().map { contents(it) },
         )
     }
+
+    /** Every song's location, in tree order — what an emission CONTAINS, never how many arrived. */
+    private fun contents(tree: List<FolderNode>): List<String> =
+        tree.flatMap { node -> node.songs.map { it.relativeKey.orEmpty() } + contents(node.children) }
 }

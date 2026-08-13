@@ -56,7 +56,10 @@ class MusicRepository @Inject constructor(
      * **What `distinctUntilChanged()` actually buys, stated precisely because the obvious reading
      * is wrong.** It sits BEFORE the [map], which is the correct side: after it, the build would
      * run first and the equality check would then deep-compare two whole trees to discover the work
-     * was wasted, instead of comparing two `List<Song>`. But it suppresses only **no-net-change**
+     * was wasted, instead of comparing two `List<Song>`. **That placement is upheld by review, not
+     * by a test** — moving it downstream changes no emitted value, only the work done to produce it,
+     * so it is invisible to any assertion that does not inject a counting builder. Treat a proposal
+     * to move it as unguarded. But it suppresses only **no-net-change**
      * re-emissions — a steady-state rescan upserting identical rows. It does **not** bound a first
      * scan: every upsert batch genuinely changes the row set, so the lists differ, the check passes
      * them straight through, and a 5,000-track scan arriving in ~50 batches rebuilds the whole tree
