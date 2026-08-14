@@ -52,6 +52,7 @@ import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
 import com.kaislate.veldtplayer.ui.settings.NoticesScreen
 import com.kaislate.veldtplayer.ui.settings.SettingsScreen
+import com.kaislate.veldtplayer.ui.settings.accounts.AccountsScreen
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 
@@ -429,11 +430,26 @@ fun VeldtNavHost() {
                                         launchSingleTop = true
                                     }
                                 },
+                                onOpenAccounts = {
+                                    navController.navigate(Destinations.ACCOUNTS) {
+                                        launchSingleTop = true
+                                    }
+                                },
                                 contentPadding = padding,
                             )
                         }
                         composable(Destinations.NOTICES) {
                             NoticesScreen(
+                                onBack = { navController.popBackStack() },
+                                contentPadding = padding,
+                            )
+                        }
+                        // Plain `composable` for the same reason settings is one: a server
+                        // account is configuration, not library content, so it carries no
+                        // audio gate — a user with audio access denied must still be able to
+                        // reach the screen that adds a server.
+                        composable(Destinations.ACCOUNTS) {
+                            AccountsScreen(
                                 onBack = { navController.popBackStack() },
                                 contentPadding = padding,
                             )

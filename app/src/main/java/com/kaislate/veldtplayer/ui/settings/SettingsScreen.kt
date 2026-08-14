@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
@@ -44,7 +46,8 @@ import com.kaislate.veldtplayer.ui.browse.SIDE_MARGIN
 import com.kaislate.veldtplayer.ui.browse.SectionLabel
 
 /**
- * The one settings surface: a three-way theme selector and an About block. It draws its own
+ * The one settings surface: a three-way theme selector, the way in to server accounts, and an
+ * About block with the notices it is obliged to carry. It draws its own
  * header rather than taking the shared `TopAppBar`, same as every non-tab destination — see
  * `VeldtNavHost.TAB_ROUTES`.
  */
@@ -52,6 +55,7 @@ import com.kaislate.veldtplayer.ui.browse.SectionLabel
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenNotices: () -> Unit,
+    onOpenAccounts: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     vm: SettingsViewModel = hiltViewModel(),
@@ -89,6 +93,13 @@ fun SettingsScreen(
             onSelect = { vm.setThemeMode(ThemeMode.SYSTEM) },
         )
 
+        SectionLabel("Servers")
+        SettingsLinkRow(
+            icon = Icons.Filled.Dns,
+            label = "Music servers",
+            onClick = onOpenAccounts,
+        )
+
         SectionLabel("About")
         Column(modifier = Modifier.padding(horizontal = SIDE_MARGIN)) {
             Text("Veldt", style = MaterialTheme.typography.titleMedium)
@@ -104,7 +115,11 @@ fun SettingsScreen(
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
-        NoticesRow(onClick = onOpenNotices)
+        SettingsLinkRow(
+            icon = Icons.Filled.Description,
+            label = "Third-party notices",
+            onClick = onOpenNotices,
+        )
     }
 }
 
@@ -155,9 +170,21 @@ private fun ThemeOptionRow(
     }
 }
 
-/** Opens [NoticesScreen] — the row that names the compliance surface, not just a settings row. */
+/**
+ * One row that opens another screen: an icon, a label, and the chevron that says "there is more
+ * through here".
+ *
+ * Generalised from what used to be a private `NoticesRow` when the servers row arrived. Both
+ * icons are decorative — `contentDescription = null` — because [label] already names the target
+ * and TalkBack would otherwise announce the destination three times.
+ */
 @Composable
-private fun NoticesRow(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsLinkRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -167,12 +194,12 @@ private fun NoticesRow(onClick: () -> Unit, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            Icons.Filled.Description,
+            icon,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.width(16.dp))
-        Text("Third-party notices", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
         Icon(
             Icons.AutoMirrored.Filled.ArrowForward,
             contentDescription = null,
