@@ -70,12 +70,18 @@ object SubsonicAuth {
      * Written as a parse-and-rebuild over [SECRET_PARAMS] rather than as a regular expression
      * so that adding a parameter to that set is the whole change. A regex enumerates the names
      * a second time, and the two copies drift.
+     *
+     * Two things carry credentials, not one: the query parameters in [SECRET_PARAMS], and the
+     * `user:password@` userinfo in the authority. [SubsonicUrls.normalizeBase] already strips
+     * userinfo so it is never stored, but this is the mandatory logging seam for the whole
+     * network layer and must hold for a url that reached it by any other path.
      */
     fun redact(url: String): String {
-        val queryStart = url.indexOf('?')
-        if (queryStart < 0) return url
-        val head = url.substring(0, queryStart)
-        val rebuilt = url.substring(queryStart + 1)
+        val deauthed = redactUserInfo(url)
+        val queryStart = deauthed.indexOf('?')
+        if (queryStart < 0) return deauthed
+        val head = deauthed.substring(0, queryStart)
+        val rebuilt = deauthed.substring(queryStart + 1)
             .split('&')
             .joinToString("&") { pair ->
                 val eq = pair.indexOf('=')
@@ -84,5 +90,24 @@ object SubsonicAuth {
                 if (name in SECRET_PARAMS) "$name=<redacted>" else pair
             }
         return "$head?$rebuilt"
+    }
+
+    /**
+     * The url with any `user:password@` replaced.
+     *
+     * The '@' is looked for inside the authority only — the span between `://` and the first
+     * `/`, `?` or `#` — because an '@' is perfectly legal in a path or in a parameter value,
+     * and cutting at the last one in the whole string would eat the host out of the log line
+     * for a search whose term happens to be an email address.
+     */
+    private fun redactUserInfo(url: String): String {
+        val schemeEnd = url.indexOf("://")
+        if (schemeEnd < 0) return url
+        val authorityStart = schemeEnd + "://".length
+        val authorityEnd = url.indexOfAny(charArrayOf('/', '?', '#'), authorityStart)
+            .let { if (it < 0) url.length else it }
+        val at = url.substring(authorityStart, authorityEnd).lastIndexOf('@')
+        if (at < 0) return url
+        return url.substring(0, authorityStart) + "<redacted>@" + url.substring(authorityStart + at + 1)
     }
 }

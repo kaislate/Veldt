@@ -52,6 +52,37 @@ class SubsonicUrlsTest {
         assertEquals("https://music.example.com", SubsonicUrls.normalizeBase("https://music.example.com"))
     }
 
+    @Test fun `normalizeBase accepts a scheme in ANY case — soft keyboards capitalise`() {
+        // RFC 3986 makes the scheme case-insensitive, and an Android soft keyboard
+        // auto-capitalises the first character of a text field. Rejecting "Http://…" tells a
+        // user with a perfectly good address that it "does not look like a server address".
+        assertEquals("http://h:4533", SubsonicUrls.normalizeBase("Http://h:4533"))
+        assertEquals("https://h", SubsonicUrls.normalizeBase("HTTPS://h"))
+    }
+
+    @Test fun `normalizeBase lowercases ONLY the scheme — a path is case-sensitive`() {
+        // A reverse proxy commonly mounts a server on a capitalised subpath. Lowercasing the
+        // whole string to fix the scheme would turn /Music into /music and 404 every request.
+        assertEquals("http://h/Music", SubsonicUrls.normalizeBase("HtTp://h/Music"))
+        assertEquals("http://h/Music", SubsonicUrls.normalizeBase("h/Music"))
+    }
+
+    @Test fun `normalizeBase strips userinfo so a password is never stored as a base url`() {
+        val normalized = SubsonicUrls.normalizeBase("http://kyle:hunter2@h:4533")
+        assertEquals("http://h:4533", normalized)
+        // Asserted as absence too: the equality above is what breaks, but this names why.
+        val leaked = listOf("kyle", "hunter2", "@").filter { it in normalized.orEmpty() }
+        assertEquals("userinfo survived normalizeBase", emptyList<String>(), leaked)
+        assertEquals("http://h/Music", SubsonicUrls.normalizeBase("http://kyle@h/Music"))
+    }
+
+    @Test fun `normalizeBase does NOT normalise a default port — the KDoc says so`() {
+        // Pins the corrected class KDoc. If normalizeBase is ever rewritten to return
+        // parsed.toString(), :80 disappears and this fails, forcing the doc to be re-read.
+        assertEquals("http://h:80", SubsonicUrls.normalizeBase("http://h:80"))
+        assertEquals("https://h:443", SubsonicUrls.normalizeBase("https://h:443"))
+    }
+
     @Test fun `normalizeBase rejects what cannot be a server` () {
         val rejected = listOf("", "   ", "ftp://h", "http://", "not a url at all", "javascript:alert(1)")
         val accepted = rejected.filter { SubsonicUrls.normalizeBase(it) != null }

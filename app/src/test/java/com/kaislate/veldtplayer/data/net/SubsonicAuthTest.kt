@@ -41,10 +41,25 @@ class SubsonicAuthTest {
         assertTrue("the plaintext password leaked into the query", password !in rendered)
     }
 
-    @Test fun `salts differ between calls and are long enough`() {
+    @Test fun `successive calls on ONE generator differ — production has ONE SecureRandom`() {
+        // The previous spelling here compared newSalt(Random(1)) with newSalt(Random(2)): two
+        // different SEEDS, not two CALLS. Production injects a single SecureRandom via Hilt and
+        // calls newSalt once per request, so the property that matters is that the SAME
+        // generator yields a new salt every time. A memoizing or per-instance-caching newSalt
+        // passed the old spelling while making every request reuse one salt — which makes the
+        // t= token replayable.
+        val r = Random(1)
+        assertNotEquals(SubsonicAuth.newSalt(r), SubsonicAuth.newSalt(r))
+
+        val generator = Random(1)
+        val salts = List(16) { SubsonicAuth.newSalt(generator) }
+        // WHICH ones collided, not how many: a count cannot say what went wrong.
+        val repeated = salts.groupBy { it }.filterValues { it.size > 1 }.keys.sorted()
+        assertEquals("these salts repeated across successive calls", emptyList<String>(), repeated)
+    }
+
+    @Test fun `a salt is long enough and is hex`() {
         val a = SubsonicAuth.newSalt(Random(1))
-        val b = SubsonicAuth.newSalt(Random(2))
-        assertNotEquals(a, b)
         // The Subsonic spec requires at least six characters; this asserts the floor we chose.
         assertTrue("salt too short: $a", a.length >= 16)
         assertTrue("salt is not hex: $a", a.all { it in "0123456789abcdef" })
@@ -64,6 +79,33 @@ class SubsonicAuthTest {
         assertTrue("u= was redacted but is not a secret", "u=Kyle" in redacted)
         assertTrue("v= was lost", "v=1.16.1" in redacted)
         assertTrue("f= was lost", "f=json" in redacted)
+    }
+
+    @Test fun `redaction neutralises userinfo, which is not in the query string at all`() {
+        // redact is the mandatory logging seam for the whole network layer, and it used to walk
+        // only the query. An embedded password sits in the AUTHORITY, before the '?', so it
+        // passed through untouched into any log line.
+        val redacted = SubsonicAuth.redact("http://kyle:hunter2@h/rest/ping?f=json")
+        val leaked = listOf("kyle", "hunter2").filter { it in redacted }
+        assertEquals("userinfo survived the logging seam", emptyList<String>(), leaked)
+        assertTrue("the url is no longer usable for debugging: $redacted", "h/rest/ping" in redacted)
+        assertTrue("f= was lost", "f=json" in redacted)
+    }
+
+    @Test fun `userinfo is neutralised even when there is no query string to walk`() {
+        // The early `if (queryStart < 0) return url` returned the url verbatim, so the whole
+        // query-walking seam was skipped for exactly the urls that carry no parameters.
+        val leaked = listOf("kyle", "hunter2")
+            .filter { it in SubsonicAuth.redact("http://kyle:hunter2@h:4533") }
+        assertEquals("userinfo survived on a url with no query", emptyList<String>(), leaked)
+    }
+
+    @Test fun `an at sign in a parameter value is not mistaken for userinfo`() {
+        // The '@' must be looked for in the authority only, or a url ending in an email-shaped
+        // search term gets its host chopped off in the logs.
+        val redacted = SubsonicAuth.redact("http://h/rest/search3?f=json&query=kyle@example.com")
+        assertTrue("the host was eaten: $redacted", redacted.startsWith("http://h/rest/search3"))
+        assertTrue("a non-secret parameter was mangled: $redacted", "query=kyle@example.com" in redacted)
     }
 
     @Test fun `redaction is order independent`() {
