@@ -43,16 +43,32 @@ class PlayerErrorPolicyTest {
     }
 
     /**
-     * (2) Representative non-network codes keep today's skip. A dead file stays dead, and an
-     * undecodable one stays undecodable: retrying either in place is a guaranteed dead end.
+     * (2) Non-network codes keep today's skip. A dead file stays dead, and an undecodable one
+     * stays undecodable: retrying either in place is a guaranteed dead end.
+     *
+     * This covers **the entire IO block (2000..2008) except the two that pause**, plus a decoder
+     * and a parser code, rather than a sample of it. A sample was the original mistake: the KDoc
+     * on [errorAction] rules explicitly on 2000, 2003 and 2007, and none of them were pinned, so
+     * moving all three into the pause set left the suite green. Pinning the whole block also
+     * means a future Media3 filling 2009 is caught by the unknown-code test below rather than
+     * slipping between the two.
+     *
+     * 2000 is the one that matters most and is least obviously a network code:
+     * `ERROR_CODE_IO_UNSPECIFIED` covers **plain local IO**. Ruling it into the pause set would
+     * pause *local* playback in place — an unmounted SD card, a file yanked from under a stale
+     * MediaStore row — with no retry, by `PAUSE_IN_PLACE`'s own design.
      */
     @Test
     fun `non-network codes skip`() {
         val codes = listOf(
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED, // 2000 — also covers plain local IO
+            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE, // 2003 — server answered
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND, // 2005
-            PlaybackException.ERROR_CODE_DECODING_FAILED, // 4003
-            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED, // 3001
             PlaybackException.ERROR_CODE_IO_NO_PERMISSION, // 2006
+            PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED, // 2007 — config fault
+            PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE, // 2008 — closes the block
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED, // 3001
+            PlaybackException.ERROR_CODE_DECODING_FAILED, // 4003
         )
         assertEquals(
             "a non-network code started pausing, so a permanently dead item now stalls playback",

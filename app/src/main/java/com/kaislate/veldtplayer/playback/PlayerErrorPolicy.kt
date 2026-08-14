@@ -42,9 +42,15 @@ internal enum class ErrorAction {
  *
  * It is the tempting one, and it is the wrong one. Media3 raises it for *any* non-2xx, so a
  * single code covers both a 401 on an expired token (retry-worthy) and a 404 on a file that was
- * deleted last month (permanently dead). The response code that would tell them apart is on the
- * exception's cause, not on `errorCode`, so this function genuinely cannot distinguish them.
- * Forced to pick one behaviour for both:
+ * deleted last month (permanently dead). The response code that would tell them apart lives on
+ * the exception's cause, not on `errorCode`.
+ *
+ * That distinction is not merely outside this function's signature — it is **unrecoverable at
+ * [PlaybackConnection] entirely**. The exception crosses the session boundary as a bundle, and
+ * `PlaybackException.fromBundle` rebuilds the cause reflectively via `Class.getConstructor(String)`;
+ * `HttpDataSource.InvalidResponseCodeException` has no `(String)` constructor, so the cause does
+ * not survive the round trip. Widening this signature would not help. Forced to pick one
+ * behaviour for both:
  *
  *  - **The server answered.** That is positive evidence the network is up, which is the exact
  *    premise the pause branch rests on ("the next item will fail the same way") — and it fails.
@@ -55,10 +61,17 @@ internal enum class ErrorAction {
  *    and pauses again — a dead end with no way out but rebuilding the queue.
  *  - **The 401 case is not reachable yet.** N0 adds the seam and nothing that uses it: no
  *    account, no credential store, no token refresh. Pausing on 2004 today would be waiting for
- *    a refresh that nothing in the process performs. When N1 adds tokens, the fix is a refresh
- *    keyed on the response code off the cause — not a blanket pause keyed on 2004. Leaving 2004
- *    in the skip set keeps that seam honest instead of pre-committing to a behaviour that
- *    nothing can yet deliver.
+ *    a refresh that nothing in the process performs. Leaving 2004 in the skip set keeps that
+ *    seam honest instead of pre-committing to a behaviour that nothing can yet deliver.
+ *
+ * **Note for N1, since the obvious guess is wrong:** token refresh does **not** belong here, and
+ * cannot. Because the cause does not survive the bundle round trip (above), `onPlayerError` never
+ * sees the 401 that would trigger it — by the time a failure reaches this function it is an
+ * `Int` and nothing more. The refresh has to live **service-side**, where the real exception
+ * still exists: at a `DataSource`/`HttpDataSource` seam or a `LoadErrorHandlingPolicy`, alongside
+ * the `ResolvingDataSource` this slice installed. Retrying there also means the retry is
+ * invisible to the queue, which is the behaviour actually wanted — a refreshed token should
+ * resume the track, not surface as a playback error at all.
  *
  * For the same reason `ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE` (2003) skips — the server
  * answered, with the wrong thing — as do `ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED` (2007, a

@@ -4,6 +4,7 @@
 package com.kaislate.veldtplayer.playback
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -47,8 +48,14 @@ class PlaybackUriResolverTest {
     @Test fun `a content uri is returned unchanged`() {
         // Global constraint 5: local playback is not routed through anything new. The resolver
         // returns the very reference it was handed, so this is identity, not reconstruction.
+        //
+        // `assertSame`, as ResolvingDataSourceWiringTest already does for DataSpec. assertEquals
+        // could not see the claim the KDoc makes: a reconstruction through android.net.Uri is a
+        // different object, and not a harmless one — it re-encodes, so `veldt://track/a/b/c`
+        // comes back as `.../b%2Fc` and lowercase escapes come back uppercased. A passthrough
+        // that silently changes then sends VeldtDataSpecResolver down its rewrite branch.
         val subject = PlaybackUriResolver(setOf(FakeResolver("subsonic:acct1", "https://WRONG/")))
-        assertEquals("content://media/external/audio/media/122", subject.resolve(local))
+        assertSame(local, subject.resolve(local))
     }
 
     @Test fun `a veldt uri with a matching resolver returns that resolver's output`() {
@@ -61,8 +68,9 @@ class PlaybackUriResolverTest {
     @Test fun `a veldt uri with no matching resolver returns the input unchanged`() {
         // It will fail to load, which is the correct outcome: visible, and attributable to a
         // missing account rather than to a uri that silently became something else.
+        // `assertSame` for the same reason as above — "unchanged" is an identity claim.
         val subject = PlaybackUriResolver(setOf(FakeResolver("jellyfin", "https://WRONG/")))
-        assertEquals("veldt://track/subsonic%3Aacct1/AL%2F42", subject.resolve(remote))
+        assertSame(remote, subject.resolve(remote))
     }
 
     @Test fun `a resolver whose sourceId does not match is never consulted`() {
