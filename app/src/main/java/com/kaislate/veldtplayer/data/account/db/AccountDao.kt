@@ -12,8 +12,17 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface AccountDao {
 
-    /** Ordered by creation so the list does not reshuffle when a display name is edited. */
-    @Query("SELECT * FROM accounts ORDER BY createdAtMs ASC")
+    /**
+     * Ordered by creation so the list does not reshuffle when a display name is edited.
+     *
+     * **`sourceId` is the tiebreaker and it is load-bearing.** `createdAtMs` is
+     * `System.currentTimeMillis()`, so two accounts added back to back tie on it, and
+     * `@Insert(onConflict = REPLACE)` is not a true upsert: SQLite deletes and re-inserts, which
+     * hands the row a new rowid. Among ties SQLite returns rows in rowid order, so without this
+     * clause a `rename()` moved the renamed account to the end — the exact reshuffle the first
+     * line of this comment promises does not happen.
+     */
+    @Query("SELECT * FROM accounts ORDER BY createdAtMs ASC, sourceId ASC")
     fun observeAll(): Flow<List<AccountEntity>>
 
     @Query("SELECT * FROM accounts WHERE sourceId = :sourceId")
