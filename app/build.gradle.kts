@@ -104,6 +104,15 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
 
+    // Network stack for self-hosted sources (design spec §5.1). OkHttp is pure-JVM, so the
+    // zero-native property holds; it is also already present transitively via Coil, which is
+    // exactly why it is declared here — a Coil upgrade must not silently move it.
+    implementation(libs.okhttp)
+    // RUNTIME ONLY. There is no serialization compiler plugin in this project and there
+    // cannot be one offline, so `@Serializable` is unavailable by construction; JSON is read
+    // by navigating JsonElement. See Global Constraint 3.
+    implementation(libs.kotlinx.serialization.json)
+
     testImplementation(libs.junit)
     // Test (Robolectric DAO test + pure coroutine tests)
     testImplementation(libs.robolectric)

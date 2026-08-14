@@ -23,7 +23,10 @@ class NoticesResourceTest {
     @Test fun `the bundled notices name every third-party licence we ship under`() {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val text = ctx.resources.openRawResource(R.raw.notices).bufferedReader().readText()
-        val required = listOf("SIL Open Font License", "Apache License", "eAlvaTag", "Bricolage")
+        val required = listOf(
+            "SIL Open Font License", "Apache License", "eAlvaTag", "Bricolage",
+            "OkHttp", "Okio", "kotlinx.serialization",
+        )
         val missing = required.filterNot { text.contains(it, ignoreCase = true) }
         assertEquals("notices bundled in the APK are missing: $missing", emptyList<String>(), missing)
     }
