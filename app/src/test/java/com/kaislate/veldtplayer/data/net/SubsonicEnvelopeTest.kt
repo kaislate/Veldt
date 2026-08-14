@@ -54,14 +54,72 @@ class SubsonicEnvelopeTest {
         )
     }
 
-    @Test fun `both 10 and 40 mean the credentials will not work`() {
+    @Test fun `meansCredentialsWontWork is asserted TOTAL over the enum, never sampled`() {
         // The measured distinction, as behaviour. A client keying re-login on 40 alone sits
         // silently on a 10 forever.
-        assertEquals(true, SubsonicError.WRONG_CREDENTIALS.meansCredentialsWontWork)
-        assertEquals(true, SubsonicError.MISSING_PARAMETER.meansCredentialsWontWork)
-        assertEquals(true, SubsonicError.TOKEN_AUTH_NOT_SUPPORTED.meansCredentialsWontWork)
-        assertEquals(false, SubsonicError.NOT_FOUND.meansCredentialsWontWork)
-        assertEquals(false, SubsonicError.SERVER_TOO_OLD.meansCredentialsWontWork)
+        //
+        // Enumerated over entries rather than sampled because the sampled spelling left five
+        // constants unasserted, and `|| this == NOT_AUTHORIZED` survived the whole suite. 50
+        // is precisely the plausible mis-classification: "not authorized for the operation"
+        // means the credentials are FINE and the account lacks a right, so calling it a
+        // credential failure pushes a correctly-signed-in user into a re-login prompt they can
+        // never satisfy.
+        val wontWork = setOf(
+            SubsonicError.MISSING_PARAMETER,
+            SubsonicError.WRONG_CREDENTIALS,
+            SubsonicError.TOKEN_AUTH_NOT_SUPPORTED,
+        )
+        val willWork = setOf(
+            SubsonicError.GENERIC,
+            SubsonicError.CLIENT_TOO_OLD,
+            SubsonicError.SERVER_TOO_OLD,
+            SubsonicError.NOT_AUTHORIZED,
+            SubsonicError.TRIAL_EXPIRED,
+            SubsonicError.NOT_FOUND,
+            SubsonicError.UNKNOWN,
+        )
+        // A new constant lands in neither set and fails HERE, naming itself, so the author is
+        // forced to classify it rather than let it default silently into a bucket.
+        assertEquals(
+            "a SubsonicError constant is unclassified above",
+            SubsonicError.entries.toSet(),
+            wontWork + willWork,
+        )
+        val misclassified = SubsonicError.entries
+            .filter { it.meansCredentialsWontWork != (it in wontWork) }
+        assertEquals(
+            "these are on the wrong side of meansCredentialsWontWork",
+            emptyList<SubsonicError>(),
+            misclassified,
+        )
+    }
+
+    @Test fun `every named code maps both ways — of(code) and constant dot code`() {
+        // Swapping CLIENT_TOO_OLD(20) and SERVER_TOO_OLD(30) survived the entire suite: the
+        // shape is unchanged and one value moves between two correct-looking constants.
+        // SERVER_TOO_OLD appeared in a test by NAME only, never through of(30). The user-facing
+        // consequence is being told to fix the wrong machine.
+        val table = listOf(
+            0 to SubsonicError.GENERIC,
+            10 to SubsonicError.MISSING_PARAMETER,
+            20 to SubsonicError.CLIENT_TOO_OLD,
+            30 to SubsonicError.SERVER_TOO_OLD,
+            40 to SubsonicError.WRONG_CREDENTIALS,
+            41 to SubsonicError.TOKEN_AUTH_NOT_SUPPORTED,
+            50 to SubsonicError.NOT_AUTHORIZED,
+            60 to SubsonicError.TRIAL_EXPIRED,
+            70 to SubsonicError.NOT_FOUND,
+        )
+        // Total: every constant except the UNKNOWN sentinel must appear in the table above.
+        assertEquals(
+            "a named SubsonicError constant is missing from the code table",
+            SubsonicError.entries.toSet() - SubsonicError.UNKNOWN,
+            table.map { it.second }.toSet(),
+        )
+        val wrongLookup = table.filterNot { (code, constant) -> SubsonicError.of(code) == constant }
+        assertEquals("of(code) resolved to the wrong constant", emptyList<Pair<Int, SubsonicError>>(), wrongLookup)
+        val wrongValue = table.filterNot { (code, constant) -> constant.code == code }
+        assertEquals("constant.code is not the wire number", emptyList<Pair<Int, SubsonicError>>(), wrongValue)
     }
 
     @Test fun `an unmapped numeric code is preserved verbatim alongside UNKNOWN`() {
