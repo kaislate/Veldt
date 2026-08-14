@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.data.account.Account
 import com.kaislate.veldtplayer.data.account.AccountRepository
+import com.kaislate.veldtplayer.data.account.AccountWriteResult
 import com.kaislate.veldtplayer.data.net.ConnectionOutcome
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -27,6 +28,29 @@ sealed interface TestState {
     data class Unreachable(val message: String) : TestState
 }
 
+/**
+ * What the last "Add server" / "Save" did.
+ *
+ * Kept separate from [TestState] because the two answer different questions and a save must not
+ * overwrite the result of a connection test the user is still reading. [SecretUnavailable] is the
+ * reason this type exists at all — see
+ * [com.kaislate.veldtplayer.data.account.AccountWriteResult.SecretUnavailable].
+ */
+sealed interface SaveState {
+    data object Idle : SaveState
+    data object Saved : SaveState
+
+    /** The repository refused the address. The field-level hint already says so; this is the
+     *  case where the UI thought the url was fine and the storage boundary disagreed. */
+    data object InvalidUrl : SaveState
+
+    /** Saved, but the password could not be stored on this device. NOT a credential error. */
+    data object SecretUnavailable : SaveState
+
+    /** The account was removed underneath the edit. */
+    data object Gone : SaveState
+}
+
 @HiltViewModel
 class AccountsViewModel @Inject constructor(
     private val repo: AccountRepository,
@@ -39,7 +63,13 @@ class AccountsViewModel @Inject constructor(
     private val _test = MutableStateFlow<TestState>(TestState.Idle)
     val test: StateFlow<TestState> = _test.asStateFlow()
 
-    fun resetTest() { _test.value = TestState.Idle }
+    private val _save = MutableStateFlow<SaveState>(SaveState.Idle)
+    val save: StateFlow<SaveState> = _save.asStateFlow()
+
+    fun resetTest() {
+        _test.value = TestState.Idle
+        _save.value = SaveState.Idle
+    }
 
     fun testConnection(url: String, username: String, password: String) {
         val base = baseUrlOf(url) ?: run {
@@ -66,17 +96,46 @@ class AccountsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The url is still normalised here — the screen needs a base URL for `testConnection` and
+     * for [AccountForm.defaultName] anyway — but the repository normalises again and may still
+     * answer [AccountWriteResult.InvalidUrl]. That duplication is deliberate: the storage
+     * boundary owns the invariant that no `user:password@` is ever written, and a boundary that
+     * trusts its caller is not a boundary.
+     */
     fun add(displayName: String, url: String, username: String, password: String) {
-        val base = baseUrlOf(url) ?: return
+        val base = baseUrlOf(url) ?: run {
+            _save.value = SaveState.InvalidUrl
+            return
+        }
         val name = displayName.ifBlank { AccountForm.defaultName(url) }
-        viewModelScope.launch { repo.add(name, base, username, password) }
+        viewModelScope.launch { _save.value = saveStateOf(repo.add(name, base, username, password)) }
     }
 
     fun update(sourceId: String, url: String, username: String, password: String) {
-        val base = baseUrlOf(url) ?: return
-        viewModelScope.launch {
-            repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
+        val base = baseUrlOf(url) ?: run {
+            _save.value = SaveState.InvalidUrl
+            return
         }
+        viewModelScope.launch {
+            _save.value = saveStateOf(
+                repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
+            )
+        }
+    }
+
+    /**
+     * The three outcomes the caller has to tell apart, rendered as one.
+     *
+     * [AccountWriteResult.SecretUnavailable] must never become a credential message: the
+     * password reaching this method has usually just been probed successfully against the real
+     * server, so "wrong password" would send the user into a retry that fails identically.
+     */
+    private fun saveStateOf(result: AccountWriteResult): SaveState = when (result) {
+        is AccountWriteResult.Saved -> SaveState.Saved
+        AccountWriteResult.InvalidUrl -> SaveState.InvalidUrl
+        is AccountWriteResult.SecretUnavailable -> SaveState.SecretUnavailable
+        AccountWriteResult.NoSuchAccount -> SaveState.Gone
     }
 
     fun delete(sourceId: String) {

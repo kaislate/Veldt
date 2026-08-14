@@ -60,6 +60,7 @@ fun AccountsScreen(
 ) {
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val test by vm.test.collectAsStateWithLifecycle()
+    val save by vm.save.collectAsStateWithLifecycle()
     val direction = LocalLayoutDirection.current
     val existing = accounts.firstOrNull()
 
@@ -165,7 +166,21 @@ fun AccountsScreen(
                 }
             }
 
-            if (existing != null && !existing.hasSecret) {
+            // The save outcome outranks the generic "no readable password" banner below.
+            // Telling someone whose password is correct to "enter it again" is the failure the
+            // SecretUnavailable case exists to prevent.
+            when (save) {
+                SaveState.SecretUnavailable -> SaveNote(
+                    "Saved, but this device's secure storage would not accept the password, so " +
+                        "it was not stored. Your password is not the problem — re-entering it " +
+                        "will fail the same way until the device's keystore is available again."
+                )
+                SaveState.InvalidUrl -> SaveNote("That does not look like a server address.")
+                SaveState.Gone -> SaveNote("That account was removed on another screen.")
+                SaveState.Idle, SaveState.Saved -> Unit
+            }
+
+            if (existing != null && !existing.hasSecret && save != SaveState.SecretUnavailable) {
                 Spacer(Modifier.height(12.dp))
                 Text(
                     "This account's stored password can no longer be read — usually after a " +
@@ -176,6 +191,18 @@ fun AccountsScreen(
             }
         }
     }
+}
+
+/** One line of after-the-save feedback, in the error colour. */
+@Composable
+private fun SaveNote(message: String, modifier: Modifier = Modifier) {
+    Spacer(Modifier.height(12.dp))
+    Text(
+        message,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.error,
+        modifier = modifier,
+    )
 }
 
 @Composable

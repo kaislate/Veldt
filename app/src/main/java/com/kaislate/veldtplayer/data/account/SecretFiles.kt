@@ -24,13 +24,22 @@ class SecretFiles @Inject constructor(@ApplicationContext private val context: C
 
     private val dir: File get() = File(context.filesDir, "account-secrets").apply { mkdirs() }
 
-    fun write(id: String, bytes: ByteArray) {
-        val name = safeName(id) ?: return
-        try {
+    /**
+     * Store [bytes] under [id], reporting whether they actually landed.
+     *
+     * The boolean is not decoration: `AccountRepository` turns a false into
+     * [com.kaislate.veldtplayer.data.account.AccountWriteResult.SecretUnavailable], which is how
+     * a user learns their password could not be stored instead of being told it was wrong.
+     */
+    fun write(id: String, bytes: ByteArray): Boolean {
+        val name = safeName(id) ?: return false
+        return try {
             File(dir, name).writeBytes(bytes)
+            true
         } catch (_: IOException) {
             // A full disk must not crash account creation; the account will simply need its
             // password re-entered, which is the same state as an invalidated key.
+            false
         }
     }
 

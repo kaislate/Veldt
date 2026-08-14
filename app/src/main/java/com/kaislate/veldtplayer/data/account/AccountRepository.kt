@@ -5,10 +5,12 @@ package com.kaislate.veldtplayer.data.account
 
 import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.account.db.AccountEntity
+import com.kaislate.veldtplayer.data.net.SubsonicUrls
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -77,26 +79,46 @@ class AccountRepository(
         }
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * Create an account.
+     *
+     * **[baseUrl] is normalised here, not merely at the UI.** `SubsonicUrls.normalizeBase`
+     * strips any `user:password@` userinfo, and this is the boundary where that guarantee has
+     * to bite: a self-hoster behind a reverse proxy types `https://user:pass@host`, which is an
+     * ordinary thing to type, and storing it verbatim writes a cleartext password into
+     * `accounts.baseUrl` — where it survives into any debug DB dump and is handed to OkHttp on
+     * every request. `AccountForm.canSubmit` takes the *raw* url, so a call site cannot be
+     * trusted to have normalised anything, and a durable boundary enforces its own invariant.
+     *
+     * The row is written even when the secret cannot be sealed; see
+     * [AccountWriteResult.SecretUnavailable] for why, and why the caller must not report it as
+     * a bad credential.
+     */
     suspend fun add(
         displayName: String,
         baseUrl: String,
         username: String,
         password: String,
-    ): String {
+    ): AccountWriteResult {
+        val base = SubsonicUrls.normalizeBase(baseUrl) ?: return AccountWriteResult.InvalidUrl
         val sourceId = newId()
-        box.seal(password)?.let { files.write(sourceId, it) }
+        val stored = box.seal(password)?.let { files.write(sourceId, it) } == true
         dao.upsert(
             AccountEntity(
                 sourceId = sourceId,
                 displayName = displayName,
-                baseUrl = baseUrl,
+                baseUrl = base,
                 username = username,
                 authMode = AccountEntity.AUTH_TOKEN,
                 capabilities = null,
                 createdAtMs = now(),
             )
         )
-        return sourceId
+        return if (stored) {
+            AccountWriteResult.Saved(sourceId)
+        } else {
+            AccountWriteResult.SecretUnavailable(sourceId)
+        }
     }
 
     /**
@@ -105,18 +127,39 @@ class AccountRepository(
      * A null [password] means "leave the stored one alone". The edit screen must be usable
      * for fixing a URL without making the user re-type a password they cannot see — that is
      * the whole point of identity surviving an edit (design spec §5.2).
+     *
+     * [baseUrl] is normalised for the same reason it is in [add].
+     *
+     * **When a requested password change cannot be stored, the previous sealed file is
+     * removed.** Leaving it would make the row say one thing and the secret say another, in the
+     * one operation whose entire purpose is keeping the two stores in step: `hasSecret` would
+     * read true while every request went out with the old password. Deleting converges on the
+     * same resting state as a failed [add] — no secret, `hasSecret` false, the screen offering
+     * to take the password again — and the returned
+     * [AccountWriteResult.SecretUnavailable] is what tells the caller why.
      */
     suspend fun updateCredentials(
         sourceId: String,
         baseUrl: String,
         username: String,
         password: String?,
-    ) {
-        val existing = dao.get(sourceId) ?: return
+    ): AccountWriteResult {
+        val base = SubsonicUrls.normalizeBase(baseUrl) ?: return AccountWriteResult.InvalidUrl
+        val existing = dao.get(sourceId) ?: return AccountWriteResult.NoSuchAccount
+        var secretLost = false
         if (password != null) {
-            box.seal(password)?.let { files.write(sourceId, it) }
+            val stored = box.seal(password)?.let { files.write(sourceId, it) } == true
+            if (!stored) {
+                files.delete(sourceId)
+                secretLost = true
+            }
         }
-        dao.upsert(existing.copy(baseUrl = baseUrl, username = username))
+        dao.upsert(existing.copy(baseUrl = base, username = username))
+        return if (secretLost) {
+            AccountWriteResult.SecretUnavailable(sourceId)
+        } else {
+            AccountWriteResult.Saved(sourceId)
+        }
     }
 
     suspend fun rename(sourceId: String, displayName: String) {
@@ -134,6 +177,15 @@ class AccountRepository(
         files.delete(sourceId)
     }
 
-    /** The plaintext password, or null if there is none or the key that sealed it is gone. */
-    fun password(sourceId: String): String? = files.read(sourceId)?.let { box.open(it) }
+    /**
+     * The plaintext password, or null if there is none or the key that sealed it is gone.
+     *
+     * `suspend` + [Dispatchers.IO] because this is a file read, an AES-GCM decrypt and a
+     * Keystore round trip. `observe()`'s `flowOn` covers only `observe()`; this method is what
+     * the request path calls per request and what a "sign in again" click handler calls
+     * directly, and on the caller's thread that is a StrictMode disk read on main.
+     */
+    suspend fun password(sourceId: String): String? = withContext(Dispatchers.IO) {
+        files.read(sourceId)?.let { box.open(it) }
+    }
 }
