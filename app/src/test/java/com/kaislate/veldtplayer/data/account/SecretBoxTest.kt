@@ -6,9 +6,13 @@ package com.kaislate.veldtplayer.data.account
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
+import javax.crypto.AEADBadTagException
+import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 /**
  * Plain JVM. AndroidKeyStore is unreachable under Robolectric (Global Constraint 5), which is
@@ -123,5 +127,49 @@ class SecretBoxTest {
         // originally and was a TAUTOLOGY — an array always equals its own copy, so it could
         // not fail under any implementation.
         assertEquals(12 + "hunter2".toByteArray().size + 16, sealed.size)
+    }
+
+    /** Decrypt [sealed] treating the FIRST 12 bytes as the IV — the layout this project ships. */
+    private fun openWithLeadingIv(key: SecretKey, sealed: ByteArray): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, sealed.copyOfRange(0, 12)))
+        return String(cipher.doFinal(sealed.copyOfRange(12, sealed.size)), Charsets.UTF_8)
+    }
+
+    /** Decrypt [sealed] treating the LAST 12 bytes as the IV — the layout that must NOT work. */
+    private fun openWithTrailingIv(key: SecretKey, sealed: ByteArray): String {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            key,
+            GCMParameterSpec(128, sealed.copyOfRange(sealed.size - 12, sealed.size)),
+        )
+        return String(cipher.doFinal(sealed.copyOfRange(0, sealed.size - 12)), Charsets.UTF_8)
+    }
+
+    @Test fun `the LAYOUT is iv-then-ciphertext, read by a Cipher that is not SecretBox`() {
+        // The two tests above pin the SIZE and claim to guard a coordinated seal/open change.
+        // They do not. The surviving mutant is `ciphertext || iv` in seal with the iv read from
+        // the tail in open: the sizes are identical (28 and 35), the round trip agrees with
+        // itself, both tamper cases still fail the tag and all three short inputs still trip the
+        // `size < 28` guard — every one of the ten tests here passed it, while EVERY secret
+        // already on a user's device became permanently unreadable.
+        //
+        // The only way to say "iv first" executably is to decrypt through something that is not
+        // SecretBox, so seal and open cannot agree with each other about a wrong answer.
+        val key = freshKey()
+        for (secret in listOf("", "hunter2", "pässwörd–ünïcode-éè")) {
+            val sealed = boxWith(key).seal(secret) ?: error("seal returned null")
+            assertEquals(
+                "the first 12 bytes are not the IV for secret \"$secret\"",
+                secret,
+                openWithLeadingIv(key, sealed),
+            )
+            // Stated in both directions: under the mutant this reading is the one that WORKS,
+            // so asserting only the positive leaves half the layout unpinned.
+            assertThrows(
+                AEADBadTagException::class.java,
+            ) { openWithTrailingIv(key, sealed) }
+        }
     }
 }
