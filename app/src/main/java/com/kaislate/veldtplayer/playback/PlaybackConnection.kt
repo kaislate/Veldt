@@ -84,6 +84,10 @@ class PlaybackConnection @Inject constructor(
     /**
      * Consecutive failed items, so the skip-on in [Player.Listener.onPlayerError] cannot spin
      * forever. Reset by [publish] the moment anything reaches `STATE_READY`.
+     *
+     * Counts *skips only* — see [nextConsecutiveErrors]. An [ErrorAction.PAUSE_IN_PLACE] has not
+     * consumed an item, and if it bumped this then a long outage would walk the bound below and
+     * stop playback regardless, which is exactly what pausing exists to prevent.
      */
     private var consecutiveErrors = 0
 
@@ -114,7 +118,22 @@ class PlaybackConnection @Inject constructor(
         override fun onPlayerError(error: PlaybackException) {
             val title = _nowPlaying.value.title.ifBlank { "this track" }
             _errors.tryEmit("Couldn't play “$title”")
-            consecutiveErrors++
+            // Whether this error is a property of the ITEM or of the NETWORK. Skipping is right
+            // for the former and ruinous for the latter: every subsequent item hits the same
+            // dead network, so one Wi-Fi blip walks the whole queue into the bound below. See
+            // errorAction for which codes pause and, more to the point, why bad-HTTP-status
+            // does not. The counter is assigned from the action rather than incremented up
+            // front, so a pause cannot walk the bound — the defect in a different hat.
+            val action = errorAction(error.errorCode)
+            consecutiveErrors = nextConsecutiveErrors(consecutiveErrors, action)
+            if (action == ErrorAction.PAUSE_IN_PLACE) {
+                // Stay on this item, at this position. Nothing retries on a timer; the user's
+                // next tap on play re-prepares the same item, by which time the radio is
+                // usually back. prepare() is deliberately NOT called here — re-preparing into
+                // a still-dead network just re-enters this listener.
+                controller?.pause()
+                return
+            }
             // A dead or undecodable file must not kill the whole queue — but the skip-on
             // cannot be unbounded. Under REPEAT_MODE_ALL the timeline wraps last -> first,
             // so hasNextMediaItem() is PERMANENTLY true; a queue where every item is

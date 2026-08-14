@@ -5,14 +5,23 @@ package com.kaislate.veldtplayer.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.kaislate.veldtplayer.MainActivity
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 /**
  * Media3 MediaLibraryService: hosts the ExoPlayer and publishes a
@@ -20,16 +29,42 @@ import com.kaislate.veldtplayer.data.media.MediaSessionBus
  * mediaPlayback foreground service. The browsable library tree is empty in
  * P1.1 (default callback) — it is filled in P1.2.
  */
+@AndroidEntryPoint
 class PlaybackService : MediaLibraryService() {
+
+    /**
+     * The service-side half of the logical playback uri (spec §4.4). Injected rather than
+     * constructed because the `Set<RemoteUriResolver>` it routes through is a Hilt multibinding —
+     * empty in this slice, and joined by `SubsonicSource` in N2 without this file changing.
+     */
+    @Inject lateinit var uriResolver: PlaybackUriResolver
 
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
     private var bitmapLoader: VeldtBitmapLoader? = null
 
+    @OptIn(UnstableApi::class)
     override fun onCreate() {
+        // Hilt injects in the generated base class's onCreate, so `uriResolver` is only safe to
+        // touch below this line.
         super.onCreate()
         val exo = ExoPlayer.Builder(this)
+            // Reproduces ExoPlayer.Builder's own default media-source factory exactly, with one
+            // layer inserted. Verified by disassembly, not assumed: the builder's default is
+            // `DefaultMediaSourceFactory(context, DefaultExtractorsFactory())`, and that
+            // constructor's whole use of the context is `new DefaultDataSource.Factory(context)`.
+            // So naming that factory here and wrapping it changes nothing else about how a
+            // `content://` file is opened — which is what Global Constraint 5 requires.
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(
+                    ResolvingDataSource.Factory(
+                        DefaultDataSource.Factory(this),
+                        VeldtDataSpecResolver(uriResolver),
+                    ),
+                    DefaultExtractorsFactory(),
+                )
+            )
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -114,4 +149,66 @@ class PlaybackService : MediaLibraryService() {
     /** Minimal callback; browse tree arrives in P1.2. Default player-command
      *  handling (play/pause/seek/next/prev) is inherited. */
     private inner class LibraryCallback : MediaLibrarySession.Callback
+}
+
+/**
+ * Media3's hook for resolving a uri at LOAD time (spec §4.4), holding [PlaybackUriResolver].
+ *
+ * A named class rather than the lambda `ResolvingDataSource.Factory` would accept, so
+ * [resolveDataSpec] is reachable from a JVM test without standing up an `ExoPlayer` —
+ * see `ResolvingDataSourceWiringTest`.
+ *
+ * ### What `ResolvingDataSource` actually does
+ *
+ * Read off the 1.8.0 bytecode rather than taken from documentation, because §4.4 flags this
+ * interaction as the one that must be verified rather than asserted:
+ *
+ * - `ResolvingDataSource.open` calls [resolveDataSpec] **once per open** and hands the result
+ *   straight to the upstream `DataSource.open`. Every open is a fresh call, so a token minted here
+ *   is minted per request rather than frozen into the queue — which is the point of the whole
+ *   indirection.
+ * - `Resolver.resolveReportedUri` is a **default-identity** method (`aload_1; areturn`) called from
+ *   exactly one place: `ResolvingDataSource.getUri()`, applied to whatever the *upstream* reports —
+ *   post-redirect, for http. It is **not** the cache key, and it is deliberately not overridden
+ *   here; see below.
+ *
+ * ### Why the cache identity is pinned with `key`, not with `resolveReportedUri`
+ *
+ * `CacheKeyFactory.DEFAULT` is `dataSpec.key ?: dataSpec.uri.toString()`, and `CacheDataSource.open`
+ * evaluates it against **the `DataSpec` it is handed**, then stamps the result back into
+ * `DataSpec.key` before delegating. Nothing on that path ever consults `DataSource.getUri()`, so
+ * overriding `resolveReportedUri` could not keep a cache entry stable across a rotated token.
+ * Setting [DataSpec.key] can, and does so whichever side of this resolver a cache is later
+ * installed on: outside, and the cache computes the key from the still-logical uri and we re-set
+ * the same value; inside, and the key we set is the one it reads.
+ *
+ * An upstream-chosen key is never overwritten. A `CacheDataSource` enclosing this one has already
+ * stamped its own, and replacing it would split one track across two cache entries.
+ *
+ * `resolveReportedUri` is left alone for a second reason beyond it being the wrong lever: the
+ * `Resolver` is a *single* instance shared by every `DataSource` the factory creates (the factory
+ * holds one field and passes it to each `createDataSource()`), so the resolved-url-to-logical-uri
+ * mapping an override would need has nowhere race-free to live. What it would change today is the
+ * uri in `LoadEventInfo` — `StatsDataSource` overwrites its `lastOpenedUri` with `getUri()` after
+ * a successful open — which is a telemetry-leak question for N2, not a caching one.
+ */
+@OptIn(UnstableApi::class)
+internal class VeldtDataSpecResolver(
+    private val uris: PlaybackUriResolver,
+) : ResolvingDataSource.Resolver {
+
+    override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
+        val requested = dataSpec.uri.toString()
+        val resolved = uris.resolve(requested)
+        // The passthrough, and the reason this layer is invisible to local playback. Returning the
+        // *same* `DataSpec` matters rather than an equal one: `withUri`/`buildUpon` allocate a copy
+        // on every open of every `content://` track, and `DataSpec` declares no `equals`, so a copy
+        // is not interchangeable with the original to anything that compares them. Global
+        // Constraint 5 lives on this line.
+        if (resolved == requested) return dataSpec
+        return dataSpec.buildUpon()
+            .setUri(resolved)
+            .setKey(dataSpec.key ?: requested)
+            .build()
+    }
 }
