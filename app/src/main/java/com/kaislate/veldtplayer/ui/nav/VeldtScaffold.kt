@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Icon
@@ -38,6 +39,10 @@ data class NavItem(
 /**
  * The Playlists slot was rendered DISABLED through P1.3 so that turning it on in P1.4 changed a
  * flag, not the bar's proportions — the layout never shifted under the user. Task 6 flipped it.
+ *
+ * **With Folders the bar is FULL.** Five is Material 3's documented maximum and a real ceiling: at
+ * 360 dp each item gets ~72 dp and labels begin to truncate. Any further browse dimension needs a
+ * user-configurable tab set in Settings, not a sixth slot.
  */
 @Composable
 fun rememberNavItems(): List<NavItem> = remember {
@@ -46,6 +51,7 @@ fun rememberNavItems(): List<NavItem> = remember {
         NavItem(Destinations.ALBUMS, "Albums", Icons.Filled.Album, enabled = true),
         NavItem(Destinations.ARTISTS, "Artists", Icons.Filled.Person, enabled = true),
         NavItem(Destinations.PLAYLISTS, "Playlists", Icons.AutoMirrored.Filled.QueueMusic, enabled = true),
+        NavItem(Destinations.FOLDERS, "Folders", Icons.Filled.Folder, enabled = true),
     )
 }
 

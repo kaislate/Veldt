@@ -36,6 +36,8 @@ import com.kaislate.veldtplayer.ui.browse.ArtistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.ArtistsScreen
 import com.kaislate.veldtplayer.ui.browse.AudioAccessRequired
 import com.kaislate.veldtplayer.ui.browse.BrowseViewModel
+import com.kaislate.veldtplayer.ui.browse.FolderScreen
+import com.kaislate.veldtplayer.ui.browse.FolderViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.PlaylistViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
@@ -62,6 +64,7 @@ private val TAB_ROUTES = setOf(
     Destinations.ALBUMS,
     Destinations.ARTISTS,
     Destinations.PLAYLISTS,
+    Destinations.FOLDERS,
 )
 
 /**
@@ -106,6 +109,11 @@ fun VeldtNavHost() {
         // entries, and a per-entry instance would give them separate import reports — so a report
         // raised on the tab would vanish the moment the user opened the playlist it describes.
         val plVm: PlaylistViewModel = hiltViewModel()
+        // Resolved HERE for the third time, and the reason is the sharpest of the three: a folder
+        // stack is four back-stack entries deep in ordinary use, so a per-entry instance would be
+        // four view models each collecting `folderTree()` — and that flow re-derives per collector
+        // rather than sharing (see MusicRepository.folderTree). One instance, one derivation.
+        val fVm: FolderViewModel = hiltViewModel()
 
         LaunchedEffect(Unit) {
             vm.errors.collect { message -> snackbarHostState.showSnackbar(message) }
@@ -118,6 +126,14 @@ fun VeldtNavHost() {
         // only feedback an append ever produces.
         LaunchedEffect(Unit) {
             plVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
+        // The folder tab's own confirmation — "Added 42 tracks to the queue". Same host, collected
+        // here for the same reason: appending is the one folder verb with no visible result, so a
+        // screen that swallowed this message would make the verb look broken. Its playlist adds go
+        // through plVm above and are already covered by that collector.
+        LaunchedEffect(Unit) {
+            fVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
         }
 
         // Populate the library on open when access is already granted. WorkManager's
@@ -281,6 +297,47 @@ fun VeldtNavHost() {
                                 onOpenPlaylist = { id ->
                                     navController.navigate(Destinations.playlistDetail(id))
                                 },
+                                contentPadding = padding,
+                            )
+                        }
+                        veldtDestination(
+                            Destinations.FOLDERS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
+                            FolderScreen(
+                                vm = fVm,
+                                playlistVm = plVm,
+                                folderKey = null,
+                                onOpenFolder = { key ->
+                                    navController.navigate(Destinations.folder(key))
+                                },
+                                navController = navController,
+                                contentPadding = padding,
+                            )
+                        }
+                        // One destination PER folder, so back pops one level — see FolderScreen.
+                        //
+                        // The argument is coerced to "" exactly as ALBUM_DETAIL coerces its own —
+                        // spelled `?: ""` here and `.orEmpty()` below, which are the same thing.
+                        // The fallback earns its place for a reason that does not apply there,
+                        // though: on this screen `null` is not "no key", it is the TAB ROOT.
+                        // Letting an absent argument through as null would open the root under a
+                        // `folder/…` route. `""` is a key no tree can hold — every node's key
+                        // starts with a volume name, which is never empty — so it resolves to
+                        // nothing and falls to the same surface a deleted folder does: "Folder
+                        // unavailable", or ScanningState while a scan is still in flight. Pinned in
+                        // FolderViewModelTest, at the view model, since nothing in this source set
+                        // can drive the nav host itself.
+                        veldtDestination(
+                            Destinations.FOLDER_DETAIL, audioGranted, audioBlocked, requestAudio, padding,
+                        ) { entry ->
+                            FolderScreen(
+                                vm = fVm,
+                                playlistVm = plVm,
+                                folderKey = entry.arguments?.getString(Destinations.ARG_KEY) ?: "",
+                                onOpenFolder = { key ->
+                                    navController.navigate(Destinations.folder(key))
+                                },
+                                navController = navController,
                                 contentPadding = padding,
                             )
                         }

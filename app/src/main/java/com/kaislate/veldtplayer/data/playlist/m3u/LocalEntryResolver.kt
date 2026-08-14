@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.data.playlist.m3u
 
+import com.kaislate.veldtplayer.data.library.PathSegments
 import com.kaislate.veldtplayer.data.library.model.Song
 
 /**
@@ -329,10 +330,11 @@ object LocalEntryResolver {
         val rooted = joined.startsWith("/")
 
         val segments = ArrayList<String>()
-        for (segment in joined.split('/')) {
+        // PathSegments owns the separator/empty rule; the dot-segment and decode rules below are
+        // M3U-specific and stay here. Splitting via the shared primitive means the non-fold rules
+        // cannot drift between the playlist resolver and the folder tree.
+        for (segment in PathSegments.split(joined)) {
             when {
-                // A run of separators, or a trailing one. No filesystem has an empty directory name.
-                segment.isEmpty() -> Unit
                 // Equality, not startsWith: "..." is an ordinary legal name and must survive.
                 segment == "." -> Unit
                 segment == ".." -> when {

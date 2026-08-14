@@ -681,6 +681,26 @@ object PlaylistAdditions {
     )
 
     /**
+     * A folder — its own tracks, or its whole subtree. See `FolderScope`.
+     *
+     * **[name] is passed in rather than derived from [songs]**, which is what makes this the one
+     * entry point of the four that takes a subject. A folder has no tag that names it, and the
+     * other three shapes would each be wrong here: `displayAlbum()` of the first song captions a
+     * mixed folder with whichever record happened to sort first, and `FolderNode.name` captions a
+     * top-level folder `Music` on both internal storage and an SD card. The caller hands over the
+     * label already on screen.
+     *
+     * **A SNAPSHOT, not a live folder — and the confirmation must not suggest otherwise.**
+     * `PlaylistRepository.addSongs` writes one entry per song, keyed on
+     * `(source.id, source.stableKey(song))`; nothing in the row records the directory it came from,
+     * so a track dropped into the folder tomorrow does not appear in the playlist. That is why
+     * [addedMessage] counts TRACKS and this flow never says "added folder": "add folder" is exactly
+     * the phrase that makes a user expect a link that does not exist.
+     */
+    fun ofFolder(name: String, songs: List<Song>): PlaylistAddition =
+        PlaylistAddition(subject = name, songs = songs)
+
+    /**
      * The sheet's own headline: what is about to be added, named and counted.
      *
      * One track is named and not counted — "Add 1 track from “Lost Cause”" tells the user nothing

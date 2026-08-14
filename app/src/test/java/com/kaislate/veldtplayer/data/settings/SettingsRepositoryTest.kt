@@ -4,7 +4,9 @@
 package com.kaislate.veldtplayer.data.settings
 
 import androidx.test.core.app.ApplicationProvider
+import com.kaislate.veldtplayer.data.library.TrackSort
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -22,6 +24,11 @@ class SettingsRepositoryTest {
 
     @Before fun setUp() {
         repo = SettingsRepository(ApplicationProvider.getApplicationContext())
+        // One DataStore is shared by every test method in this JVM (the delegate is a top-level
+        // property), so writes survive between them and JUnit's method order is not specified.
+        // Observed: adding the folder-sort tests turned `the default is follow-system`'s sibling
+        // red, because a test that had already run left a value behind. Start from empty.
+        runBlocking { repo.clearForTest() }
     }
 
     @Test fun `the default is follow-system`() = runTest {
@@ -48,5 +55,74 @@ class SettingsRepositoryTest {
             repo.setThemeMode(mode); mode to repo.themeMode.first()
         }
         assertEquals(ThemeMode.entries.map { it to it }, readBack)
+    }
+
+    // ---- Folder view sort (P1.6). Same shape as the ThemeMode block above, deliberately. ----
+
+    /** Filename, not tags — the folder view exists to bypass the tags. See `FolderSort`'s KDoc. */
+    @Test fun `the folder view defaults to filename order, ascending`() = runTest {
+        assertEquals(
+            listOf<Any>(TrackSort.FILENAME, false),
+            listOf<Any>(repo.folderSort.first(), repo.folderSortDescending.first()),
+        )
+    }
+
+    @Test fun `each folder sort round-trips under its own name`() = runTest {
+        val readBack = TrackSort.entries.map { sort ->
+            repo.setFolderSort(sort); sort to repo.folderSort.first()
+        }
+        assertEquals(TrackSort.entries.map { it to it }, readBack)
+    }
+
+    /**
+     * Stored by NAME, not ordinal — asserted on the STORED STRING, because reading back through
+     * [SettingsRepository.folderSort] cannot tell the two apart. An ordinal keeps working right up
+     * until someone reorders [TrackSort], at which point every user's setting silently becomes a
+     * different sort with no error anywhere.
+     *
+     * The expected value is the literal `"DATE_MODIFIED"` rather than
+     * `TrackSort.DATE_MODIFIED.name`: the latter would be satisfied by any implementation that
+     * stores *something derived from the name*, while the literal pins the actual wire format that
+     * an already-installed app has to keep reading. `DATE_MODIFIED` is chosen because it is neither
+     * the default nor ordinal 0, so neither a no-op write nor an ordinal write can coincide with it.
+     *
+     * **The KEY string is named here too**, rather than read back through the repository's own
+     * private constant. Reading through the constant makes a rename invisible — write and read move
+     * together and every test stays green — while on an installed device the same rename resets the
+     * setting for every user on upgrade. Both halves of the on-disk contract are literals here
+     * because both are what an already-shipped install depends on.
+     */
+    @Test fun `the folder sort is stored under its own key, by NAME and not ordinal`() = runTest {
+        repo.setFolderSort(TrackSort.DATE_MODIFIED)
+        assertEquals(
+            "the folder sort is not on disk under its own name — an ordinal, or the wrong key",
+            "DATE_MODIFIED",
+            repo.readRawForTest("folder_sort"),
+        )
+    }
+
+    @Test fun `an unrecognised stored folder sort degrades to the default`() = runTest {
+        repo.writeRawFolderSortForTest("NOT_A_SORT")
+        assertEquals(TrackSort.FILENAME, repo.folderSort.first())
+    }
+
+    /**
+     * Two keys, not one: setting a direction must not disturb the sort, or vice versa.
+     *
+     * The raw read is here for the same reason as in the test above — it is the only assertion that
+     * a rename of `folder_sort_desc` would break, since reading through the constant renames with it.
+     */
+    @Test fun `the descending flag round-trips independently of the sort`() = runTest {
+        repo.setFolderSort(TrackSort.TITLE)
+        repo.setFolderSortDescending(true)
+        assertEquals(
+            "the sort and its direction are not independently stored, or the direction's key moved",
+            listOf<Any?>(TrackSort.TITLE, true, true),
+            listOf<Any?>(
+                repo.folderSort.first(),
+                repo.folderSortDescending.first(),
+                repo.readRawBooleanForTest("folder_sort_desc"),
+            ),
+        )
     }
 }

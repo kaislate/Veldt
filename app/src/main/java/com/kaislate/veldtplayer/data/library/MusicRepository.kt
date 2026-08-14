@@ -48,6 +48,50 @@ class MusicRepository @Inject constructor(
     fun artists(): Flow<List<Artist>> = songs().map { LibraryDerivations.deriveArtists(it) }
 
     /**
+     * The folder tree, derived once per emission (global constraint 14).
+     *
+     * The derivation is heavier than [LibraryDerivations.deriveAlbums] — it splits strings and
+     * builds a tree — so it happens here, once, and never per row and never per recomposition.
+     *
+     * **What `distinctUntilChanged()` actually buys, stated precisely because the obvious reading
+     * is wrong.** It sits BEFORE the [map], which is the correct side: after it, the build would
+     * run first and the equality check would then deep-compare two whole trees to discover the work
+     * was wasted, instead of comparing two `List<Song>`. **That placement is upheld by review, not
+     * by a test.** And it is not merely a cost difference: downstream, the comparison is between two
+     * `List<FolderNode>`, and **two different song lists can build EQUAL trees** — the tree groups
+     * by folder and erases the global ordering that [songs] (ordered by title) imposes across
+     * folders. The downstream form therefore SUPPRESSES emissions the upstream form lets through.
+     *
+     * **Reaching that needs the SAME [com.kaislate.veldtplayer.data.library.model.Song] objects in
+     * the same WITHIN-folder order, differing only in cross-folder interleaving** — a narrow window,
+     * and two tempting examples do not fit through it. A retag does not: [FolderNode] holds the song
+     * objects, so a changed title makes the node itself unequal. Nor does reordering inside one
+     * folder: [FolderTree.build] appends in list order, so within-folder order survives into the
+     * tree. What is left is tie-order among rows with equal `title COLLATE NOCASE`, which SQLite
+     * does not promise to be stable — narrower than any routine edit, and **not demonstrated**. The
+     * generic risk above is real regardless of whether that path is; do not read a failed example as
+     * refuting it. No fixture covers any of this, by decision rather than oversight — see
+     * `MusicRepositoryFolderTreeTest`. Treat a proposal to move this line as unguarded. But it suppresses only **no-net-change**
+     * re-emissions — a steady-state rescan upserting identical rows. It does **not** bound a first
+     * scan: every upsert batch genuinely changes the row set, so the lists differ, the check passes
+     * them straight through, and a 5,000-track scan arriving in ~50 batches rebuilds the whole tree
+     * ~50 times with the folder tab open.
+     *
+     * **The bound on that burst is collector-side, and it is Task 5's `stateIn`.** A `StateFlow`
+     * retains only the latest value, so a run of batches collapses to the newest tree. Deliberately
+     * NOT `conflate()` here: one conflation point, and it belongs where the subscription lifecycle
+     * already lives. Do not add a second.
+     *
+     * Constraint 14 has two halves and this flow supplies one. `map` runs the build exactly once
+     * per emission **per collector**, upstream of the UI — so no row, and no [FolderTree.find] call,
+     * ever rebuilds. Surviving RECOMPOSITION is the collector's half, as above. A second concurrent
+     * collector re-derives rather than sharing; if one ever appears this wants `shareIn` rather than
+     * a comment.
+     */
+    fun folderTree(): Flow<List<FolderNode>> =
+        songs().distinctUntilChanged().map { FolderTree.build(it) }
+
+    /**
      * One album's tracks, in disc-then-track order. [key] is an [Album.key]; it is
      * re-normalized because normalize is idempotent on a well-formed key, so accepting a
      * stray raw display name costs nothing and saves a silent empty result.
