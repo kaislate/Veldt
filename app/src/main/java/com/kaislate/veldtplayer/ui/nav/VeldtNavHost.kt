@@ -128,6 +128,14 @@ fun VeldtNavHost() {
             plVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
         }
 
+        // The folder tab's own confirmation — "Added 42 tracks to the queue". Same host, collected
+        // here for the same reason: appending is the one folder verb with no visible result, so a
+        // screen that swallowed this message would make the verb look broken. Its playlist adds go
+        // through plVm above and are already covered by that collector.
+        LaunchedEffect(Unit) {
+            fVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
         // Populate the library on open when access is already granted. WorkManager's
         // KEEP policy dedupes concurrent scans.
         LaunchedEffect(audioGranted) { if (audioGranted) vm.scan() }
@@ -297,6 +305,7 @@ fun VeldtNavHost() {
                         ) {
                             FolderScreen(
                                 vm = fVm,
+                                playlistVm = plVm,
                                 folderKey = null,
                                 onOpenFolder = { key ->
                                     navController.navigate(Destinations.folder(key))
@@ -323,6 +332,7 @@ fun VeldtNavHost() {
                         ) { entry ->
                             FolderScreen(
                                 vm = fVm,
+                                playlistVm = plVm,
                                 folderKey = entry.arguments?.getString(Destinations.ARG_KEY) ?: "",
                                 onOpenFolder = { key ->
                                     navController.navigate(Destinations.folder(key))

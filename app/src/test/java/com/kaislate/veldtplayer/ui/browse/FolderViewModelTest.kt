@@ -33,9 +33,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -43,6 +44,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -78,14 +80,20 @@ import java.util.concurrent.TimeUnit
 class FolderViewModelTest {
 
     /**
-     * Emits a fixed script of song lists.
+     * Emits whatever song-list flow it is handed — a fixed script, or one this test drives.
      *
-     * **Not a `MutableStateFlow`**, for the reason `MusicRepositoryFolderTreeTest` records: a
+     * **Never a `MutableStateFlow`**, for the reason `MusicRepositoryFolderTreeTest` records: a
      * `StateFlow` conflates equal values on its own, so a fake built on one supplies conflation the
      * production code may not have and the test ends up asserting the fake.
+     *
+     * The live-refresh tests below drive it with a `MutableSharedFlow(replay = 1)`, which is NOT
+     * that trap: a replay buffer re-delivers the last value to a late subscriber, but it drops
+     * nothing and it suppresses nothing — every emission reaches the collector, equal to the
+     * previous one or not. That is the property those tests need, because the conflation under test
+     * is `MusicRepository.folderTree`'s own `distinctUntilChanged`.
      */
-    private class FakeSongDao(private val script: List<List<SongEntity>>) : SongDao {
-        override fun observeAllSongs(): Flow<List<SongEntity>> = script.asFlow()
+    private class FakeSongDao(private val script: Flow<List<SongEntity>>) : SongDao {
+        override fun observeAllSongs(): Flow<List<SongEntity>> = script
         override suspend fun findIdBySourceKey(sourceId: String, externalId: String): Long? = null
         override suspend fun insertReplacing(row: SongEntity) = Unit
         override suspend fun getAllSongs(): List<SongEntity> = emptyList()
@@ -103,6 +111,10 @@ class FolderViewModelTest {
     private lateinit var shadowStorage: ShadowStorageManager
     private var vm: FolderViewModel? = null
     private var nextId = 1L
+
+    private companion object {
+        const val BECK = "external_primary:Music/Beck"
+    }
 
     /**
      * A worker that starts and never finishes, as `ScanSingleFlightTest` uses.
@@ -184,9 +196,12 @@ class FolderViewModelTest {
         durationMs = 0L, dateModifiedSec = 0L, hasEmbeddedArt = false,
     )
 
-    private fun viewModel(vararg rows: SongEntity): FolderViewModel {
+    private fun viewModel(vararg rows: SongEntity): FolderViewModel =
+        viewModel(flowOf(rows.toList()))
+
+    private fun viewModel(library: Flow<List<SongEntity>>): FolderViewModel {
         val repo = MusicRepository(
-            FakeSongDao(listOf(rows.toList())),
+            FakeSongDao(library),
             SourceRegistry(emptySet()),
             context,
         )
@@ -496,11 +511,19 @@ class FolderViewModelTest {
      * is exactly the window the screen sees on its first frame.
      *
      * **And it has to come back DOWN**, which is the half a seed assertion alone cannot see: pinned
-     * true and nothing else, `scanning = true` hardcoded in the combine passes. What that costs is
-     * narrower than "the tab is stuck" — `state.scanning` reaches only two branches in
-     * `FolderScreen`, and the first is guarded by `roots.isEmpty()`, so a POPULATED library still
-     * lists its folders. It is an EMPTY library that would then sit under the spinner and never
-     * offer its Scan button.
+     * true and nothing else, `scanning = true` hardcoded in the combine passes.
+     *
+     * **What that costs, corrected 2026-08-13 — the earlier version of this KDoc named only half of
+     * it.** `state.scanning` reaches TWO branches in `FolderScreen`. The first is guarded by
+     * `roots.isEmpty()`, so a populated library still lists its folders and it is an EMPTY library
+     * that sits under the spinner with no way to ask for a scan. That much was right. The second
+     * branch is `listing.node == null`, which is **not** guarded by `roots.isEmpty()`: a folder key
+     * that resolves to nothing — a folder deleted under an open screen, a back stack restored across
+     * a rescan, or `VeldtNavHost`'s `?: ""` fallback — renders `ScanningState` FOREVER instead of
+     * "Folder unavailable", on a fully populated library, with no Go back button. That is a dead
+     * end on a working library, and it is the live-refresh window Task 6's behaviour 2 reasons
+     * about. Both halves are pinned below: see `a folder that vanishes mid-scan is not reported
+     * missing yet` and `a dead key over a settled library reports the folder unavailable`.
      *
      * This test cannot pin the other direction. Nothing here enqueues work, so the repository
      * honestly reports `false` and `scanning = false` hardcoded produces the same value — see
@@ -574,6 +597,224 @@ class FolderViewModelTest {
             "a library with one located song was reported unusable",
             false,
             mixed.locationsUnavailable,
+        )
+    }
+
+    // ------------------------------------------------------------- live refresh (Task 6, step 4)
+
+    /**
+     * A library this test drives emission by emission.
+     *
+     * `replay = 1` so a value emitted before `state`'s `WhileSubscribed` upstream attaches is not
+     * dropped — see [FakeSongDao] for why that is not the conflating-double trap. Each emission is
+     * awaited with a `state.first { … }` on a property of the emission itself rather than with a
+     * scheduler advance, so nothing here depends on how many dispatches a DataStore read takes.
+     */
+    private fun liveLibrary() = MutableSharedFlow<List<SongEntity>>(replay = 1)
+
+    /**
+     * **Behaviour 1: a folder gains tracks while its screen is open.**
+     *
+     * The arriving track joins the rows already there, in sort position — it does not replace them,
+     * and the folder does not empty and refill. Asserted as both listings in one pair, because the
+     * "before" half is what makes the "after" half mean anything: a derivation that always returned
+     * the whole library would satisfy the second list alone.
+     *
+     * The screen's half of this behaviour — new rows animating in rather than jumping — is
+     * `Modifier.animateItem()` in `FolderScreen`, which no JVM test in this project can reach. It is
+     * device-matrix row 14.
+     */
+    @Test fun `a folder that gains a track keeps the rows already on screen`() = runTest {
+        val library = liveLibrary()
+        val vm = viewModel(library)
+        val first = row("external_primary:Music/Beck/01 a.mp3")
+        val arriving = row("external_primary:Music/Beck/02 b.mp3")
+
+        library.emit(listOf(first))
+        val before = vm.settled()
+        library.emit(listOf(first, arriving))
+        val after = vm.state.first { s -> vm.listing(s, BECK).tracks.any { it.id == arriving.id } }
+
+        assertEquals(
+            "the arriving track did not join the rows already on screen — the folder was " +
+                "rebuilt from the new song alone, or the old rows were dropped",
+            listOf(listOf("01 a.mp3"), listOf("01 a.mp3", "02 b.mp3")),
+            listOf(
+                vm.listing(before, BECK).tracks.map { it.relativeKey?.substringAfterLast('/') },
+                vm.listing(after, BECK).tracks.map { it.relativeKey?.substringAfterLast('/') },
+            ),
+        )
+    }
+
+    /**
+     * **Behaviour 2, first half: the folder the user is IN vanishes MID-SCAN.**
+     *
+     * Reported as `node == null` with `scanning` still TRUE, which is the pair `FolderScreen` reads
+     * to render `ScanningState` rather than "Folder unavailable". **It does not pop**: a transient
+     * empty emission during a scan would otherwise yank the screen out from under a thumb that is
+     * already moving, and a scan emits partial trees by design (see `MusicRepository.folderTree`).
+     *
+     * The library is deliberately POPULATED and the SIBLING folders are asserted alongside, because
+     * `roots.isEmpty()` guards the other `scanning` branch: without them this would pass over an
+     * empty library, which is a different screen entirely. Two siblings and not one, so that
+     * removing `Gone/` leaves `Music/` with more than one child — with a single survivor
+     * `FolderTree.elideRoots` folds the chain down to that survivor and the tab root would have no
+     * rows at all, which is a different behaviour wearing this test's name.
+     */
+    @Test fun `a folder that vanishes mid-scan is not reported missing yet`() = runTest {
+        val library = liveLibrary()
+        val vm = viewModel(library)
+        val beck = row("external_primary:Music/Beck/a.mp3")
+        val radiohead = row("external_primary:Music/Radiohead/c.mp3")
+        val gone = row("external_primary:Music/Gone/b.mp3")
+
+        library.emit(listOf(beck, radiohead, gone))
+        val before = vm.settled()
+        // Fixture control: the folder about to vanish has to be there first, or the assertion
+        // below is about a key that never resolved.
+        assertEquals(
+            "the fixture never contained the folder that is supposed to vanish",
+            "external_primary:Music/Gone",
+            vm.listing(before, "external_primary:Music/Gone").node?.key,
+        )
+
+        // A real scan, in flight and held there by StuckWorker — the same verb the screen calls.
+        vm.scan()
+        library.emit(listOf(beck, radiohead))
+        val during = vm.state.first { vm.listing(it, "external_primary:Music/Gone").node == null }
+
+        assertEquals(
+            "a folder that vanished mid-scan is reported as gone rather than as still arriving, " +
+                "so the screen would offer 'Folder unavailable' during a scan that may yet " +
+                "restore it — or the rest of the library disappeared with it",
+            listOf<Any?>(true, listOf("Beck", "Radiohead")),
+            listOf<Any?>(during.scanning, vm.listing(during, null).folders.map { it.label }),
+        )
+    }
+
+    /**
+     * **Behaviour 2, second half: the scan settles and the folder is still gone.**
+     *
+     * `node == null` with `scanning` FALSE — the pair that renders "Folder unavailable" with a Go
+     * back button. This is the assertion the corrected KDoc above names: `scanning = true`
+     * hardcoded leaves this branch under a spinner forever on a library that is working fine.
+     *
+     * Nothing here enqueues work, so the repository truthfully reports `false`; the value is
+     * therefore one a hardcoded `false` also produces, and the OTHER direction is pinned by
+     * `a scan in flight is reported over a library that already has folders`. Neither test covers
+     * both, which is why both exist.
+     */
+    @Test fun `a dead key over a settled library reports the folder unavailable`() = runTest {
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+        )
+        val settled = vm.settled()
+
+        assertEquals(
+            "an unresolvable key over a settled, populated library does not reach the " +
+                "'Folder unavailable' surface — node and scanning must be (null, false)",
+            listOf<Any?>(null, false, listOf("Beck", "Radiohead")),
+            listOf<Any?>(
+                vm.listing(settled, "external_primary:Music/Gone").node,
+                settled.scanning,
+                vm.listing(settled, null).folders.map { it.label },
+            ),
+        )
+    }
+
+    /**
+     * **Behaviour 3: a whole volume disappears.**
+     *
+     * The tab root stops being a volume chooser and becomes the surviving volume's own folders —
+     * accepted, and the reason it is acceptable is the second assertion: the breadcrumb still names
+     * the volume, so the level that vanished from the ROWS did not vanish from the truth about
+     * where the user is.
+     *
+     * The same song entities are re-emitted rather than rebuilt, so the only difference between the
+     * two emissions is the volume — an entity rebuilt with a fresh id would also change every
+     * `song.id` and make this test about something else.
+     */
+    @Test fun `a volume that disappears leaves the surviving volume's own folders`() = runTest {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        val library = liveLibrary()
+        val vm = viewModel(library)
+        val beck = row("external_primary:Music/Beck/a.mp3")
+        val radiohead = row("external_primary:Music/Radiohead/b.mp3")
+        val card = row("1234-5678:Music/Portishead/c.mp3")
+
+        library.emit(listOf(beck, radiohead, card))
+        val two = vm.state.first { it.roots.size == 2 }
+        library.emit(listOf(beck, radiohead))
+        val one = vm.state.first { it.roots.size == 1 }
+
+        assertEquals(
+            "the tab root did not stop being a volume chooser when the card went away",
+            listOf(listOf("Internal storage", "SanDisk Ultra"), listOf("Beck", "Radiohead")),
+            listOf(
+                vm.listing(two, null).folders.map { it.label },
+                vm.listing(one, null).folders.map { it.label },
+            ),
+        )
+        assertEquals(
+            "the breadcrumb stopped naming the volume once the chooser row disappeared, so the " +
+                "user has no way left to tell which volume they are looking at",
+            listOf(listOf("Internal storage", "Music", "Beck"), listOf("Internal storage", "Music", "Beck")),
+            listOf(
+                vm.listing(two, BECK).crumbs.map { it.label },
+                vm.listing(one, BECK).crumbs.map { it.label },
+            ),
+        )
+    }
+
+    /**
+     * **Behaviour 4: identity across a re-derivation.**
+     *
+     * `FolderScreen` keys its rows on `FolderNode.key`, and the whole tree is rebuilt object by
+     * object on every emission — so if a key were derived from anything per-emission, every row
+     * would be a NEW item on every scan batch and the list would scroll back to the top mid-scan.
+     *
+     * `assertNotSame` is the half that makes the rest mean something: it proves the tree really was
+     * re-derived, so the equal keys are a property of the KEY rather than of nothing having
+     * happened. Without it a `distinctUntilChanged` that suppressed the second emission entirely
+     * would satisfy every other assertion here.
+     *
+     * `song.id` is deliberately NOT asserted: it is the Room row id copied straight through, so it
+     * is stable by construction and an assertion on it would pin the fixture rather than the code.
+     * The scroll position surviving a real rescan is device-matrix row 12.
+     */
+    @Test fun `a rescan rebuilds the tree without changing the keys the list is drawn on`() = runTest {
+        val library = liveLibrary()
+        val vm = viewModel(library)
+        val beck = row("external_primary:Music/Beck/a.mp3")
+        val radiohead = row("external_primary:Music/Radiohead/b.mp3")
+        val arriving = row("external_primary:Music/Radiohead/c.mp3")
+
+        library.emit(listOf(beck, radiohead))
+        val before = vm.settled()
+        val beforeRows = vm.listing(before, null).folders
+        library.emit(listOf(beck, radiohead, arriving))
+        val after = vm.state.first { s ->
+            vm.listing(s, "external_primary:Music/Radiohead").tracks.any { it.id == arriving.id }
+        }
+        val afterRows = vm.listing(after, null).folders
+
+        assertEquals(
+            "a folder key changed across a rescan — every row would be a new LazyColumn item " +
+                "and the list would jump back to the top mid-scan",
+            listOf(BECK, "external_primary:Music/Radiohead"),
+            afterRows.map { it.node.key },
+        )
+        assertEquals(
+            "the keys before and after a rescan disagree",
+            beforeRows.map { it.node.key },
+            afterRows.map { it.node.key },
+        )
+        assertNotSame(
+            "the tree was NOT re-derived between the two emissions, so the equal keys above are " +
+                "asserting nothing at all",
+            beforeRows.first().node,
+            afterRows.first().node,
         )
     }
 }

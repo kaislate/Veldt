@@ -19,8 +19,11 @@ import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import com.kaislate.veldtplayer.ui.nav.Destinations
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -87,10 +90,25 @@ data class FolderListing(
     val crumbs: List<FolderCrumb>,
     val folders: List<FolderRowItem>,
     val tracks: List<Song>,
+    /**
+     * What to CALL this folder in a verb that has to name it — a playlist sheet headed
+     * `Add 42 tracks from “Sea Change”`.
+     *
+     * Not [FolderNode.name], and the difference is the same join [FolderRowItem.label] exists for:
+     * a volume's display root is routinely named `Music` on both internal storage and an SD card,
+     * so a sheet headed `Add 42 tracks from “Music”` names neither of them. This is the LAST
+     * crumb's label, which is already the volume label at depth 0 and the directory name below it —
+     * one derivation, not a second rule that can drift from the breadcrumb the user is reading.
+     *
+     * Derived here rather than by the screen calling `crumbs.last()`: that call is safe only under
+     * an invariant held in this file (crumbs is never empty), and an invariant a composable depends
+     * on from outside is one refactor away from a crash on the tab root.
+     */
+    val subject: String = "",
 )
 
 /** The listing a key that names nothing produces. */
-private val NO_LISTING = FolderListing(null, emptyList(), emptyList(), emptyList())
+private val NO_LISTING = FolderListing(null, emptyList(), emptyList(), emptyList(), "")
 
 /**
  * The Folders tab and every folder under it.
@@ -169,9 +187,10 @@ class FolderViewModel @Inject constructor(
         val volumeRows = node.key == DEVICE_KEY
         val folders = FolderSort.folders(node.children)
             .map { child -> FolderRowItem(child, rowLabel(child, volumeRows)) }
+        val crumbs = if (volumeRows) listOf(FolderCrumb(DEVICE_LABEL, null)) else crumbs(node, roots)
         return FolderListing(
             node = node,
-            crumbs = if (volumeRows) listOf(FolderCrumb(DEVICE_LABEL, null)) else crumbs(node, roots),
+            crumbs = crumbs,
             // Volume rows are re-sorted by the LABEL they draw. [FolderSort.folders] orders by
             // `name`, which is the right key for directories and the wrong one here for the same
             // reason [rowLabel] exists: two volumes' display roots are routinely both `Music`, so
@@ -180,6 +199,7 @@ class FolderViewModel @Inject constructor(
             folders = if (volumeRows) folders.sortedWith(compareBy(FolderSort.NATURAL) { it.label })
             else folders,
             tracks = FolderSort.tracks(node.songs, state.sort, state.descending),
+            subject = crumbs.last().label,
         )
     }
 
@@ -268,6 +288,22 @@ class FolderViewModel @Inject constructor(
 
     // -------------------------------------------------------------------------------- the verbs
 
+    /**
+     * One-shot confirmations for the verb that leaves nothing on screen: "Added 42 tracks to the
+     * queue".
+     *
+     * Appending is the only folder verb with no visible result of its own — the current track keeps
+     * playing and the new tracks are below the fold — so the message IS the feedback. Collected in
+     * `VeldtNavHost` beside [PlaylistViewModel.messages], into the same snackbar host, for the
+     * reason recorded there: one collector, so no screen can swallow it.
+     *
+     * A SharedFlow and not a StateFlow, for the reason [PlaylistViewModel.messages] records — an
+     * acknowledgement held as state re-shows itself on every recomposition and on every return to
+     * the screen. `extraBufferCapacity` so `tryEmit` from a non-suspending caller cannot drop one.
+     */
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
+
     fun setSort(sort: TrackSort) {
         viewModelScope.launch { settings.setFolderSort(sort) }
     }
@@ -281,12 +317,11 @@ class FolderViewModel @Inject constructor(
     }
 
     /**
-     * Play-in-context: the listed tracks become the queue.
+     * Play-in-context: the tapped list becomes the queue, starting where it was tapped.
      *
-     * The queue is the folder's DIRECT tracks — what the screen is showing — not
-     * [FolderSort.deepFlatten]. See [FolderNode]'s KDoc: the caption reports the deep counts while
-     * "play this folder" is shallow. A folder with no direct tracks therefore offers no play button
-     * at all rather than a button that silently plays a subfolder.
+     * The list is the caller's — a track row hands over [FolderListing.tracks], the folder verbs
+     * below hand over whichever scope they name. Nothing here decides the SCOPE; that decision is
+     * [FolderScope]'s and is made once, in [folderTracks].
      *
      * Main-thread only, as [BrowseViewModel.play] is: [PlaybackConnection]'s commands are
      * `@MainThread`. Every caller is a Compose click handler.
@@ -301,4 +336,111 @@ class FolderViewModel @Inject constructor(
     fun shuffle(tracks: List<Song>, random: Random = Random.Default) {
         if (tracks.isNotEmpty()) connection.playFrom(tracks.shuffled(random), 0)
     }
+
+    // ------------------------------------------------------------------------- the folder verbs
+
+    /**
+     * The list a folder verb acts on, for either scope. **Every folder verb goes through here.**
+     *
+     * That is the [PlaylistActions] lesson applied one surface over: the queue and the sentence
+     * that quotes its size are produced from ONE list in one call, so a confirmation claiming 42
+     * tracks over a queue of 12 is not expressible. No caller may re-derive either scope.
+     *
+     * Takes the [state] rather than reading [state] itself, for the same reason [listing] does —
+     * the screen already holds the emission the user is looking at, and a verb that re-read the
+     * flow could act on a tree that arrived between the long press and the menu tap.
+     */
+    fun folderTracks(state: FolderUiState, node: FolderNode, scope: FolderScope): List<Song> =
+        when (scope) {
+            FolderScope.THIS_FOLDER -> FolderSort.tracks(node.songs, state.sort, state.descending)
+            FolderScope.WITH_SUBFOLDERS ->
+                FolderSort.deepFlatten(node, state.sort, state.descending)
+        }
+
+    /**
+     * The header's PRIMARY action: this folder and everything under it, depth-first pre-order.
+     *
+     * Deep and not direct — owner decision, 2026-08-13. The folder a user opens is usually the
+     * record, and `Disc 1`/`Disc 2` under it are its parts; a primary play that stopped at the
+     * record's own (empty) direct list would be a button that does nothing on exactly the tree this
+     * feature exists to repair.
+     */
+    @MainThread
+    fun playFolderDeep(state: FolderUiState, node: FolderNode) =
+        play(folderTracks(state, node, FolderScope.WITH_SUBFOLDERS), 0)
+
+    /** The secondary action: what the screen is listing, and nothing below it. */
+    @MainThread
+    fun playFolderShallow(state: FolderUiState, node: FolderNode) =
+        play(folderTracks(state, node, FolderScope.THIS_FOLDER), 0)
+
+    /**
+     * A folder, shuffled.
+     *
+     * [random] is a parameter with a default rather than a field, so the call a test makes is the
+     * call the screen makes — the same shape [PlaylistViewModel.shuffle] uses.
+     */
+    @MainThread
+    fun shuffleFolder(
+        state: FolderUiState,
+        node: FolderNode,
+        scope: FolderScope,
+        random: Random = Random.Default,
+    ) = shuffle(folderTracks(state, node, scope), random)
+
+    /**
+     * Append a folder to whatever is queued, and say how many tracks that was.
+     *
+     * The count in the message is `tracks.size` of the very list handed to [PlaybackConnection] —
+     * never `node.deepSongCount`, which is the aggregate the CAPTION quotes and is computed by a
+     * different walk. They agree today; a count taken from the node rather than from the queue is
+     * the defect [PlaylistActions] exists to make unrepresentable, and it must not be reintroduced
+     * here because the number happens to match.
+     *
+     * `skipped = 0` is a fact rather than a placeholder: a folder's tracks come out of the tree,
+     * which is derived from the song list itself, so unlike a playlist there is no such thing as an
+     * entry that resolves to nothing.
+     */
+    @MainThread
+    fun addFolderToQueue(state: FolderUiState, node: FolderNode, scope: FolderScope) {
+        val tracks = folderTracks(state, node, scope)
+        if (tracks.isEmpty()) return
+        connection.addToQueue(tracks)
+        _messages.tryEmit(PlaylistPresentation.appendedMessage(tracks.size, skipped = 0))
+    }
+
+    /**
+     * What a folder contributes to a playlist: a SNAPSHOT of its tracks in the order shown.
+     *
+     * [subject] is passed rather than read off [FolderNode.name] because a top-level folder is
+     * named after its VOLUME — see [FolderListing.subject] and [rowLabel]. The header hands over
+     * `listing.subject`; a row's long-press menu hands over `FolderRowItem.label`. Both are the
+     * label already on screen, so the sheet names what the user actually pressed.
+     */
+    fun folderAddition(
+        state: FolderUiState,
+        node: FolderNode,
+        subject: String,
+        scope: FolderScope,
+    ): PlaylistAddition =
+        PlaylistAdditions.ofFolder(subject, folderTracks(state, node, scope))
+}
+
+/**
+ * Which tracks a folder verb acts on.
+ *
+ * Two scopes and not one, because both answers to "play this folder" are honest and a user in an
+ * `Album/Disc 1`, `Album/Disc 2` tree wants each at different moments. Keeping them as one enum
+ * rather than as two pairs of methods is what makes the queue verb and the playlist verb reach both
+ * scopes without a third notion of "the folder's tracks" appearing anywhere.
+ *
+ * The screen offers the second scope ONLY where the two differ — a leaf folder has no subfolders,
+ * so a menu listing both would charge the user a decision between two identical outcomes.
+ */
+enum class FolderScope {
+    /** This folder's direct tracks only, in the current sort order. [FolderSort.tracks]. */
+    THIS_FOLDER,
+
+    /** This folder and every descendant, depth-first pre-order. [FolderSort.deepFlatten]. */
+    WITH_SUBFOLDERS,
 }

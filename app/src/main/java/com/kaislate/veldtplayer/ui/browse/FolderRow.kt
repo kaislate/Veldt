@@ -3,7 +3,9 @@
 
 package com.kaislate.veldtplayer.ui.browse
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,23 +39,39 @@ private const val MOSAIC_ALBUMS = 4
 /**
  * One directory.
  *
- * **[label] is passed in rather than read off [node].** A top-level row is named after its VOLUME —
- * two volumes routinely elide to two folders both called `Music` — and that decision belongs to
- * [FolderViewModel.listing], which is where it is tested. See [FolderRowItem].
+ * **Takes the whole [FolderRowItem], not a `(node, label)` pair.** The label is not derivable from
+ * the node: a top-level row is named after its VOLUME, and two volumes routinely elide to two
+ * folders both called `Music`, so [FolderViewModel.listing] decides it and [FolderRowItem] carries
+ * it. Passed as two parameters, the call site could hand over `row.node` and `row.node.name` — a
+ * pairing that compiles, reads naturally, and silently draws two identical rows on any phone with
+ * an SD card. One value cannot disagree with itself.
+ *
+ * **What that does NOT buy, stated plainly:** `text = item.label` → `text = item.node.name`, one
+ * line below, still compiles and still survives the whole JVM suite. This project has no Compose UI
+ * test infrastructure — `androidx.compose.ui:ui-test-junit4` is not in the Gradle cache, so it
+ * cannot be added under `--offline` (`find ~/.gradle/caches -iname "*ui-test*"` returns nothing).
+ * The collapse above removes the *call-site* form of that mutant; the remaining one is a
+ * device-matrix check, and the two-volume fixture it would need does not exist on this fleet.
+ *
+ * **[onLongClick] is where a folder reaches its verbs** — play, shuffle, queue, playlist — without
+ * the user entering it first. Null keeps the row on a plain `clickable`, for the reason `SongRow`
+ * records: `combinedClickable` with a null handler still consumes the gesture.
  *
  * **Not shown, deliberately:** file size and bitrate (not indexed, and file-manager concerns), the
  * full path (the breadcrumb carries it), and the modification date (available, but noisy at row
  * level — it is a *sort*, not a caption). No per-row palette theming and no full-bleed header
  * either: a folder is a place you pass through, often four in a row.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun FolderRow(
-    node: FolderNode,
-    label: String,
+    item: FolderRowItem,
     palette: DominantColors,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
 ) {
+    val node = item.node
     // remember(node): the mosaic walk is over every descendant, so without this it would run on
     // every recomposition of every visible row. The node is rebuilt per tree emission, which is
     // exactly when the covers can have changed.
@@ -61,14 +79,20 @@ fun FolderRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .then(
+                if (onLongClick == null) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                }
+            )
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PlaylistMosaic(
             covers = covers,
             palette = palette,
-            initial = label.firstOrNull { it.isLetterOrDigit() } ?: '♪',
+            initial = item.label.firstOrNull { it.isLetterOrDigit() } ?: '♪',
             modifier = Modifier
                 .size(LEADING_SIZE)
                 .clip(RoundedCornerShape(8.dp)),
@@ -80,7 +104,7 @@ fun FolderRow(
         ) {
             Text(
                 // VERBATIM — no case folding, no prettifying. It is a path.
-                text = label,
+                text = item.label,
                 style = MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

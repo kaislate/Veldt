@@ -19,10 +19,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import com.kaislate.veldtplayer.data.library.FolderNode
 import com.kaislate.veldtplayer.data.library.TrackSort
 import com.kaislate.veldtplayer.ui.components.ArtPlaceholder
 import com.kaislate.veldtplayer.ui.components.SongRow
@@ -60,6 +63,7 @@ import com.kaislate.veldtplayer.ui.theme.neutralPalette
 @Composable
 fun FolderScreen(
     vm: FolderViewModel,
+    playlistVm: PlaylistViewModel,
     folderKey: String?,
     onOpenFolder: (String) -> Unit,
     navController: NavController,
@@ -73,6 +77,21 @@ fun FolderScreen(
     // walk happens inside the view model; what this remember buys is that it does not happen again
     // on a recomposition that changed neither the tree nor the folder being looked at.
     val listing = remember(state, folderKey) { vm.listing(state, folderKey) }
+
+    // A folder, a subtree, or one track — see PlaylistAdditions for why those are different
+    // subjects rather than one list with a different length.
+    var pendingAddition by remember { mutableStateOf<PlaylistAddition?>(null) }
+    AddToPlaylistHost(
+        vm = playlistVm,
+        addition = pendingAddition,
+        onDismiss = { pendingAddition = null },
+    )
+
+    // Which folder row's long-press menu is open, held as its KEY rather than as the row itself.
+    // A tree emission rebuilds every FolderRowItem, so a remembered item would be a stale object
+    // the moment a scan lands — and a menu anchored to a row that no longer exists simply does not
+    // recompose, which is the correct outcome and the reason this is a key.
+    var openMenuKey by remember { mutableStateOf<String?>(null) }
 
     when {
         // The same three-way distinction every other browse surface draws. Claiming "no folders"
@@ -109,7 +128,14 @@ fun FolderScreen(
 
         // The folder went away while its screen was open — deleted, or the card unmounted. It is
         // NOT auto-popped: a screen that vanishes under the user's thumb loses whatever they were
-        // about to tap. See Task 6.
+        // about to tap, and a transient empty emission mid-scan would do it spuriously.
+        //
+        // **The `scanning` split is the whole behaviour, not a nicety.** This branch is NOT guarded
+        // by `roots.isEmpty()`, so a `scanning` flag stuck true leaves an unresolvable key under
+        // the spinner forever on a library that is working fine — no Go back, no way out. Both
+        // halves of the pair this reads are pinned in `FolderViewModelTest`: see
+        // `a folder that vanishes mid-scan is not reported missing yet` and
+        // `a dead key over a settled library reports the folder unavailable`.
         listing.node == null -> if (state.scanning) {
             ScanningState(palette = palette, contentPadding = contentPadding, modifier = modifier)
         } else {
@@ -146,8 +172,14 @@ fun FolderScreen(
                         sort = state.sort,
                         descending = state.descending,
                         onCrumb = { route -> navController.openCrumb(route) },
-                        onPlay = { vm.play(listing.tracks, 0) },
-                        onShuffle = { vm.shuffle(listing.tracks) },
+                        // The header hands its own non-null node back rather than the screen
+                        // re-reading `listing.node` inside a click handler, which would be a second
+                        // null check of a value the header has already resolved.
+                        onVerb = { node, verb, scope ->
+                            runFolderVerb(vm, state, node, listing.subject, verb, scope) {
+                                pendingAddition = it
+                            }
+                        },
                         onSort = vm::setSort,
                         onDescending = vm::setDescending,
                     )
@@ -155,13 +187,32 @@ fun FolderScreen(
                 // Keyed on FolderNode.key and song.id. The tree is rebuilt object-by-object on
                 // every emission, so without stable keys a live rescan re-derives the whole list
                 // and scrolls the user back to the top mid-scan.
+                //
+                // animateItem(): live-refresh behaviour 1. A folder that gains tracks under an open
+                // screen slides them in against the rows already there. Without it the list jumps,
+                // and the jump is indistinguishable from the user having mis-tapped.
                 items(listing.folders, key = { it.node.key }) { row ->
-                    FolderRow(
-                        node = row.node,
-                        label = row.label,
-                        palette = palette,
-                        onClick = { onOpenFolder(row.node.key) },
-                    )
+                    Box(Modifier.animateItem()) {
+                        FolderRow(
+                            item = row,
+                            palette = palette,
+                            onClick = { onOpenFolder(row.node.key) },
+                            // The interaction that makes a deep tree tolerable: every verb the
+                            // header offers, without entering the folder first.
+                            onLongClick = { openMenuKey = row.node.key },
+                        )
+                        FolderVerbMenu(
+                            expanded = openMenuKey == row.node.key,
+                            node = row.node,
+                            includePlay = true,
+                            onDismiss = { openMenuKey = null },
+                            onVerb = { verb, scope ->
+                                runFolderVerb(vm, state, row.node, row.label, verb, scope) {
+                                    pendingAddition = it
+                                }
+                            },
+                        )
+                    }
                 }
                 itemsIndexed(listing.tracks, key = { _, song -> song.id }) { index, song ->
                     // SongRow verbatim, as AlbumDetailScreen and SongsScreen use it — that is what
@@ -170,6 +221,9 @@ fun FolderScreen(
                         song = song,
                         palette = palette,
                         onClick = { vm.play(listing.tracks, index) },
+                        modifier = Modifier.animateItem(),
+                        // Folder tracks were the one list in the app with no route to a playlist.
+                        onLongClick = { pendingAddition = PlaylistAdditions.ofSong(song) },
                     )
                 }
             }
@@ -178,11 +232,20 @@ fun FolderScreen(
 }
 
 /**
- * Breadcrumb, one stats line, and the three verbs — compact, because it is above every folder.
+ * Breadcrumb, one stats line, and the verbs — compact, because it is above every folder.
  *
- * Play and shuffle are drawn only when the folder holds tracks of its own. The queue is the DIRECT
- * list, so in a folder that only holds subfolders they would be buttons that do nothing; see
- * [FolderViewModel.play].
+ * **The primary button is the DEEP one** ([FolderScope.WITH_SUBFOLDERS]) — owner decision,
+ * 2026-08-13. It is drawn whenever the subtree holds anything, which is always: a node exists only
+ * because a song mapped into it or into a descendant. The direct-only verbs live in the overflow
+ * and are drawn only where the two scopes differ; see [FolderVerbMenu].
+ *
+ * The old rule — play drawn only when `listing.tracks` is non-empty — is gone with the shallow
+ * primary it belonged to. Under it, a parent of six album folders offered no play button at all,
+ * which is precisely the folder a user opens meaning "play the record".
+ *
+ * The synthetic volume-chooser node is the one place with no verbs: [FolderScope] names a folder,
+ * and "play every volume on the device, depth-first" is the Songs tab under a different name. Its
+ * subject would be the word "Folders", which names nothing a playlist should be captioned with.
  */
 @Composable
 private fun FolderHeader(
@@ -190,12 +253,13 @@ private fun FolderHeader(
     sort: TrackSort,
     descending: Boolean,
     onCrumb: (String) -> Unit,
-    onPlay: () -> Unit,
-    onShuffle: () -> Unit,
+    onVerb: (FolderNode, FolderVerb, FolderScope) -> Unit,
     onSort: (TrackSort) -> Unit,
     onDescending: (Boolean) -> Unit,
 ) {
     val node = listing.node ?: return
+    var overflow by remember { mutableStateOf(false) }
+    val verbs = node.key != DEVICE_KEY
     Column(
         Modifier
             .fillMaxWidth()
@@ -216,12 +280,38 @@ private fun FolderHeader(
                 modifier = Modifier.weight(1f),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                if (listing.tracks.isNotEmpty()) {
-                    IconButton(onClick = onPlay) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play this folder")
+                if (verbs) {
+                    IconButton(
+                        onClick = { onVerb(node, FolderVerb.PLAY, FolderScope.WITH_SUBFOLDERS) },
+                    ) {
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            // Says which scope, because the folder in front of the user may hold
+                            // no tracks of its own and the button still plays 300 of them.
+                            contentDescription = "Play this folder and its subfolders",
+                        )
                     }
-                    IconButton(onClick = onShuffle) {
-                        Icon(Icons.Filled.Shuffle, contentDescription = "Shuffle this folder")
+                    IconButton(
+                        onClick = { onVerb(node, FolderVerb.SHUFFLE, FolderScope.WITH_SUBFOLDERS) },
+                    ) {
+                        Icon(
+                            Icons.Filled.Shuffle,
+                            contentDescription = "Shuffle this folder and its subfolders",
+                        )
+                    }
+                    Box {
+                        IconButton(onClick = { overflow = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "More folder actions")
+                        }
+                        FolderVerbMenu(
+                            expanded = overflow,
+                            node = node,
+                            // The header already carries play and shuffle as buttons; repeating
+                            // them one tap deeper is a menu item that competes with itself.
+                            includePlay = false,
+                            onDismiss = { overflow = false },
+                            onVerb = { verb, scope -> onVerb(node, verb, scope) },
+                        )
                     }
                 }
                 SortMenu(
@@ -233,6 +323,113 @@ private fun FolderHeader(
             }
         }
     }
+}
+
+/** What a folder menu can do. The SCOPE is the other half — see [FolderScope]. */
+internal enum class FolderVerb { PLAY, SHUFFLE, QUEUE, PLAYLIST }
+
+/**
+ * The one place a (verb, scope) pair becomes a view-model call.
+ *
+ * Two menus reach it — the header's overflow and a row's long press — and they must offer the same
+ * verbs, because the whole point of the long press is that the user need not enter a folder to act
+ * on it. Two `when` blocks would be two chances for one of them to lose the shallow scope.
+ *
+ * Not a composable and not on the view model: the playlist half ends in a bottom sheet, which is
+ * screen state, and a view model that took a `(PlaylistAddition) -> Unit` to hand one back would be
+ * a view model holding a composable's `remember`.
+ */
+private fun runFolderVerb(
+    vm: FolderViewModel,
+    state: FolderUiState,
+    node: FolderNode,
+    subject: String,
+    verb: FolderVerb,
+    scope: FolderScope,
+    onAddition: (PlaylistAddition) -> Unit,
+) = when (verb) {
+    FolderVerb.PLAY -> when (scope) {
+        FolderScope.WITH_SUBFOLDERS -> vm.playFolderDeep(state, node)
+        FolderScope.THIS_FOLDER -> vm.playFolderShallow(state, node)
+    }
+    FolderVerb.SHUFFLE -> vm.shuffleFolder(state, node, scope)
+    FolderVerb.QUEUE -> vm.addFolderToQueue(state, node, scope)
+    FolderVerb.PLAYLIST -> onAddition(vm.folderAddition(state, node, subject, scope))
+}
+
+/**
+ * Every verb a folder offers, at both scopes — the header's overflow and a row's long press.
+ *
+ * **A direct-only item is drawn only where it would differ from the deep one.** A leaf folder's two
+ * scopes are the same list, so offering both charges the user a decision between two identical
+ * outcomes; and a folder with subfolders but no tracks of its own has an EMPTY direct list, so a
+ * "this folder only" item there is an entry that does nothing. Both conditions are reads of the
+ * node the menu was opened on — no walk, no derivation, and nothing per recomposition.
+ *
+ * [includePlay] is false for the header, which already draws play and shuffle as buttons.
+ */
+@Composable
+private fun FolderVerbMenu(
+    expanded: Boolean,
+    node: FolderNode,
+    includePlay: Boolean,
+    onDismiss: () -> Unit,
+    onVerb: (FolderVerb, FolderScope) -> Unit,
+) {
+    // The subtree is strictly larger than the direct list exactly when both are non-trivial.
+    val shallowDiffers = node.children.isNotEmpty() && node.songs.isNotEmpty()
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        if (includePlay) {
+            FolderVerbItem("Play", FolderVerb.PLAY, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb)
+            FolderVerbItem(
+                "Shuffle", FolderVerb.SHUFFLE, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+            )
+        }
+        FolderVerbItem(
+            "Add to queue", FolderVerb.QUEUE, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+        )
+        // "Add to playlist", not "add folder" — the entries are a SNAPSHOT and the wording is the
+        // only thing that says so. See PlaylistAdditions.ofFolder.
+        FolderVerbItem(
+            "Add to playlist", FolderVerb.PLAYLIST, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+        )
+        if (shallowDiffers) {
+            HorizontalDivider()
+            // Drawn for BOTH menus, including the header's — this is the brief's "play this folder
+            // only", which is the header's secondary action and has no button of its own.
+            FolderVerbItem(
+                "Play this folder only", FolderVerb.PLAY, FolderScope.THIS_FOLDER,
+                onDismiss, onVerb,
+            )
+            FolderVerbItem(
+                "Queue this folder only", FolderVerb.QUEUE, FolderScope.THIS_FOLDER,
+                onDismiss, onVerb,
+            )
+            FolderVerbItem(
+                "Add this folder only to playlist", FolderVerb.PLAYLIST, FolderScope.THIS_FOLDER,
+                onDismiss, onVerb,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderVerbItem(
+    label: String,
+    verb: FolderVerb,
+    scope: FolderScope,
+    onDismiss: () -> Unit,
+    onVerb: (FolderVerb, FolderScope) -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(label) },
+        onClick = {
+            // Dismissed FIRST: the playlist verb opens a bottom sheet, and a menu still expanded
+            // behind a modal sheet is a second dismissible surface the user has to notice.
+            onDismiss()
+            onVerb(verb, scope)
+        },
+    )
 }
 
 /**

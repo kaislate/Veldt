@@ -12,10 +12,16 @@ const val UNFILED_KEY: String = "\u0000unfiled"
  * One directory, and everything the UI needs to draw a row for it without walking the tree again.
  *
  * [songs] is DIRECT children only; the `deep*` fields are aggregates over this folder and all of
- * its descendants. Both are needed and they are not the same question — the row caption reports
- * the deep counts while "play this folder" (shallow) uses the direct list. Computing the
- * aggregates during the single bottom-up build costs nothing; recomputing them per row at render
- * time would be a tree walk per frame.
+ * its descendants. Both are needed and they are not the same question. Computing the aggregates
+ * during the single bottom-up build costs nothing; recomputing them per row at render time would be
+ * a tree walk per frame.
+ *
+ * **Which of the two "play this folder" means is a SCOPE, not a property of this type** — see
+ * `FolderScope`. Until 2026-08-13 this KDoc asserted that the verb was shallow and the deep numbers
+ * were for the caption only; that is no longer true and was the reason `FolderSort.deepFlatten` sat
+ * without a production caller. The header's PRIMARY play is now [deepSongCount]'s scope, and the
+ * direct list is the secondary verb. The caption still reports the deep aggregates, which is now the
+ * *consistent* reading rather than a deliberate mismatch: the row says what pressing play will get.
  */
 data class FolderNode(
     val key: String,
