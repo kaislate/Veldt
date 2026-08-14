@@ -5,6 +5,8 @@ package com.kaislate.veldtplayer.data.library.db
 
 import androidx.room.Database
 import androidx.room.RoomDatabase
+import com.kaislate.veldtplayer.data.account.db.AccountDao
+import com.kaislate.veldtplayer.data.account.db.AccountEntity
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistDao
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntity
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
@@ -42,14 +44,24 @@ import com.kaislate.veldtplayer.data.playlist.db.PlaylistEntryEntity
 //
 // This wipes the songs table, which a rescan rebuilds — but it also wipes the playlist tables,
 // which nothing can regenerate. Acceptable only pre-release; see DatabaseModule's standing note.
+//
+// v8 adds the `accounts` table (N1). The bump is required rather than cosmetic — a new entity
+// changes the schema Room validates at open — and the destructive path still applies: the app
+// is pre-release with zero users (Global Constraint 10). Note what a destructive upgrade means
+// here that it did not before: it drops CONFIGURED ACCOUNTS, which no rescan regenerates. It
+// does not drop the sealed secret FILES, which are outside the database; AccountRepository's
+// delete is the only thing that removes those, so a destructive upgrade orphans them. That is
+// acceptable pre-release and is the reason the next schema change after real users exist must
+// be a real Migration.
 @Database(
-    entities = [SongEntity::class, PlaylistEntity::class, PlaylistEntryEntity::class],
-    version = 7,
+    entities = [SongEntity::class, PlaylistEntity::class, PlaylistEntryEntity::class, AccountEntity::class],
+    version = 8,
     exportSchema = false,
 )
 abstract class VeldtDatabase : RoomDatabase() {
     abstract fun songDao(): SongDao
     abstract fun playlistDao(): PlaylistDao
+    abstract fun accountDao(): AccountDao
 
     companion object { const val NAME = "veldt-library.db" }
 }

@@ -5,6 +5,7 @@ package com.kaislate.veldtplayer.di
 
 import android.content.Context
 import androidx.room.Room
+import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.playlist.db.PlaylistDao
@@ -28,8 +29,11 @@ object DatabaseModule {
             // disposable projection of MediaStore, so a rescan always rebuilds it — but the
             // playlist tables are user-authored and nothing can regenerate them. This is only
             // acceptable because the app is pre-release with zero users (spec §8.1).
-            // BEFORE FIRST RELEASE: give the playlist tables real migrations, or move them to
-            // their own database, or the next version bump silently deletes people's playlists.
+            // BEFORE FIRST RELEASE: give the playlist AND accounts tables real migrations, or
+            // move them to their own database, or the next version bump silently deletes
+            // people's playlists and their configured servers. Accounts are worse than
+            // playlists in one respect: dropping the row does NOT delete the sealed secret
+            // file, so a destructive upgrade leaves an unreferenced encrypted password on disk.
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
 
@@ -38,4 +42,7 @@ object DatabaseModule {
 
     @Provides
     fun providePlaylistDao(db: VeldtDatabase): PlaylistDao = db.playlistDao()
+
+    @Provides
+    fun provideAccountDao(db: VeldtDatabase): AccountDao = db.accountDao()
 }

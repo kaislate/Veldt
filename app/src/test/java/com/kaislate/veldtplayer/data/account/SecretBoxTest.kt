@@ -3,7 +3,6 @@
 
 package com.kaislate.veldtplayer.data.account
 
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -112,12 +111,17 @@ class SecretBoxTest {
         assertEquals(12 + 16, sealed.size) // 12-byte iv + 16-byte GCM tag over empty plaintext
     }
 
-    @Test fun `a blob sealed earlier still opens — format regression guard`() {
+    @Test fun `a blob sealed by one box opens in another sharing the key`() {
         // Round-trips through the same key rather than a hardcoded blob, because the key is
-        // random; what is pinned is that seal's output is exactly what open consumes.
+        // random; what is pinned is that seal's output is exactly what open consumes, across
+        // instances — the real case is a process restart, not one object talking to itself.
         val key = freshKey()
         val sealed = boxWith(key).seal("hunter2")!!
         assertEquals("hunter2", boxWith(key).open(sealed))
-        assertArrayEquals(sealed, sealed.copyOf())
+        // The blob's LENGTH is the format claim worth pinning: 12-byte iv + 7 plaintext
+        // bytes + 16-byte tag. An `assertArrayEquals(sealed, sealed.copyOf())` stood here
+        // originally and was a TAUTOLOGY — an array always equals its own copy, so it could
+        // not fail under any implementation.
+        assertEquals(12 + "hunter2".toByteArray().size + 16, sealed.size)
     }
 }

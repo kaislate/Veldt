@@ -4,6 +4,8 @@
 package com.kaislate.veldtplayer.di
 
 import android.content.Context
+import com.kaislate.veldtplayer.data.account.KeyProvider
+import com.kaislate.veldtplayer.data.account.KeystoreKeyProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.LocalSource
 import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
@@ -57,6 +59,14 @@ abstract class LibraryModule {
     @Binds
     @Singleton
     abstract fun bindTagReader(impl: EAlvaTagReader): TagReader
+
+    /**
+     * The real key provider. Bound here rather than annotated `@Inject` at the use site so a
+     * test — or a future debug build — can substitute one without touching [SecretBox].
+     */
+    @Binds
+    @Singleton
+    abstract fun bindKeyProvider(impl: KeystoreKeyProvider): KeyProvider
 
     companion object {
         /**
