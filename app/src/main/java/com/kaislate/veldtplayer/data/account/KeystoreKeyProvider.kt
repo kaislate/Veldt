@@ -27,6 +27,29 @@ import javax.inject.Singleton
  *
  * No `setUserAuthenticationRequired`: the app must be able to decrypt in the background, for a
  * playback session started from a headset button, with the screen locked.
+ *
+ * ## `setRandomizedEncryptionRequired(true)` is deliberate, and it constrains [SecretBox]
+ *
+ * That flag makes the Keystore refuse any encryption where the *caller* picks the nonce, so a
+ * caller cannot reuse one. GCM with a repeated (key, IV) pair is catastrophic — it leaks the XOR
+ * of the plaintexts and the authentication subkey — so the platform will not let the app choose.
+ * **Do not turn it off to make an error go away.**
+ *
+ * The other half of that contract lives in a different file and cannot be seen from there:
+ * **whoever encrypts with this key must NOT pass a `GCMParameterSpec` (or any IV) to
+ * `Cipher.init(ENCRYPT_MODE, ...)`.** They must call `init(ENCRYPT_MODE, key)` and read the
+ * chosen nonce back from `Cipher.getIV()`. Supplying one is rejected on-device with
+ *
+ * ```
+ * keystore2: NONCE is present, although CALLER_NONCE is not present
+ * keystore2: Error::Km(r#CALLER_NONCE_PROHIBITED)
+ * ```
+ *
+ * which surfaces as a `GeneralSecurityException` and, because [SecretBox] degrades every crypto
+ * failure to null, silently discards the secret. That shipped once (device pass, 2026-08-14) and
+ * no unit test could see it: the test [KeyProvider] hands out a software key, and a software key
+ * *permits* a caller nonce. Decryption is the reverse — the IV must be supplied there, and doing
+ * so is legal for both key kinds.
  */
 @Singleton
 class KeystoreKeyProvider @Inject constructor() : KeyProvider {

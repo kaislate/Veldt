@@ -4,7 +4,6 @@
 package com.kaislate.veldtplayer.data.account
 
 import java.security.GeneralSecurityException
-import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.GCMParameterSpec
 import javax.inject.Inject
@@ -25,13 +24,23 @@ import javax.inject.Singleton
 @Singleton
 class SecretBox @Inject constructor(private val keys: KeyProvider) {
 
+    /**
+     * **The IV is the cipher's to choose, never ours.** [KeystoreKeyProvider] creates its key with
+     * `setRandomizedEncryptionRequired(true)`, and a key carrying that flag *forbids* a
+     * caller-supplied nonce: an `init(ENCRYPT_MODE, key, GCMParameterSpec(...))` is rejected on a
+     * real device with `CALLER_NONCE_PROHIBITED`, which arrives here as a
+     * [GeneralSecurityException] and turns every password into a silently discarded null. So
+     * encryption passes no spec and reads [Cipher.getIV] back afterwards. That spelling is right
+     * for both key kinds — a software key generates a random IV when none is supplied, and the
+     * Keystore key insists on exactly that. Decryption is the opposite case: there the IV *must*
+     * be supplied, and doing so is legal for both.
+     */
     fun seal(plaintext: String): ByteArray? {
         val key = keys.secretKey() ?: return null
         return try {
-            val iv = ByteArray(IV_BYTES).also { SecureRandom().nextBytes(it) }
             val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
-            iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            cipher.iv + cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         } catch (_: GeneralSecurityException) {
             null
         }
@@ -64,7 +73,13 @@ class SecretBox @Inject constructor(private val keys: KeyProvider) {
     private companion object {
         const val TRANSFORMATION = "AES/GCM/NoPadding"
 
-        /** 12 bytes is GCM's standard nonce length. Changing it invalidates every stored secret. */
+        /**
+         * 12 bytes is GCM's standard nonce length, and what every provider this app runs on —
+         * Conscrypt, the Keystore, the JVM's SunJCE — returns from [Cipher.getIV]. [seal] no
+         * longer *chooses* the length, so this is the length at which stored blobs are *parsed*:
+         * changing it invalidates every stored secret, and a provider that returned some other
+         * length would produce blobs this code could not read back.
+         */
         const val IV_BYTES = 12
         const val TAG_BITS = 128
     }
