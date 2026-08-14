@@ -37,6 +37,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -290,6 +291,11 @@ class FolderVerbsTest {
     /**
      * A leaf folder's two scopes ARE the same list — which is why the menu draws only one item for
      * it, and why the test above needs a folder with children to say anything.
+     *
+     * **Both sides are literals.** Comparing `namesOf(shallow)` against `namesOf(deep)` with no
+     * literal anywhere was vacuous: executed 2026-08-13, with `folderTracks` returning
+     * `emptyList()` for both scopes, eight of this file's tests reddened and this one stayed GREEN
+     * asserting `[] == []`. An expected value derived from production cannot disagree with it.
      */
     @Test fun `a leaf folder's two scopes are the same list`() = runTest {
         val vm = albumTree()
@@ -297,25 +303,42 @@ class FolderVerbsTest {
         val disc2 = node(state, DISC_2)
 
         assertEquals(
-            "a leaf folder's scopes disagree, which would make 'this folder only' a menu item " +
-                "that does something different from the primary verb for no visible reason",
-            namesOf(vm.folderTracks(state, disc2, FolderScope.THIS_FOLDER)),
-            namesOf(vm.folderTracks(state, disc2, FolderScope.WITH_SUBFOLDERS)),
+            "a leaf folder's scopes disagree, or one of them stopped producing the leaf's track " +
+                "at all — 'this folder only' would then be a menu item that does something " +
+                "different from the primary verb for no visible reason",
+            listOf(listOf("01 d2a.mp3"), listOf("01 d2a.mp3")),
+            listOf(
+                namesOf(vm.folderTracks(state, disc2, FolderScope.THIS_FOLDER)),
+                namesOf(vm.folderTracks(state, disc2, FolderScope.WITH_SUBFOLDERS)),
+            ),
         )
     }
 
     // ---------------------------------------------------------------------------- tapping a track
 
     /**
-     * A track tap queues the folder's DIRECT list, and the tapped index addresses the tapped track
-     * inside it.
+     * A track tap queues [FolderListing.tracks] — the DIRECT list, as the screen drew it.
      *
-     * The second half is the part worth having: a queue built from the DEEP list would still be
-     * "a queue", and index 1 in it is `05 c.mp3` here rather than the track the user pressed. The
-     * `startIndex` itself is unobservable without a live `MediaController` (see the class KDoc);
-     * what is asserted is that the list the index addresses is the one the screen was showing.
+     * `listing.tracks` is a third derivation, separate from either scope of [FolderScope]: `listing`
+     * calls `FolderSort.tracks(node.songs, …)` itself. So this is not a duplicate of the shallow
+     * play test; it pins the list the track rows are actually built from.
+     *
+     * **What this test does NOT cover, and a correction.** Until 2026-08-13 it also asserted
+     * `queuedNames()[1] == "05 c.mp3"`, justified by a claim that a queue built from the DEEP list
+     * would hold a different track at index 1. **That claim is false.** `deepFlatten` is depth-first
+     * PRE-ORDER, so the deep list begins with the entire direct list — here `01 a.mp3`, `05 c.mp3`,
+     * exactly as the deep test's own expected value at the top of this file shows. Index 1 is the
+     * same track under both, and no index inside the direct list can ever tell the two apart; only
+     * the whole list can, which is what the one remaining element does. The dropped element was
+     * `expected[0][1]` restated and could not fail on its own.
+     *
+     * The tapped `startIndex` is not asserted anywhere in this file because it is not observable:
+     * it is handed to `MediaController.setMediaItems` and never published. Executed — `play(tracks,
+     * index)` → `play(tracks, 0)` survives the whole suite. That is a device check, not a covered
+     * one. Re-check with:
+     * `./gradlew.bat --offline testDebugUnitTest --tests "*QueueBuilderTest*"` for the arithmetic.
      */
-    @Test fun `tapping a track queues the direct list and the index addresses that track`() = runTest {
+    @Test fun `tapping a track queues the listing's own direct track list`() = runTest {
         val vm = albumTree()
         val state = vm.settled()
         val listing = vm.listing(state, ALBUM)
@@ -323,10 +346,9 @@ class FolderVerbsTest {
         vm.play(listing.tracks, 1)
 
         assertEquals(
-            "the tapped index does not address the tapped track in the queue that reached the " +
-                "player — the queue is not the list the screen was showing",
-            listOf(listOf("01 a.mp3", "05 c.mp3"), "05 c.mp3"),
-            listOf(queuedNames(), queuedNames()[1]),
+            "the queue that reached the player is not the direct list the screen was showing",
+            listOf("01 a.mp3", "05 c.mp3"),
+            queuedNames(),
         )
     }
 
@@ -358,38 +380,70 @@ class FolderVerbsTest {
     /**
      * Append puts the folder AFTER what is already queued, and says how many tracks that was.
      *
-     * Both halves in one test on purpose: the count in the message must be the size of the list
-     * that was handed to the player, and the only way to see that they are one list is to assert
-     * them together. A message built from `node.deepSongCount` would agree here by luck; it is
-     * excluded by the SHALLOW append below, whose folder holds 2 of the subtree's 7 tracks.
+     * Two properties in one assertion, because each is a different way for the same call to lie:
+     *
+     * - **The append EXTENDS.** The seed queue is still at the head. Replacing it would be
+     *   `playFrom` under another name, and it is a one-character mistake to make.
+     * - **The SCOPE is honoured.** The appended folder is `Album/`, which has subfolders — so a
+     *   `WITH_SUBFOLDERS` append that quietly used the direct list appends 2 tracks instead of 7
+     *   and is visible here. **This is why the appended folder is not a leaf.** Until 2026-08-13
+     *   this test appended `Disc 2/`, where the two scopes are by definition the same list, and
+     *   hardcoding `scope` to `THIS_FOLDER` inside `addFolderToQueue` survived the entire 670-test
+     *   suite — five-sevenths of a record silently dropped under a confident count. Executed as the
+     *   control for this rewrite.
+     *
+     * **What this test canNOT see, corrected after executing it:** whether the count in the message
+     * came from the queue or from `FolderNode.deepSongCount`. On a `WITH_SUBFOLDERS` append those
+     * two are equal **by construction** — `deepFlatten` yields exactly `deepSongCount` tracks — so
+     * the `deepSongCount` mutant leaves this test green. It is caught by the SHALLOW append below
+     * and by nothing else, which is the one place the two numbers disagree (2 against 7). Executed
+     * 2026-08-13; an earlier draft of this KDoc claimed the count was pinned here too, and it was
+     * not. Re-check by replacing `tracks.size` with `node.deepSongCount` in `addFolderToQueue` and
+     * running `--tests "*FolderVerbsTest*"`: exactly one test reddens, and it is not this one.
+     *
+     * `01 d2a.mp3` appears TWICE on purpose: the seed queue is `Disc 2/` and the deep append
+     * contains it again. `QueueBuilder.append` deliberately does not de-duplicate — queuing a track
+     * that is already further down the queue is a thing people do on purpose — so a dedupe
+     * introduced there would shorten this list and be caught rather than silently changing what
+     * "add to queue" means.
      */
     @Test fun `appending a folder keeps the queue and reports the tracks it added`() = runTest {
         val vm = albumTree()
         val state = vm.settled()
-        val album = node(state, ALBUM)
         val messages = mutableListOf<String>()
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
             vm.messages.collect { messages += it }
         }
 
-        vm.playFolderShallow(state, album)
-        vm.addFolderToQueue(state, node(state, DISC_2), FolderScope.WITH_SUBFOLDERS)
+        vm.playFolderShallow(state, node(state, DISC_2))
+        vm.addFolderToQueue(state, node(state, ALBUM), FolderScope.WITH_SUBFOLDERS)
         advanceUntilIdle()
 
         assertEquals(
-            "the append replaced the queue instead of extending it, or the confirmation quoted " +
-                "a number that did not come from the appended list",
+            "the append replaced the queue instead of extending it, ignored its scope and " +
+                "appended only the direct list, or quoted a number that did not come from the " +
+                "list it handed to the player",
             listOf<Any?>(
-                listOf("01 a.mp3", "05 c.mp3", "01 d2a.mp3"),
-                listOf("Added 1 track to the queue"),
+                listOf(
+                    "01 d2a.mp3",
+                    "01 a.mp3", "05 c.mp3",
+                    "01 d1a.mp3", "02 d1b.mp3", "01 bonus.mp3",
+                    "01 d2a.mp3",
+                    "01 d10a.mp3",
+                ),
+                listOf("Added 7 tracks to the queue"),
             ),
             listOf<Any?>(queuedNames(), messages),
         )
     }
 
     /**
-     * The SHALLOW append is where a count taken from the node rather than from the queue shows up:
-     * `Album`'s subtree holds seven tracks and its direct list holds two.
+     * The SHALLOW append is the **only** place a count taken from the node rather than from the
+     * queue shows up: `Album`'s subtree holds seven tracks and its direct list holds two, and every
+     * other append in this file is deep, where `tracks.size` and `FolderNode.deepSongCount` are
+     * equal by construction. Executed — `tracks.size` → `node.deepSongCount` reddens this test and
+     * no other. Do not "simplify" this method into the deep append above; that would delete the
+     * only coverage the count has.
      */
     @Test fun `a shallow append reports the direct list, not the subtree`() = runTest {
         val vm = albumTree()
@@ -503,23 +557,40 @@ class FolderVerbsTest {
     /**
      * Shuffle hands over the same SET the scope produces, permuted — nothing added, nothing lost.
      *
-     * Asserted as the sorted contents rather than as a fixed permutation: [Random] with a fixed
-     * seed pins an implementation detail of `List.shuffled`, and the property that matters is that
-     * the shuffled queue is the scope's tracks and not, say, the shallow list.
+     * **Two assertions, because the sorted one alone cannot see a shuffle that never happened.**
+     * `queuedNames().sorted()` is satisfied by `play(folderTracks(…), 0)`, so on its own the word
+     * "permuted" in this test's name would be a claim nothing checks — the defect noted in review,
+     * 2026-08-13. The second assertion is what earns it.
+     *
+     * The exact permutation is still NOT asserted: that would pin an implementation detail of
+     * `List.shuffled` / `Collections.shuffle` rather than any property of this app. What is
+     * asserted is the weakest thing that excludes "no shuffle at all" — that the queue is not the
+     * deep order. Deterministic, because [Random] is seeded and the fixture is fixed; verified by
+     * execution rather than by probability, so a seed that happened to produce the identity
+     * permutation would have been caught here rather than shipping as a flake.
      */
     @Test fun `shuffle queues the whole scope, permuted`() = runTest {
         val vm = albumTree()
         val state = vm.settled()
+        val deepOrder = listOf(
+            "01 a.mp3", "05 c.mp3",
+            "01 d1a.mp3", "02 d1b.mp3", "01 bonus.mp3",
+            "01 d2a.mp3",
+            "01 d10a.mp3",
+        )
 
         vm.shuffleFolder(state, node(state, ALBUM), FolderScope.WITH_SUBFOLDERS, Random(7))
 
         assertEquals(
-            "the shuffled queue is not the deep scope's tracks",
-            listOf(
-                "01 a.mp3", "01 bonus.mp3", "01 d10a.mp3", "01 d1a.mp3",
-                "01 d2a.mp3", "02 d1b.mp3", "05 c.mp3",
-            ),
+            "the shuffled queue is not the deep scope's tracks — something was added or lost",
+            deepOrder.sorted(),
             queuedNames().sorted(),
+        )
+        assertNotEquals(
+            "the queue came out in deep order, so nothing was shuffled — `shuffleFolder` handed " +
+                "the list straight to the player",
+            deepOrder,
+            queuedNames(),
         )
     }
 }
