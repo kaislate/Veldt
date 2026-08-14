@@ -4,12 +4,16 @@
 package com.kaislate.veldtplayer.data.net
 
 import kotlinx.coroutines.test.runTest
+import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Response
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import java.io.IOException
 import java.util.Random
 import java.util.concurrent.TimeUnit
 
@@ -130,8 +134,46 @@ class SubsonicClientTest {
     }
 
     @Test fun `an unparseable base url is Unreachable without any request`() = runTest {
+        // The previous spelling asserted `server.requestLines` was empty after probing
+        // `ftp://nope` — a COMPLETELY DIFFERENT host from the fake server's ephemeral loopback
+        // port, so no implementation of probe could ever have made that list non-empty. It was
+        // the wrong subject: what decides "without any request" is `rest` refusing to build a
+        // url at all, since `call` is unreachable when there is nothing to call.
+        assertNull(
+            "rest() built a url for a foreign scheme, so probe WOULD have made a request",
+            SubsonicUrls.rest("ftp://nope", "ping", SubsonicAuth.tokenParams("Kyle", "hunter2", "abc")),
+        )
         val outcome = client.probe("ftp://nope", "Kyle", "hunter2")
         assertTrue("expected Unreachable, got $outcome", outcome is ConnectionOutcome.Unreachable)
-        assertEquals(emptyList<String>(), server.requestLines.toList())
+    }
+
+    @Test fun `an Unreachable carries no credential out of the network layer`() = runTest {
+        // SubsonicAuth.redact is the designated seam for this layer and the one class doing HTTP
+        // called it zero times, resting instead on a comment asserting that OkHttp's exception
+        // text never contains a credential — a claim about a string this class does not produce.
+        // The interceptor below stands in for any layer that does put the url in a message
+        // (OkHttp internals, a proxy library, a future logging interceptor).
+        val leaky = OkHttpClient.Builder()
+            .addInterceptor(object : Interceptor {
+                override fun intercept(chain: Interceptor.Chain): Response =
+                    throw IOException("cannot reach ${chain.request().url}")
+            })
+            .build()
+        // The same seed the client below is given, so these are the exact values on the wire.
+        val salt = SubsonicAuth.newSalt(Random(42))
+        val token = SubsonicAuth.md5Hex("hunter2$salt")
+
+        val outcome = SubsonicClient(leaky, Random(42))
+            .probe("http://kyle:hunter2@music.example.com", "Kyle", "hunter2")
+        val reason = (outcome as? ConnectionOutcome.Unreachable)?.reason
+            ?: error("expected Unreachable, got $outcome")
+
+        // WHICH credential survived, not how many — and all three kinds at once, because a
+        // redaction that walks only the query string passes a test that checks only `t=`.
+        val leaked = listOf("kyle:hunter2", "hunter2@", "t=$token", "s=$salt").filter { it in reason }
+        assertEquals("a credential reached ConnectionOutcome: $reason", emptyList<String>(), leaked)
+        // ...and the message is still worth reading, or redaction has just traded one defect
+        // for a support ticket nobody can answer.
+        assertTrue("the reason no longer names the host: $reason", "music.example.com" in reason)
     }
 }

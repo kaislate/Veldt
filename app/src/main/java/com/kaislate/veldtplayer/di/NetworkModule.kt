@@ -46,8 +46,12 @@ object NetworkModule {
      * `SecureRandom` for salts. Provided rather than constructed inside
      * [com.kaislate.veldtplayer.data.net.SubsonicClient] so tests can inject a seeded
      * `Random` and assert an exact token.
+     *
+     * Qualified: see [CryptoRandom] for why an unqualified `java.util.Random` binding is a trap
+     * in an app that will also want a shuffle RNG.
      */
     @Provides
     @Singleton
+    @CryptoRandom
     fun provideRandom(): Random = SecureRandom()
 }

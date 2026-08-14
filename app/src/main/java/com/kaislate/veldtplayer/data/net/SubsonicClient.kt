@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.data.net
 
+import com.kaislate.veldtplayer.di.CryptoRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
@@ -46,13 +47,14 @@ sealed interface ConnectionOutcome {
 /**
  * The only class in the app that performs Subsonic HTTP.
  *
- * [random] is injected so tests are deterministic; production supplies a `SecureRandom`.
- * Every call runs on [Dispatchers.IO] because OkHttp's synchronous `execute` blocks.
+ * [random] is injected so tests are deterministic; production supplies a `SecureRandom`. The
+ * [CryptoRandom] qualifier is what keeps it one — see that annotation for the failure it exists
+ * to prevent. Every call runs on [Dispatchers.IO] because OkHttp's synchronous `execute` blocks.
  */
 @Singleton
 class SubsonicClient @Inject constructor(
     private val http: OkHttpClient,
-    private val random: Random,
+    @param:CryptoRandom private val random: Random,
 ) {
 
     /**
@@ -76,7 +78,10 @@ class SubsonicClient @Inject constructor(
                 capabilities = capabilities(baseUrl),
             )
             is SubsonicResult.Failed -> ConnectionOutcome.Rejected(result.error, result.code, result.message)
-            is SubsonicResult.Malformed -> ConnectionOutcome.Unreachable(result.reason)
+            // Through the seam, always. `reason` is not credential-bearing today, but this
+            // string is rendered by the UI and may be logged by anything, and the class KDoc
+            // used to assert that as a behavioural claim about text this class does not own.
+            is SubsonicResult.Malformed -> ConnectionOutcome.Unreachable(SubsonicAuth.redact(result.reason))
         }
     }
 
@@ -115,9 +120,12 @@ class SubsonicClient @Inject constructor(
                 SubsonicEnvelope.parse(body)
             }
         } catch (e: IOException) {
-            // The message may contain the host but never a credential — the url is not
-            // interpolated here, and SubsonicAuth.redact is what any logging site must use.
-            SubsonicResult.Malformed(e.message ?: "network error")
+            // Through SubsonicAuth.redact, the mandatory seam for this layer. The previous
+            // spelling asserted in a comment that OkHttp's exception text "may contain the host
+            // but never a credential" — a claim about a string this class does not produce and
+            // nothing verifies. An interceptor, a proxy library, or OkHttp itself may put the
+            // full url in a message, and that url carries `t=`, `s=` and any userinfo.
+            SubsonicResult.Malformed(SubsonicAuth.redact(e.message ?: "network error"))
         }
     }
 
