@@ -40,17 +40,31 @@ object VeldtUri {
      *
      * Null is the passthrough signal: every non-`veldt` scheme — `content://` above all — must
      * reach the player untouched, so this returns null rather than throwing for anything it does
-     * not own. Empty segments are rejected because an empty id is not a track, and letting one
-     * through would produce a request for nothing.
+     * not own.
      */
     fun parse(uri: String): TrackRef? {
         if (!uri.startsWith(PREFIX)) return null
         val rest = uri.removePrefix(PREFIX)
+        // FIRST slash, not last: `sourceId` can never contain one (SourceRegistry bans it) while
+        // `externalId` legally can, so this split is the only one under which the encoding is
+        // injective. It is load-bearing rather than incidental because `PlaybackUriResolver` parses
+        // whatever uri reaches the DataSpec, and PlaybackService is an *exported*
+        // MediaLibraryService whose default `onAddMediaItems` accepts any controller-supplied
+        // MediaItem that carries a uri — so `veldt://track/a/b/c`, which `track()` cannot emit, is
+        // still reachable.
         val slash = rest.indexOf('/')
+        // THIS is the empty-segment rejection, and it works on the RAW string: `slash <= 0` is an
+        // empty sourceId, `slash == rest.length - 1` an empty externalId. An empty id is not a
+        // track, and letting one through would produce a request for nothing at load time. A
+        // post-decode `isEmpty()` check cannot add anything and used to sit below, reading as the
+        // real guard: `Uri.decode` appends on every branch — a literal char, a byte flushed through
+        // a CharsetDecoder with REPLACE, or `�` for a malformed escape — so nothing non-empty
+        // decodes to empty. Anyone rewriting this with `split("/", limit = 2)` must carry the
+        // rejection here, not below.
         if (slash <= 0 || slash == rest.length - 1) return null
-        val sourceId = Uri.decode(rest.substring(0, slash))
-        val externalId = Uri.decode(rest.substring(slash + 1))
-        if (sourceId.isEmpty() || externalId.isEmpty()) return null
-        return TrackRef(sourceId, externalId)
+        return TrackRef(
+            sourceId = Uri.decode(rest.substring(0, slash)),
+            externalId = Uri.decode(rest.substring(slash + 1)),
+        )
     }
 }

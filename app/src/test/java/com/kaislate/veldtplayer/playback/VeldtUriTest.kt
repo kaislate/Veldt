@@ -68,4 +68,15 @@ class VeldtUriTest {
     @Test fun `an empty external id is rejected, not encoded into a valid-looking uri`() {
         assertNull(VeldtUri.parse(VeldtUri.track("local", "")))
     }
+
+    @Test fun `parse splits at the FIRST slash, so a second one lands in the externalId`() {
+        // `track()` cannot emit this — it encodes both segments, so a well-formed uri holds exactly
+        // one raw '/' and indexOf/lastIndexOf agree. This pins the case where they DISAGREE, which
+        // Task 2 made reachable: PlaybackUriResolver parses whatever uri arrives in a DataSpec, and
+        // PlaybackService is an exported MediaLibraryService running Media3's default callback,
+        // whose onAddMediaItems accepts any controller-supplied MediaItem that carries a uri.
+        // First-slash is the only split consistent with the documented invariant — sourceId may
+        // never contain '/', externalId may — so it is pinned rather than left to the encoder.
+        assertEquals(TrackRef("a", "b/c"), VeldtUri.parse("veldt://track/a/b/c"))
+    }
 }
