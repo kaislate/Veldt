@@ -5,7 +5,9 @@ package com.kaislate.veldtplayer.data.account
 
 import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.account.db.AccountEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import java.util.UUID
 import javax.inject.Inject
@@ -22,7 +24,7 @@ import javax.inject.Singleton
  * [newId] and [now] are injected rather than called inline so tests are deterministic.
  */
 @Singleton
-class AccountRepository @Inject constructor(
+class AccountRepository(
     private val dao: AccountDao,
     private val box: SecretBox,
     private val files: SecretFiles,
@@ -30,6 +32,36 @@ class AccountRepository @Inject constructor(
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
 
+    /**
+     * The constructor Hilt uses.
+     *
+     * `@Inject` may NOT go on the primary constructor above: **Dagger cannot see Kotlin
+     * default values.** It would bind the five-argument form and demand `Function0<String>`
+     * and `Function0<Long>` bindings that do not exist, failing the build with
+     * `[Dagger/MissingBinding]` the moment anything requests this class.
+     */
+    @Inject
+    constructor(dao: AccountDao, box: SecretBox, files: SecretFiles) : this(
+        dao = dao,
+        box = box,
+        files = files,
+        newId = { UUID.randomUUID().toString() },
+        now = { System.currentTimeMillis() },
+    )
+
+    /**
+     * The accounts, with [Account.hasSecret] resolved by actually opening each sealed secret.
+     *
+     * `flowOn(Dispatchers.IO)` is mandatory, not tidiness. Computing `hasSecret` is a file read
+     * plus an AES-GCM decrypt **per row**, re-run on every Room invalidation, and without it
+     * that work lands on whatever thread collects — which for the accounts screen is
+     * `collectAsStateWithLifecycle()` on `Dispatchers.Main`, i.e. a StrictMode disk-read
+     * violation on the main thread.
+     *
+     * Decrypting rather than checking that a file exists is deliberate: an invalidated Keystore
+     * key leaves the file in place and unreadable, and to a user that is the same state as
+     * having no password at all.
+     */
     fun observe(): Flow<List<Account>> = dao.observeAll().map { rows ->
         rows.map { row ->
             Account(
@@ -43,7 +75,7 @@ class AccountRepository @Inject constructor(
                 hasSecret = password(row.sourceId) != null,
             )
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
     suspend fun add(
         displayName: String,
