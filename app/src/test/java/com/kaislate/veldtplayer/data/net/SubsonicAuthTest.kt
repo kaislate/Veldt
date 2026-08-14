@@ -55,7 +55,10 @@ class SubsonicAuthTest {
         val redacted = SubsonicAuth.redact(url)
         // Total over the set, not a sample: this is the exact shape of mutant that survives
         // an assertion which only checks that `t` is gone.
-        val leaked = listOf("deadbeef", "abc123", "plain", "k=").filter { it in redacted }
+        // Full name=value pairs, not bare values. "k=" was the original spelling here and it
+        // was DEAD: the url contains "apiKey=k&", which yields the substrings "y=k" and "k&"
+        // but never "k=", so the apiKey leg could not fail no matter what redact() did.
+        val leaked = listOf("t=deadbeef", "s=abc123", "p=plain", "apiKey=k").filter { it in redacted }
         assertEquals("these credential values survived redaction", emptyList<String>(), leaked)
         // Non-credential parameters must survive, or a redacted url is useless for debugging.
         assertTrue("u= was redacted but is not a secret", "u=Kyle" in redacted)
