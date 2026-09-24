@@ -21,6 +21,7 @@ import com.kaislate.veldtplayer.MainActivity
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
 import com.kaislate.veldtplayer.data.net.SubsonicAuth
+import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -40,9 +41,18 @@ class PlaybackService : MediaLibraryService() {
      */
     @Inject lateinit var uriResolver: PlaybackUriResolver
 
-    /** So the notification, lock screen, Android Auto and the pill show a streamed track's
-     *  server art (spec §5.6), the same as `VeldtApp`'s Coil `AlbumArtFetcher.Factory`. */
-    @Inject lateinit var remoteArt: RemoteArtLoader
+    /**
+     * So the notification, lock screen, Android Auto and the pill show a streamed track's
+     * server art (spec §5.6), the same as `VeldtApp`'s Coil `AlbumArtFetcher.Factory`.
+     *
+     * [Lazy], matching `VeldtApp`'s own field — see that class's KDoc. `RemoteArtLoader`'s
+     * dependency chain ends at `SubsonicSources`, whose `@Inject constructor` starts a LIVE
+     * background collector against the real Room database, and this service's fields ARE
+     * injected eagerly by Hilt on construction. No existing test builds a `PlaybackService`
+     * today, but deferring construction to [onCreate] (where it is actually needed) costs
+     * nothing and avoids the same class of bug if one ever does.
+     */
+    @Inject lateinit var remoteArt: Lazy<RemoteArtLoader>
 
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
@@ -80,7 +90,7 @@ class PlaybackService : MediaLibraryService() {
         // both ask for the current track's cover, and it holds the last request. (The
         // session would wrap the loader in one anyway; wrapping here puts the adapter
         // inside the same cache instead of outside it.)
-        val loader = VeldtBitmapLoader(this, remoteArt)
+        val loader = VeldtBitmapLoader(this, remoteArt.get())
         bitmapLoader = loader
         val sessionLoader = CacheBitmapLoader(loader)
 

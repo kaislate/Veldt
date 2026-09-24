@@ -29,11 +29,21 @@ sealed interface ArtSource {
  * `ContentResolver.loadThumbnail` cannot open, and [SongArt.filePath] is null because the file
  * was never synced onto this device (spec §5.6). Trying the local rungs first would just be two
  * guaranteed failures ahead of the one source that can actually answer.
+ *
+ * A remote row is gated on [SongArt.hasEmbeddedArt] the same way the local [ArtSource.Embedded]
+ * rung is: the sync that populated this row already asked the server whether it has art (spec
+ * §5.6), so `hasEmbeddedArt == false` here is not "unknown" — it is the server's own answer that
+ * a `getCoverArt` call would return the JSON error envelope. Spec §10 (network maps 1:1 to
+ * intent) is why the plan is EMPTY rather than trying anyway: a request whose answer is already
+ * known is chatter, not art discovery.
  */
 object ArtSourcePlan {
 
     fun plan(art: SongArt): List<ArtSource> {
-        art.remoteRef?.let { return listOf(ArtSource.Remote(it)) }
+        val remote = art.remoteRef
+        if (remote != null) {
+            return if (art.hasEmbeddedArt) listOf(ArtSource.Remote(remote)) else emptyList()
+        }
         return buildList {
             if (art.uri.isNotBlank()) add(ArtSource.Thumbnail(art.uri))
             val path = art.filePath

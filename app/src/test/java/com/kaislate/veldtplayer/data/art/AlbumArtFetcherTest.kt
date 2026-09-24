@@ -5,7 +5,10 @@ package com.kaislate.veldtplayer.data.art
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.kaislate.veldtplayer.playback.VeldtUri
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -137,5 +140,34 @@ class AlbumArtFetcherTest {
         while (!deflater.finished()) out.write(buffer, 0, deflater.deflate(buffer))
         deflater.end()
         return out.toByteArray()
+    }
+
+    // ---------- remote rows gated on hasEmbeddedArt (fix round 1, spec §10) ----------
+
+    /**
+     * [ArtSourcePlan.plan] returns an empty plan for a remote row the server already said has
+     * no art, so this ladder must never reach [RemoteArt.load] for one — asserted on the fake's
+     * own call count, not just on the returned bitmap, so a defect that called [RemoteArt] and
+     * then discarded its answer would still be caught.
+     */
+    @Test fun `a remote row with no embedded art never calls RemoteArt`() = runTest {
+        var calls = 0
+        val remote = RemoteArt { _, _ -> calls++; null }
+        val fetcher = AlbumArtFetcher(
+            data = SongArt(
+                songId = 1L,
+                uri = VeldtUri.track("acct", "s1"),
+                filePath = null,
+                hasEmbeddedArt = false,
+            ),
+            context = context,
+            sample = ArtDecode.FULL,
+            remote = remote,
+        )
+
+        val bitmap = fetcher.fetchBitmap()
+
+        assertNull(bitmap)
+        assertEquals("hasEmbeddedArt=false must short-circuit before any RemoteArt call", 0, calls)
     }
 }

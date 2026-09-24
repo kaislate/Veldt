@@ -24,10 +24,9 @@ import com.kaislate.veldtplayer.data.library.db.SongEntity
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.net.FakeHttpServer
 import com.kaislate.veldtplayer.data.net.SubsonicClient
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -44,12 +43,24 @@ import java.util.Random
 import java.util.concurrent.TimeUnit
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import kotlin.coroutines.CoroutineContext
 
 /**
  * The worker end to end: real Room, a real [SubsonicClient] against [FakeHttpServer], and a real
  * [SubsonicSources]/[AccountRepository] pair — only the account row and the server's canned
  * answers are fixtures. Built via [TestListenableWorkerBuilder] with a [WorkerFactory] that calls
  * the worker's own (non-Hilt) constructor directly, exactly as `LibraryScanWorkerTest` does.
+ *
+ * [sources] is handed [NoOpDispatcher]-backed scope, not a live one: [SubsonicSyncWorker] only
+ * ever calls [SubsonicSources.credentials], which always re-reads fresh (cache hit, or a fresh
+ * `accountDao.get` + decrypt) and never depends on the init-time `observeAll()` collector's
+ * `rows` snapshot — see that class's own KDoc. A real `Dispatchers.IO` scope here was measured
+ * to leak exactly the same way `SubsonicSourcesTest` did (see that class's KDoc): Room's
+ * generated `Flow` dispatches its native query onto ITS OWN internal executor regardless of the
+ * collecting coroutine's dispatcher, so cancelling the scope in [tearDown] did not stop an
+ * already-in-flight query from racing this test's `db.close()` and surfacing as an uncaught
+ * exception on some unrelated test. `NoOpDispatcher` means the collector's body — the
+ * `observeAll()` call itself — never runs at all, so there is nothing left to race.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -65,7 +76,13 @@ class SubsonicSyncWorkerTest {
     private lateinit var client: SubsonicClient
     private lateinit var status: SyncStatusStore
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
-    private val scopes = mutableListOf<CoroutineScope>()
+
+    /** See the class KDoc for why [sources] must not be handed a live collector scope here. */
+    private object NoOpDispatcher : CoroutineDispatcher() {
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            // Deliberately does nothing — see the class KDoc.
+        }
+    }
 
     @Before fun setUp() {
         context = ApplicationProvider.getApplicationContext()
@@ -79,8 +96,7 @@ class SubsonicSyncWorkerTest {
             }),
             files = SecretFiles(context),
         )
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO).also { scopes += it }
-        sources = SubsonicSources(accountDao, songDao, accounts, scope)
+        sources = SubsonicSources(accountDao, songDao, accounts, CoroutineScope(SupervisorJob() + NoOpDispatcher))
         server = FakeHttpServer().also { it.start() }
         client = SubsonicClient(
             http = OkHttpClient.Builder().callTimeout(10, TimeUnit.SECONDS).build(),
@@ -91,7 +107,6 @@ class SubsonicSyncWorkerTest {
     }
 
     @After fun tearDown() {
-        scopes.forEach { it.cancel() }
         server.close()
         db.close()
     }

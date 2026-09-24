@@ -89,4 +89,16 @@ class ArtSourcePlanTest {
         val plan = ArtSourcePlan.plan(art())
         assertTrue(plan.none { it is ArtSource.Remote })
     }
+
+    /**
+     * Fix round 1 (controller ruling, spec §10): the sync that populated a remote row already
+     * asked the server whether it has art. `hasEmbeddedArt == false` is that answer, not
+     * "unknown" — a `getCoverArt` call here would only confirm what the row already says, so
+     * the plan must be EMPTY rather than trying (and never a `Thumbnail` either; see the control
+     * mutation this test and the one above are designed to catch).
+     */
+    @Test fun `a remote row with no embedded art gets an empty plan, not a request`() {
+        val remote = art(uri = VeldtUri.track("acct", "s1"), filePath = null, hasEmbeddedArt = false)
+        assertEquals(emptyList<ArtSource>(), ArtSourcePlan.plan(remote))
+    }
 }

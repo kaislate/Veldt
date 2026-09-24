@@ -11,6 +11,7 @@ import coil.ImageLoaderFactory
 import com.kaislate.veldtplayer.data.art.AlbumArtFetcher
 import com.kaislate.veldtplayer.data.art.AlbumArtKeyer
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
+import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
 import ealvatag.tag.TagOptionSingleton
 import javax.inject.Inject
@@ -20,8 +21,22 @@ class VeldtApp : Application(), Configuration.Provider, ImageLoaderFactory {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
 
-    /** So browse screens and now-playing show a streamed track's server art (spec §5.6). */
-    @Inject lateinit var remoteArt: RemoteArtLoader
+    /**
+     * So browse screens and now-playing show a streamed track's server art (spec §5.6).
+     *
+     * [Lazy], not a direct [RemoteArtLoader] — this field is injected as part of `VeldtApp`'s
+     * OWN construction, which Hilt's generated `Hilt_VeldtApp` runs on EVERY app start,
+     * including every Robolectric unit test in this project (`VeldtApp` is the manifest
+     * `android:name`, and nothing overrides it for tests). `RemoteArtLoader`'s dependency chain
+     * ends at `SubsonicSources`, whose `@Inject constructor` starts a LIVE background
+     * `accountDao.observeAll()` collector against the real, `@Singleton`, file-backed Room
+     * database — measured: eagerly constructing that once per Robolectric test, for the
+     * lifetime of ~900+ test methods across the whole suite, is what was actually leaking
+     * uncaught exceptions onto unrelated tests once N2 Task 6 added this field, not anything
+     * about this task's OWN new test files. `Lazy` defers construction to [newImageLoader],
+     * which real Coil usage calls but a plain Robolectric unit test never does.
+     */
+    @Inject lateinit var remoteArt: Lazy<RemoteArtLoader>
 
     override fun onCreate() {
         super.onCreate()
@@ -46,7 +61,7 @@ class VeldtApp : Application(), Configuration.Provider, ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .components {
             add(AlbumArtKeyer())
-            add(AlbumArtFetcher.Factory(this@VeldtApp, remoteArt))
+            add(AlbumArtFetcher.Factory(this@VeldtApp, remoteArt.get()))
         }
         .crossfade(false)
         .build()

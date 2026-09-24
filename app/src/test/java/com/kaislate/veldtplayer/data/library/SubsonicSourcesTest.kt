@@ -15,10 +15,13 @@ import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.account.db.AccountEntity
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.net.ServerCapabilities
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -29,8 +32,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.util.concurrent.Executor
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import kotlin.coroutines.CoroutineContext
 
 /**
  * Accounts as sources, at runtime (N2 Task 2 — spec §4.2, §5.2).
@@ -49,6 +54,32 @@ import javax.crypto.SecretKey
  * Room's invalidation notification is genuinely asynchronous, on Room's own query executor) never
  * yields control back to it, so the collector would simply never run. [awaitTrue] polls for the
  * eventually-consistent result rather than assuming any particular ordering.
+ *
+ * **Teardown must not race [db].close().** Room's DEFAULT (unset) query executor is
+ * `ArchTaskExecutor`'s IO pool — a PROCESS-WIDE singleton shared by every Room database in the
+ * whole test JVM, not something scoped to this test or to the coroutine that launched
+ * `observeAll()`'s collector. `TriggerBasedInvalidationTracker`'s own housekeeping (triggered by
+ * a write, e.g. `accountDao.upsert`) is dispatched onto that shared executor independently of
+ * the collecting coroutine's structured concurrency, so — measured directly — `scope.cancel()`
+ * alone does not stop an already-queued task, and even `cancelAndJoin` on the collector's own
+ * `Job` does not, because `join` only waits for OUR coroutine's structured descendants, and this
+ * housekeeping is not one. A task queued for THIS test's database can sit behind unrelated work
+ * from every other test sharing that one process-wide pool and run only after [tearDown]'s
+ * `db.close()` — surfacing as an UNCAUGHT exception blamed on whichever unrelated test happens
+ * to be running when it finally fires. This is exactly why N2 Task 6 adding ~16 more tests
+ * elsewhere in the suite (deepening that shared queue) turned a latent race into one that
+ * reproduced on 7+ unrelated classes, every run: the failure was never really about this file's
+ * OWN test count.
+ *
+ * [setUp] fixes this at its actual root: `Room.Builder.setQueryExecutor` is given a same-thread
+ * executor, so every query this database ever runs — the ordinary ones AND Room's own
+ * invalidation housekeeping — executes synchronously, in-line, on whatever thread asks for it.
+ * There is no background task left to queue, so there is nothing for `db.close()` to race.
+ * [collectorScope] is still `cancelAndJoin`ed in [tearDown] first, as good hygiene for OUR own
+ * launched coroutine, but it is the synchronous executor — not the join — that makes closing
+ * safe. Every test that does not need the collector to run at all uses [inertScope] instead: a
+ * scope whose dispatcher never runs anything handed to it, so `observeAll()` is never even
+ * invoked.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -70,14 +101,44 @@ class SubsonicSourcesTest {
     })
 
     /** A real background scope, matching what the `@Inject` constructor builds in production —
-     *  see the class KDoc for why `backgroundScope` cannot stand in for it here. Cancelled in
-     *  [tearDown]. */
+     *  see the class KDoc for why `backgroundScope` cannot stand in for it here. `cancelAndJoin`ed
+     *  in [tearDown]. */
     private fun collectorScope(): CoroutineScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO).also { collectorScopes += it }
 
+    /**
+     * For every test that does NOT need the collector to run — see the class KDoc. Overriding
+     * [CoroutineDispatcher.dispatch] to swallow every `Runnable` means `init { scope.launch {
+     * accountDao.observeAll().collect { … } } }`'s body never executes at all: `CoroutineStart
+     * .DEFAULT` resumes the new coroutine through this dispatcher, and a dispatcher that never
+     * runs what it is given leaves nothing to race against [tearDown]'s `db.close()`.
+     */
+    private object NoOpDispatcher : CoroutineDispatcher() {
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            // Deliberately does nothing — see the class KDoc.
+        }
+    }
+
+    private fun inertScope(): CoroutineScope = CoroutineScope(SupervisorJob() + NoOpDispatcher)
+
     @Before fun setUp() {
         ctx = ApplicationProvider.getApplicationContext()
-        db = Room.inMemoryDatabaseBuilder(ctx, VeldtDatabase::class.java).allowMainThreadQueries().build()
+        db = Room.inMemoryDatabaseBuilder(ctx, VeldtDatabase::class.java)
+            .allowMainThreadQueries()
+            // A same-thread executor, not a background pool: Room's DEFAULT (unset) query
+            // executor is `ArchTaskExecutor`'s IO pool, a PROCESS-WIDE singleton shared by every
+            // Room database in the whole test JVM, whose queue depth (and therefore how long a
+            // task can sit queued before it runs) is a function of TOTAL SUITE LOAD — which is
+            // exactly why this file's `observeAll()` collector tests started failing only once
+            // N2 Task 6 added enough unrelated tests elsewhere to grow that queue. A `Flow`'s
+            // invalidation housekeeping (Room's `TriggerBasedInvalidationTracker`) dispatches
+            // onto that executor independently of this test's own coroutine scope, so no amount
+            // of `cancelAndJoin` on OUR launched collector can guarantee it has already run
+            // before `tearDown`'s `db.close()` — measured: it does not. Running every query
+            // synchronously, in-line, on whatever thread asks for it removes the asynchrony (and
+            // therefore the race) entirely, rather than trying to out-wait it.
+            .setQueryExecutor(Executor { it.run() })
+            .build()
         accountDao = db.accountDao()
         files = SecretFiles(ctx)
         accounts = AccountRepository(
@@ -89,7 +150,10 @@ class SubsonicSourcesTest {
     }
 
     @After fun tearDown() {
-        collectorScopes.forEach { it.cancel() }
+        // join, not just cancel — see the class KDoc's "Teardown must not race db.close()". The
+        // synchronous query executor (see [setUp]) is what makes this actually sufficient: there
+        // is no background task left in flight for `join` to race against.
+        runBlocking { collectorScopes.forEach { it.coroutineContext[Job]?.cancelAndJoin() } }
         db.close()
     }
 
@@ -124,7 +188,7 @@ class SubsonicSourcesTest {
     @Test fun `an account that exists at construction is a source immediately, with no collection needed`() =
         runTest {
             accountDao.upsert(entity("acct-1"))
-            val sources = SubsonicSources(accountDao, db.songDao(), accounts, backgroundScope)
+            val sources = SubsonicSources(accountDao, db.songDao(), accounts, inertScope())
             // Synchronous on purpose: PlaylistRepository.resolve and MusicRepository.playableUri
             // call byId without suspending, and a cold start must not render every remote entry
             // unresolved.
@@ -183,12 +247,12 @@ class SubsonicSourcesTest {
     @Test fun `credentials for an account whose secret cannot be read are null`() = runTest {
         // Written directly, bypassing AccountRepository.add — so no secret file exists at all.
         accountDao.upsert(entity("acct-1"))
-        val sources = SubsonicSources(accountDao, db.songDao(), accounts, backgroundScope)
+        val sources = SubsonicSources(accountDao, db.songDao(), accounts, inertScope())
         assertNull(sources.credentials("acct-1"))
     }
 
     @Test fun `credentials resolve for a row the collector has not seen yet`() = runTest {
-        val sources = SubsonicSources(accountDao, db.songDao(), accounts, backgroundScope)
+        val sources = SubsonicSources(accountDao, db.songDao(), accounts, inertScope())
         // The exact race the sync worker hits: the row lands, and something asks for credentials
         // before observeAll()'s collector — a SEPARATE coroutine — has had any chance to run.
         // Deliberately no advanceUntilIdle() and no awaitTrue() before the call below.
@@ -207,7 +271,7 @@ class SubsonicSourcesTest {
         accountDao.upsert(entity("good-1"))
         accountDao.upsert(entity("a/b"))
         accountDao.upsert(entity("a:b"))
-        val sources = SubsonicSources(accountDao, db.songDao(), accounts, backgroundScope)
+        val sources = SubsonicSources(accountDao, db.songDao(), accounts, inertScope())
 
         assertNull(sources.byId("a/b"))
         assertNull(sources.byId("a:b"))
@@ -221,7 +285,7 @@ class SubsonicSourcesTest {
     @Test fun `capabilities are the cached extension names, or BASELINE when none are cached`() = runTest {
         accountDao.upsert(entity("acct-1", capabilities = "transcodeOffset,songLyrics"))
         accountDao.upsert(entity("acct-2", capabilities = null))
-        val sources = SubsonicSources(accountDao, db.songDao(), accounts, backgroundScope)
+        val sources = SubsonicSources(accountDao, db.songDao(), accounts, inertScope())
 
         assertEquals(
             ServerCapabilities(mapOf("transcodeOffset" to emptyList(), "songLyrics" to emptyList())),

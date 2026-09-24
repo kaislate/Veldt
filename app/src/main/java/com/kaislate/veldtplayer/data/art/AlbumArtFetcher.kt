@@ -146,12 +146,20 @@ class AlbumArtFetcher(
     }
 
     /**
-     * [ArtDecode.FULL] reproduces the previous fixed request exactly; a larger divisor asks
-     * MediaStore for a proportionally smaller thumbnail, floored so a pathological divisor
-     * cannot ask for a zero-sized image.
+     * The pixel side/budget this fetch's [sample] divisor asks for, shared between the
+     * thumbnail rung ([loadThumbnail], an absolute MediaStore request size) and the remote rung
+     * ([remoteSizePx], a `size=` request to a server) — [ArtDecode]'s own KDoc documents why the
+     * same divisor lands as slightly different things on the two, but the arithmetic is one
+     * formula either way.
+     *
+     * [ArtDecode.FULL] reproduces the previous fixed request exactly; a larger divisor asks for
+     * a proportionally smaller image, floored so a pathological divisor cannot ask for a
+     * zero-sized one.
      */
+    private fun thumbnailSizePx(): Int = (THUMB_PX / sample).coerceAtLeast(MIN_ART_PX)
+
     private fun loadThumbnail(uri: String): Bitmap? = runCatching {
-        val side = (THUMB_PX / sample).coerceAtLeast(MIN_ART_PX)
+        val side = thumbnailSizePx()
         context.contentResolver.loadThumbnail(Uri.parse(uri), Size(side, side), null)
     }.getOrNull()
 
@@ -176,14 +184,14 @@ class AlbumArtFetcher(
      * The remote rung: [remote] already returns a decoded, capped [Bitmap] or null (see
      * [RemoteArtLoader]), so there is nothing left to do here but ask for the right pixel
      * budget and refuse to let a caller-supplied [RemoteArt] crash this ladder if it breaks
-     * that contract. [remoteSizePx] mirrors [loadThumbnail]'s own divisor-to-pixels math so the
-     * backdrop's low-pass request costs the server the same as it costs MediaStore.
+     * that contract. [remoteSizePx] reuses [thumbnailSizePx] when [maxPx] is null, so the
+     * backdrop's low-pass request costs the server the same pixel budget it costs MediaStore.
      */
     private suspend fun loadRemote(ref: TrackRef): Bitmap? = runCatching {
         remote?.load(ref, remoteSizePx())
     }.getOrNull()
 
-    private fun remoteSizePx(): Int = maxPx ?: (THUMB_PX / sample).coerceAtLeast(MIN_ART_PX)
+    private fun remoteSizePx(): Int = maxPx ?: thumbnailSizePx()
 
     class Factory(private val context: Context, private val remote: RemoteArt? = null) :
         Fetcher.Factory<SongArt> {
