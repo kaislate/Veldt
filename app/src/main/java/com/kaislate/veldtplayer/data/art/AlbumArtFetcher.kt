@@ -15,10 +15,55 @@ import coil.fetch.DrawableResult
 import coil.fetch.FetchResult
 import coil.fetch.Fetcher
 import coil.request.Options
+import com.kaislate.veldtplayer.playback.TrackRef
 import ealvatag.audio.AudioFileIO
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+
+/** Floor for a sampled decode, so a huge divisor still yields a usable bitmap. Shared between
+ *  the local ladder here and [RemoteArtLoader]'s decode of server-returned bytes. */
+internal const val MIN_ART_PX = 16
+
+/**
+ * Decodes [bytes] capped at [maxPx] on the longest edge, or at the bare [sample] divisor when
+ * [maxPx] is null.
+ *
+ * Shared by [AlbumArtFetcher.decodeEmbedded] (the embedded-tag rung) and [RemoteArtLoader] (the
+ * server rung): both hold compressed image bytes of unknown, possibly oversized dimensions and
+ * must obey the same "never enlarge, never decode past what was asked for" contract. See
+ * [capSampleFor] for why the divisor is raised in powers of two rather than computed exactly.
+ */
+internal fun decodeCapped(bytes: ByteArray, sample: Int, maxPx: Int?): Bitmap? {
+    // inSampleSize 1 is BitmapFactory's default, so an uncapped FULL decodes exactly as it did
+    // before the ceiling existed.
+    val options = BitmapFactory.Options().apply { inSampleSize = capSampleFor(bytes, sample, maxPx) }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+}
+
+/**
+ * The requested divisor, raised until the decode fits under [maxPx] — or [sample] itself when
+ * [maxPx] is null (the uncapped UI path, decoding exactly what it asked for).
+ *
+ * Raised in powers of two because that is what `inSampleSize` actually honours — it rounds down
+ * to one — so a computed 3 would decode at 2 and land ABOVE the ceiling the computation was for.
+ * The ceiling is a real bound, not a target: a 3000px cover under a 1024px ceiling decodes at
+ * divisor 4 (750px), not 2 (1500px).
+ */
+internal fun capSampleFor(bytes: ByteArray, sample: Int, maxPx: Int?): Int {
+    val cap = (maxPx ?: return sample).coerceAtLeast(MIN_ART_PX)
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    val longest = maxOf(bounds.outWidth, bounds.outHeight)
+    // -1 for bytes BitmapFactory cannot read as an image. Nothing to bound; let the real pass
+    // return its own null rather than inventing a divisor for a size we don't know.
+    if (longest <= 0) return sample
+    var divisor = 1
+    // `divisor > longest` is the exit for a pathological requested divisor: past it there is
+    // nothing left to halve, and doubling on would overflow rather than converge.
+    while ((longest / divisor > cap || divisor < sample) && divisor <= longest) divisor *= 2
+    return divisor
+}
 
 /**
  * Resolves a [SongArt] to a bitmap by walking [ArtSourcePlan.plan] and returning the
@@ -27,24 +72,30 @@ import java.io.File
  * EVERY source is wrapped in runCatching: `loadThumbnail` throws IOException for
  * art-less or deleted files, and eAlvaTag throws freely on malformed containers
  * (P1.2 hit exactly one bad .m4a on the test device). A missing cover must never
- * propagate as a crash — it degrades to the themed placeholder.
+ * propagate as a crash — it degrades to the themed placeholder. [remote] promises the same
+ * (see [RemoteArtLoader]), but the wrapper stays here too so this contract does not depend on
+ * every implementation of [RemoteArt] keeping that promise.
  *
  * @param sample linear decode divisor; see [ArtDecode].
- * @param maxPx ceiling on the longest edge of an EMBEDDED decode, or null for the picture
- *   frame's own size. It exists because the two rungs are bounded differently by nature: the
- *   thumbnail rung asks MediaStore for [THUMB_PX] and so is bounded already, while the
- *   embedded rung decodes whatever the file's picture frame happens to hold — a 3000x3000
+ * @param maxPx ceiling on the longest edge of an EMBEDDED or REMOTE decode, or null for the
+ *   picture frame's own size. It exists because the two rungs are bounded differently by
+ *   nature: the thumbnail rung asks MediaStore for [THUMB_PX] and so is bounded already, while
+ *   the embedded rung decodes whatever the file's picture frame happens to hold — a 3000x3000
  *   cover is ~34 MB of ARGB_8888. Null (the Coil/UI path) keeps the natural size, because
  *   the now-playing art and the palette extractor legitimately want every pixel the file
  *   has; the media session passes [SESSION_MAX_PX], because its bitmap is retained for the
  *   whole track by both `CacheBitmapLoader` and `MediaSessionBus`, and 34 MB is ~18% of the
  *   heap cap on the 2 GB device this app targets.
+ * @param remote resolves [ArtSource.Remote]; null (the default) makes a remote row fail closed
+ *   rather than crash — e.g. every existing test that builds this class directly, none of which
+ *   wire a [RemoteArt].
  */
 class AlbumArtFetcher(
     private val data: SongArt,
     private val context: Context,
     private val sample: Int,
     private val maxPx: Int? = null,
+    private val remote: RemoteArt? = null,
 ) : Fetcher {
 
     override suspend fun fetch(): FetchResult? {
@@ -87,6 +138,7 @@ class AlbumArtFetcher(
             val bitmap = when (source) {
                 is ArtSource.Thumbnail -> loadThumbnail(source.uri)
                 is ArtSource.Embedded -> loadEmbedded(source.filePath)
+                is ArtSource.Remote -> loadRemote(source.ref)
             }
             if (bitmap != null) return@withContext bitmap
         }
@@ -94,12 +146,20 @@ class AlbumArtFetcher(
     }
 
     /**
-     * [ArtDecode.FULL] reproduces the previous fixed request exactly; a larger divisor asks
-     * MediaStore for a proportionally smaller thumbnail, floored so a pathological divisor
-     * cannot ask for a zero-sized image.
+     * The pixel side/budget this fetch's [sample] divisor asks for, shared between the
+     * thumbnail rung ([loadThumbnail], an absolute MediaStore request size) and the remote rung
+     * ([remoteSizePx], a `size=` request to a server) — [ArtDecode]'s own KDoc documents why the
+     * same divisor lands as slightly different things on the two, but the arithmetic is one
+     * formula either way.
+     *
+     * [ArtDecode.FULL] reproduces the previous fixed request exactly; a larger divisor asks for
+     * a proportionally smaller image, floored so a pathological divisor cannot ask for a
+     * zero-sized one.
      */
+    private fun thumbnailSizePx(): Int = (THUMB_PX / sample).coerceAtLeast(MIN_ART_PX)
+
     private fun loadThumbnail(uri: String): Bitmap? = runCatching {
-        val side = (THUMB_PX / sample).coerceAtLeast(MIN_PX)
+        val side = thumbnailSizePx()
         context.contentResolver.loadThumbnail(Uri.parse(uri), Size(side, side), null)
     }.getOrNull()
 
@@ -118,40 +178,25 @@ class AlbumArtFetcher(
      * The embedded rung's decode, split out because it is the only part of that rung a unit
      * test can reach: the rest needs a real file on disk with a real tag in it.
      */
-    internal fun decodeEmbedded(bytes: ByteArray): Bitmap? {
-        // inSampleSize 1 is BitmapFactory's default, so an uncapped FULL decodes exactly as
-        // it did before the ceiling existed.
-        val options = BitmapFactory.Options().apply { inSampleSize = embeddedSample(bytes) }
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
-    }
+    internal fun decodeEmbedded(bytes: ByteArray): Bitmap? = decodeCapped(bytes, sample, maxPx)
 
     /**
-     * The requested divisor, raised until the decode fits under [maxPx].
-     *
-     * Raised in powers of two because that is what `inSampleSize` actually honours — it
-     * rounds down to one — so a computed 3 would decode at 2 and land ABOVE the ceiling the
-     * computation was for. The ceiling is a real bound, not a target: a 3000px cover under a
-     * 1024px ceiling decodes at divisor 4 (750px), not 2 (1500px).
+     * The remote rung: [remote] already returns a decoded, capped [Bitmap] or null (see
+     * [RemoteArtLoader]), so there is nothing left to do here but ask for the right pixel
+     * budget and refuse to let a caller-supplied [RemoteArt] crash this ladder if it breaks
+     * that contract. [remoteSizePx] reuses [thumbnailSizePx] when [maxPx] is null, so the
+     * backdrop's low-pass request costs the server the same pixel budget it costs MediaStore.
      */
-    private fun embeddedSample(bytes: ByteArray): Int {
-        // Null cap: the UI path, decoding exactly what it asked for.
-        val cap = (maxPx ?: return sample).coerceAtLeast(MIN_PX)
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        val longest = maxOf(bounds.outWidth, bounds.outHeight)
-        // -1 for bytes BitmapFactory cannot read as an image. Nothing to bound; let the real
-        // pass return its own null rather than inventing a divisor for a size we don't know.
-        if (longest <= 0) return sample
-        var divisor = 1
-        // `divisor > longest` is the exit for a pathological requested divisor: past it there
-        // is nothing left to halve, and doubling on would overflow rather than converge.
-        while ((longest / divisor > cap || divisor < sample) && divisor <= longest) divisor *= 2
-        return divisor
-    }
+    private suspend fun loadRemote(ref: TrackRef): Bitmap? = runCatching {
+        remote?.load(ref, remoteSizePx())
+    }.getOrNull()
 
-    class Factory(private val context: Context) : Fetcher.Factory<SongArt> {
+    private fun remoteSizePx(): Int = maxPx ?: thumbnailSizePx()
+
+    class Factory(private val context: Context, private val remote: RemoteArt? = null) :
+        Fetcher.Factory<SongArt> {
         override fun create(data: SongArt, options: Options, imageLoader: ImageLoader): Fetcher =
-            AlbumArtFetcher(data, context, options.artDecodeSample())
+            AlbumArtFetcher(data, context, options.artDecodeSample(), remote = remote)
     }
 
     companion object {
@@ -165,8 +210,5 @@ class AlbumArtFetcher(
          * full-screen art.
          */
         const val SESSION_MAX_PX = THUMB_PX
-
-        /** Floor for a sampled request, so a huge divisor still yields a usable bitmap. */
-        private const val MIN_PX = 16
     }
 }

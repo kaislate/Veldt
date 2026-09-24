@@ -16,6 +16,10 @@
 
     <!-- Self-hosted server access (design spec §12, N1). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- ConnectivityManager.isActiveNetworkMetered, for the mobile-data bitrate cap (N2).
+         WorkManager's manifest merges this in too; declared here so the cap does not depend
+         on a transitive manifest. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:name=".VeldtApp"

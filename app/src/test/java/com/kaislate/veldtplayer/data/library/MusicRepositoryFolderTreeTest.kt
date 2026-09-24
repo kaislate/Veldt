@@ -7,6 +7,9 @@ import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.db.IndexEntry
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.SongEntity
+import com.kaislate.veldtplayer.data.library.model.Album
+import com.kaislate.veldtplayer.data.library.model.Artist
+import com.kaislate.veldtplayer.data.library.model.Song
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -66,12 +69,27 @@ class MusicRepositoryFolderTreeTest {
         override fun observeSearch(pattern: String): Flow<List<SongEntity>> = emptyFlow()
         override suspend fun getIndex(sourceId: String): List<IndexEntry> = emptyList()
         override suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>) = Unit
+        override suspend fun getBySource(sourceId: String): List<SongEntity> = emptyList()
+        override suspend fun deleteBySource(sourceId: String) = Unit
+        override suspend fun accountRowCount(sourceId: String) = 1
         override suspend fun clear() = Unit
+    }
+
+    /** The `@LocalLibrary` source every fixture row belongs to; its id agrees with [row]'s. */
+    private val localSource = object : LibrarySource {
+        override val id = "test"
+        override suspend fun listSongs() = emptyList<Song>()
+        override suspend fun listAlbums() = emptyList<Album>()
+        override suspend fun listArtists() = emptyList<Artist>()
+        override suspend fun search(query: String) = emptyList<Song>()
+        override fun resolvePlayableUri(song: Song) = song.uri
+        override fun stableKey(song: Song) = song.uri
     }
 
     private fun repo(vararg script: List<SongEntity>) = MusicRepository(
         FakeSongDao(script.toList()),
         SourceRegistry(emptySet()),
+        localSource,
         ApplicationProvider.getApplicationContext(),
     )
 
@@ -165,4 +183,41 @@ class MusicRepositoryFolderTreeTest {
     /** Every song's location, in tree order — what an emission CONTAINS, never how many arrived. */
     private fun contents(tree: List<FolderNode>): List<String> =
         tree.flatMap { node -> node.songs.map { it.relativeKey.orEmpty() } + contents(node.children) }
+
+    /** A row from a different source: no relativeKey, no filePath — exactly what a synced
+     *  [SubsonicSource] row looks like, since neither field has meaning off the local filesystem. */
+    private fun remoteRow(id: Long) = SongEntity(
+        id = id, sourceId = "remote-acct", externalId = "r$id", uri = "veldt://track/remote-acct/r$id",
+        filePath = null, relativeKey = null,
+        title = "t", artist = "a", album = "b", albumArtist = null,
+        trackNumber = null, discNumber = null, year = null,
+        durationMs = 0L, dateModifiedSec = 0L, hasEmbeddedArt = false,
+    )
+
+    /**
+     * N2 Task 2, step 5. The folder tree is a filesystem concept and a remote song has no
+     * filesystem location, so it must not appear anywhere in the tree — not under a real folder
+     * (it has none) and not lumped into "Unfiled" either, which would otherwise happen because its
+     * `relativeKey`/`filePath` are both null, exactly [FolderTree.build]'s trigger for that bucket.
+     *
+     * **Control, executed:** removing `MusicRepository.folderTree()`'s `sourceId == local.id`
+     * filter turns the second assertion red — the remote row appears as an extra "Unfiled" root —
+     * confirming this test can actually see the filter's absence.
+     */
+    @Test fun `a remote song is absent from the local folder tree, with no Unfiled bucket for it`() = runTest {
+        val tree = repo(listOf(row(1, "external_primary:Music/Beck/a.mp3"), remoteRow(2)))
+            .folderTree().toList().single()
+
+        assertEquals(
+            "a remote source's song produced a folder root of its own — the tree is not local-only",
+            listOf("external_primary"),
+            tree.map { it.name },
+        )
+        assertEquals(
+            "a remote song leaked into the tree, an Unfiled bucket appeared for it, or the local " +
+                "song it should not have displaced went missing",
+            listOf("external_primary:Music/Beck/a.mp3"),
+            contents(tree),
+        )
+    }
 }

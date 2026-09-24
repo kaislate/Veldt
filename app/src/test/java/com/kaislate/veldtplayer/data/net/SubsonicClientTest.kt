@@ -176,4 +176,65 @@ class SubsonicClientTest {
         // for a support ticket nobody can answer.
         assertTrue("the reason no longer names the host: $reason", "music.example.com" in reason)
     }
+
+    // ---------- coverArt (N2 Task 6, spec §5.6) ----------
+
+    private fun creds(url: String) = SubsonicCredentials(url, "Kyle", "hunter2")
+
+    @Test fun `an image body decodes to the exact bytes on the wire`() = runTest {
+        val pixel = byteArrayOf(1, 2, 3, 4, 5)
+        server.enqueueBytes(pixel, 200, "image/jpeg")
+        val bytes = client.coverArt(creds(server.baseUrl), ServerCapabilities.BASELINE, "s1", 300)
+        assertTrue("expected the exact bytes back", pixel.contentEquals(bytes))
+    }
+
+    @Test fun `the request carries id and size as GET query parameters when formPost is not supported`() =
+        runTest {
+            server.enqueueBytes(byteArrayOf(9), 200, "image/png")
+            client.coverArt(creds(server.baseUrl), ServerCapabilities.BASELINE, "s1", 300)
+            assertEquals("GET", server.requests[0].method)
+            assertEquals("s1", server.queryParam(0, "id"))
+            assertEquals("300", server.queryParam(0, "size"))
+        }
+
+    @Test fun `formPost capabilities move id, size and credentials into the POST body`() = runTest {
+        server.enqueueBytes(byteArrayOf(9), 200, "image/png")
+        val caps = ServerCapabilities(mapOf("formPost" to emptyList()))
+        client.coverArt(creds(server.baseUrl), caps, "s1", 300)
+
+        val request = server.requests[0]
+        assertEquals("POST", request.method)
+        // Nothing identifying the request rides the query string when formPost is advertised.
+        assertTrue("id leaked onto the GET target: ${request.target}", "id=" !in request.target)
+        assertTrue("id=s1 must be in the form body", "id=s1" in request.body)
+        assertTrue("size=300 must be in the form body", "size=300" in request.body)
+        assertTrue("the token must be in the form body", "t=" in request.body)
+        assertTrue("the plaintext password went on the wire: ${request.body}", "hunter2" !in request.body)
+    }
+
+    /** A JSON error envelope — the server's answer to an id it does not recognise, measured
+     *  as HTTP 200 rather than a 4xx — must not be mistaken for image bytes. */
+    @Test fun `a JSON error envelope decodes to null, not to bytes`() = runTest {
+        server.enqueue(
+            """{"subsonic-response":{"status":"failed","version":"1.16.1",
+                "error":{"code":70,"message":"Data not found"}}}""",
+            status = 200,
+            contentType = "application/json",
+        )
+        assertNull(client.coverArt(creds(server.baseUrl), ServerCapabilities.BASELINE, "no-such-id", 300))
+    }
+
+    @Test fun `a non-2xx status is null even with an image content type`() = runTest {
+        server.enqueueBytes(byteArrayOf(1, 2, 3), 404, "image/jpeg")
+        assertNull(client.coverArt(creds(server.baseUrl), ServerCapabilities.BASELINE, "s1", 300))
+    }
+
+    @Test fun `a dead host answers null rather than throwing`() = runTest {
+        assertNull(client.coverArt(creds("http://127.0.0.1:1"), ServerCapabilities.BASELINE, "s1", 300))
+    }
+
+    @Test fun `an unparseable base url answers null without any request`() = runTest {
+        assertNull(client.coverArt(creds("ftp://nope"), ServerCapabilities.BASELINE, "s1", 300))
+        assertEquals(emptyList<String>(), server.requestLines)
+    }
 }

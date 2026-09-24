@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.ui.settings.accounts
 
+import android.text.format.DateUtils
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -39,8 +40,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.ui.browse.SIDE_MARGIN
 import com.kaislate.veldtplayer.ui.browse.SectionLabel
+import java.text.NumberFormat
 
 /**
  * One server account: add it, edit it, remove it.
@@ -190,7 +193,49 @@ fun AccountsScreen(
                 )
             }
         }
+
+        if (existing != null) {
+            Spacer(Modifier.height(8.dp))
+            SectionLabel("Library")
+            Column(Modifier.padding(horizontal = SIDE_MARGIN)) {
+                val status by vm.syncStatus(existing.sourceId).collectAsStateWithLifecycle()
+                SyncStatusLine(status)
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    onClick = { vm.refresh(existing.sourceId) },
+                    enabled = !status.running,
+                ) { Text("Refresh library") }
+            }
+        }
     }
+}
+
+/** N2 Task 3: the Servers screen's one line of sync status — what a Refresh button needs a
+ *  reason to exist next to. */
+@Composable
+private fun SyncStatusLine(status: SyncStatus, modifier: Modifier = Modifier) {
+    val text = when {
+        status.running -> "Syncing…"
+        status.lastError != null -> status.lastError
+        status.lastSuccessMs != null -> {
+            val relative = DateUtils.getRelativeTimeSpanString(
+                status.lastSuccessMs, System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS,
+            )
+            val count = NumberFormat.getIntegerInstance().format(status.songCount ?: 0)
+            "$count songs · synced $relative"
+        }
+        else -> "Not yet synced."
+    }
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (!status.running && status.lastError != null) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        modifier = modifier,
+    )
 }
 
 /** One line of after-the-save feedback, in the error colour. */

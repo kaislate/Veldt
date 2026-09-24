@@ -11,10 +11,15 @@ import com.kaislate.veldtplayer.data.account.KeyProvider
 import com.kaislate.veldtplayer.data.account.SecretBox
 import com.kaislate.veldtplayer.data.account.SecretFiles
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
+import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
+import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -45,8 +50,38 @@ import javax.crypto.SecretKey
 @Config(sdk = [34])
 class AccountsViewModelTest {
 
+    /**
+     * Records what the view model asked of syncing, in ONE list — so an ordering claim (fix
+     * round 1: cancel, THEN the account row is deleted, THEN purge) is a single assertion rather
+     * than several that could pass separately while the actual interleaving is wrong. Both
+     * [cancel] and [purge] record whether the account row was still present in [repo] at the
+     * moment they ran: the row must be present for [cancel] and gone for [purge], and only that
+     * order proves `AccountsViewModel.delete` sequences `sync.cancel` → `repo.delete` →
+     * `sync.purge` rather than merely calling all three in some order.
+     */
+    private inner class FakeSync : SubsonicSync {
+        val calls = mutableListOf<String>()
+        override fun request(sourceId: String) {
+            calls += "request:$sourceId"
+        }
+        override fun status(sourceId: String): Flow<SyncStatus> =
+            flowOf(SyncStatus(running = false, lastSuccessMs = null, songCount = null, lastError = null))
+        override fun cancel(sourceId: String) {
+            // cancel() is not suspend (WorkManager.cancelUniqueWork isn't either) — runBlocking
+            // only to read repo state for the assertion below, exactly as SubsonicSourcesTest's
+            // real-thread patterns do elsewhere in this codebase.
+            val stillPresent = runBlocking { repo.observe().first().any { it.sourceId == sourceId } }
+            calls += if (stillPresent) "cancel:$sourceId:row-still-present" else "cancel:$sourceId:row-ALREADY-GONE"
+        }
+        override suspend fun purge(sourceId: String) {
+            val stillPresent = repo.observe().first().any { it.sourceId == sourceId }
+            calls += if (stillPresent) "purge:$sourceId:row-still-present(BUG)" else "purge:$sourceId:row-gone"
+        }
+    }
+
     private lateinit var db: VeldtDatabase
     private lateinit var repo: AccountRepository
+    private lateinit var sync: FakeSync
     private lateinit var vm: AccountsViewModel
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
 
@@ -59,9 +94,10 @@ class AccountsViewModelTest {
             box = SecretBox(object : KeyProvider { override fun secretKey(): SecretKey? = key }),
             files = SecretFiles(ctx),
         )
+        sync = FakeSync()
         // A real client; no test here makes a request, and a fake would only be a way to be
         // wrong about the constructor.
-        vm = AccountsViewModel(repo, SubsonicClient(OkHttpClient(), Random(42)))
+        vm = AccountsViewModel(repo, SubsonicClient(OkHttpClient(), Random(42)), sync)
     }
 
     @After fun tearDown() {
@@ -131,5 +167,87 @@ class AccountsViewModelTest {
         vm.update(id, "https://kyle:hunter2@music.example.com", "Kyle", "")
         assertEquals(SaveState.Saved, settledSave())
         assertEquals("https://music.example.com", repo.observe().first().single().baseUrl)
+    }
+
+    // ------------------------------------------------------------------------- N2 Task 3: syncing
+
+    @Test fun `adding an account requests a sync for the new id`() = runTest {
+        vm.add("Home", "192.168.50.111:4533", "Kyle", "hunter2")
+        assertEquals(SaveState.Saved, settledSave())
+        val sourceId = repo.observe().first().single().sourceId
+        assertEquals(listOf("request:$sourceId"), sync.calls)
+    }
+
+    @Test fun `a save that could not store the secret requests no sync`() = runTest {
+        key = null
+        vm.add("Home", "192.168.50.111:4533", "Kyle", "hunter2")
+        assertEquals(SaveState.SecretUnavailable, settledSave())
+        assertEquals(emptyList<String>(), sync.calls)
+    }
+
+    @Test fun `editing the url requests a sync`() = runTest {
+        vm.add("Home", "http://h1:4533", "Kyle", "hunter2")
+        settledSave()
+        val id = repo.observe().first().single().sourceId
+        sync.calls.clear()
+        vm.resetTest()
+
+        vm.update(id, "http://h2:4533", "Kyle", "")
+        assertEquals(SaveState.Saved, settledSave())
+        assertEquals(listOf("request:$id"), sync.calls)
+    }
+
+    @Test fun `saving with the same url and no new password requests no sync`() = runTest {
+        vm.add("Home", "http://h1:4533", "Kyle", "hunter2")
+        settledSave()
+        val id = repo.observe().first().single().sourceId
+        sync.calls.clear()
+        vm.resetTest()
+
+        vm.update(id, "http://h1:4533", "Kyle", "")
+        assertEquals(SaveState.Saved, settledSave())
+        assertEquals(emptyList<String>(), sync.calls)
+    }
+
+    /**
+     * Fix round 1 (Important finding): `WorkManager.cancelUniqueWork` is cooperative and does not
+     * stop a worker already past its network call, so purging the songs/status BEFORE the account
+     * row is deleted could race a sync still mid-write and leave its rows orphaned forever (see
+     * `SongDao.replaceSourceIfPresent`'s KDoc). The only order that closes that race is cancel →
+     * delete the account row → purge, and this asserts exactly that order via what each `FakeSync`
+     * call observed about the row's presence at the moment it ran — not merely that all three
+     * eventually happened.
+     */
+    @Test fun `deleting an account cancels, then deletes the row, then purges`() = runTest {
+        vm.add("Home", "192.168.50.111:4533", "Kyle", "hunter2")
+        settledSave()
+        val sourceId = repo.observe().first().single().sourceId
+        sync.calls.clear()
+
+        vm.delete(sourceId)
+        // delete() launches on viewModelScope and genuinely suspends (repo.observe() and
+        // repo.delete() both switch onto Dispatchers.IO), so it has not necessarily finished the
+        // moment this call returns. Wait for the whole sequence (both FakeSync calls recorded)
+        // rather than asserting immediately.
+        awaitCalls(2)
+
+        assertEquals(
+            listOf("cancel:$sourceId:row-still-present", "purge:$sourceId:row-gone"),
+            sync.calls,
+        )
+        assertEquals(emptyList<String>(), repo.observe().first().map { it.sourceId })
+    }
+
+    /** Real-time polling for `sync.calls` to reach [min] entries — `vm.delete`'s coroutine
+     *  genuinely suspends on `Dispatchers.IO` work, same reasoning as `SubsonicSourcesTest
+     *  .awaitTrue`. */
+    private fun awaitCalls(min: Int, timeoutMs: Long = 2_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (sync.calls.size < min) {
+            if (System.currentTimeMillis() >= deadline) {
+                throw AssertionError("expected at least $min calls within ${timeoutMs}ms, got ${sync.calls}")
+            }
+            Thread.sleep(5)
+        }
     }
 }

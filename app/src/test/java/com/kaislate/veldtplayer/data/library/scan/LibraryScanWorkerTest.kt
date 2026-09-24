@@ -82,6 +82,9 @@ class LibraryScanWorkerTest {
         override suspend fun search(pattern: String) = delegate.search(pattern)
         override fun observeSearch(pattern: String) = delegate.observeSearch(pattern)
         override suspend fun getIndex(sourceId: String) = delegate.getIndex(sourceId)
+        override suspend fun getBySource(sourceId: String) = delegate.getBySource(sourceId)
+        override suspend fun deleteBySource(sourceId: String) = delegate.deleteBySource(sourceId)
+        override suspend fun accountRowCount(sourceId: String) = delegate.accountRowCount(sourceId)
         override suspend fun clear() = delegate.clear()
     }
 

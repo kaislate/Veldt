@@ -96,7 +96,9 @@ class LibraryScanWorker @AssistedInject constructor(
         // a BRAND NEW id on every scan — silently invalidating every playlist entry cached against
         // the old one, here, on a background worker, with no user action to associate it with.
         if (toUpsert.isNotEmpty()) songDao.upsertBySourceKey(toUpsert)
-        if (diff.removed.isNotEmpty()) songDao.deleteByExternalIds(librarySource.id, diff.removed)
+        // Chunked (N2 Task 3): a local library can shed more rows in one scan (a whole album
+        // directory deleted) than SQLite's 999-bound-variable limit tolerates in one `IN (...)`.
+        if (diff.removed.isNotEmpty()) songDao.deleteAllByExternalIds(librarySource.id, diff.removed)
         Result.success()
     } catch (io: IOException) {
         // Transient I/O (DB/storage) — retry, but only a bounded number of times.

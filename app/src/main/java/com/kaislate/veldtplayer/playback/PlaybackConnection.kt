@@ -54,6 +54,7 @@ import javax.inject.Singleton
 class PlaybackConnection @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repo: MusicRepository,
+    private val network: NetworkReturn,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -85,11 +86,17 @@ class PlaybackConnection @Inject constructor(
      * Consecutive failed items, so the skip-on in [Player.Listener.onPlayerError] cannot spin
      * forever. Reset by [publish] the moment anything reaches `STATE_READY`.
      *
-     * Counts *skips only* — see [nextConsecutiveErrors]. An [ErrorAction.PAUSE_IN_PLACE] has not
-     * consumed an item, and if it bumped this then a long outage would walk the bound below and
-     * stop playback regardless, which is exactly what pausing exists to prevent.
+     * Counts *skips only* — see [nextConsecutiveErrors]. An [ErrorAction.PAUSE_IN_PLACE] or
+     * [ErrorAction.STOP] has not consumed an item, and if it bumped this then a long outage would
+     * walk the bound below and stop playback regardless, which is exactly what pausing exists to
+     * prevent.
      */
     private var consecutiveErrors = 0
+
+    /** "Resume after a network pause" (task 5, carried gap 3) — see [ResumeGate] and
+     *  [ResumeCoordinator]'s KDoc for the decision rules and the registration lifecycle this class
+     *  relies on without re-deriving them. */
+    private val resumeCoordinator = ResumeCoordinator(ResumeGate(), network)
 
     private val _queue = MutableStateFlow<List<Song>>(emptyList())
     val queue: StateFlow<List<Song>> = _queue.asStateFlow()
@@ -116,22 +123,53 @@ class PlaybackConnection @Inject constructor(
         override fun onEvents(player: Player, events: Player.Events) = publish()
 
         override fun onPlayerError(error: PlaybackException) {
-            val title = _nowPlaying.value.title.ifBlank { "this track" }
-            _errors.tryEmit("Couldn't play “$title”")
-            // Whether this error is a property of the ITEM or of the NETWORK. Skipping is right
-            // for the former and ruinous for the latter: every subsequent item hits the same
-            // dead network, so one Wi-Fi blip walks the whole queue into the bound below. See
-            // errorAction for which codes pause and, more to the point, why bad-HTTP-status
-            // does not. The counter is assigned from the action rather than incremented up
-            // front, so a pause cannot walk the bound — the defect in a different hat.
+            // Whether this error is a property of the ITEM, the NETWORK, or the ACCOUNT. Skipping
+            // is right for the first and ruinous for the other two: every subsequent item hits
+            // the same dead network or the same rejected password, so the whole queue walks into
+            // the bound below. See errorAction for which codes do what and, more to the point,
+            // why bad-HTTP-status does not pause. The counter is assigned from the action rather
+            // than incremented up front, so a pause or a stop cannot walk the bound.
             val action = errorAction(error.errorCode)
             consecutiveErrors = nextConsecutiveErrors(consecutiveErrors, action)
-            if (action == ErrorAction.PAUSE_IN_PLACE) {
-                // Stay on this item, at this position. Nothing retries on a timer; the user's
-                // next tap on play re-prepares the same item, by which time the radio is
-                // usually back. prepare() is deliberately NOT called here — re-preparing into
-                // a still-dead network just re-enters this listener.
+            if (action == ErrorAction.STOP) {
+                // The server rejected the saved password. "Couldn't play <title>" would blame the
+                // track; say what is actually wrong and where to fix it. Stay put — every other
+                // remote track in the queue would be rejected the same way.
+                _errors.tryEmit(REJECTED_PASSWORD)
                 controller?.pause()
+                // Task 4+5 review item 1: without this, a resume that lands on a STILL-broken
+                // account (e.g. the rejected password again) would leave resumeCoordinator armed on
+                // this item, and the NEXT unrelated network change would auto-play straight back
+                // into the same rejection — up to its cap, entirely unasked.
+                resumeCoordinator.disarm()
+                return
+            }
+            val title = _nowPlaying.value.title.ifBlank { "this track" }
+            _errors.tryEmit("Couldn't play “$title”")
+            if (action == ErrorAction.PAUSE_IN_PLACE) {
+                // Stay on this item, at this position — prepare() is deliberately NOT called here;
+                // re-preparing into a still-dead network just re-enters this listener. Instead,
+                // resumeCoordinator arms on the item and the network current right now (see
+                // ResumeGate's KDoc for why the immediate callback for THIS network must not itself
+                // count as a return), and its network callback re-prepares once a genuinely
+                // different network shows up, up to its cap. A user tap on play is still the
+                // fallback if the network never changes at all.
+                controller?.pause()
+                controller?.let { c ->
+                    resumeCoordinator.arm(
+                        itemIndex = c.currentMediaItemIndex,
+                        mediaId = c.currentMediaItem?.mediaId,
+                        state = {
+                            val cc = controller
+                            ResumeCoordinator.QueueState(
+                                index = cc?.currentMediaItemIndex ?: -1,
+                                mediaId = cc?.currentMediaItem?.mediaId,
+                                playWhenReady = cc?.playWhenReady ?: false,
+                            )
+                        },
+                        resume = { controller?.let { cc -> cc.prepare(); cc.play() } },
+                    )
+                }
                 return
             }
             // A dead or undecodable file must not kill the whole queue — but the skip-on
@@ -140,6 +178,9 @@ class PlaybackConnection @Inject constructor(
             // undecodable (SD card unmounted, files moved out from under stale MediaStore
             // rows) would re-prepare through the extractor forever. Stop once every item
             // has failed in a row. publish() clears the counter on the first STATE_READY.
+            // Task 4+5 review item 1: a skip moves off the paused item, so nothing should still be
+            // watching for it to come back.
+            resumeCoordinator.disarm()
             controller?.let { c ->
                 if (consecutiveErrors >= c.mediaItemCount) return
                 if (c.hasNextMediaItem()) {
@@ -243,17 +284,33 @@ class PlaybackConnection @Inject constructor(
     fun toggle() = withController { if (it.isPlaying) it.pause() else it.play() }
 
     @MainThread
-    fun next() = withController { it.seekToNextMediaItem() }
+    fun next() {
+        // The user is navigating OFF whatever item might be paused (task 4+5 review round 2, item
+        // b): a network-paused item left behind must never auto-resume once the user has moved
+        // away from it, and a skip on an otherwise-idle player may never reach STATE_READY to
+        // disarm it the ordinary way. Unconditional (not inside withController): navigation intent
+        // is real the instant it is called, whether or not a controller is connected yet.
+        resumeCoordinator.disarm()
+        withController { it.seekToNextMediaItem() }
+    }
 
     @MainThread
-    fun previous() = withController { it.seekToPreviousMediaItem() }
+    fun previous() {
+        resumeCoordinator.disarm()
+        withController { it.seekToPreviousMediaItem() }
+    }
 
+    /** Seeking WITHIN the current item does not change which item is paused, so — unlike [next],
+     *  [previous] and [skipToQueueIndex] — this deliberately leaves resumeCoordinator alone. */
     @MainThread
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
 
     @MainThread
     fun skipToQueueIndex(index: Int) = withController { c ->
-        if (index in 0 until c.mediaItemCount) c.seekTo(index, 0L)
+        if (index in 0 until c.mediaItemCount) {
+            resumeCoordinator.disarm()
+            c.seekTo(index, 0L)
+        }
     }
 
     @MainThread
@@ -274,6 +331,10 @@ class PlaybackConnection @Inject constructor(
     @MainThread
     internal fun release() {
         released = true
+        // Unregister BEFORE dropping the controller: a leaked NetworkCallback holds the
+        // ConnectivityManager singleton's registration and keeps firing for the life of the
+        // process, and a callback firing after this point would find controller already null.
+        resumeCoordinator.disarm()
         controllerFuture?.cancel(false)
         controllerFuture = null
         pending.clear()
@@ -304,7 +365,13 @@ class PlaybackConnection @Inject constructor(
     @MainThread
     private fun publish() {
         val c = controller ?: return
-        if (c.playbackState == Player.STATE_READY) consecutiveErrors = 0
+        if (c.playbackState == Player.STATE_READY) {
+            consecutiveErrors = 0
+            // A resume (or an ordinary play) reached READY: disarm resumeCoordinator (unregisters
+            // its network callback — item 3) and refill ResumeGate's cap, so a later, unrelated
+            // pause is not left starting from an old count.
+            resumeCoordinator.onReady()
+        }
         // TODO(p1.4): the current Song is resolved by indexing _queue, which only this
         //  connection ever fills. Playback started OUTSIDE it — session restore via
         //  MediaSession.Callback.onPlaybackResumption, a real browse tree, Android Auto —
@@ -336,5 +403,7 @@ class PlaybackConnection @Inject constructor(
         const val TICK_PLAYING_MS = 250L
         const val TICK_IDLE_MS = 1_000L
         const val CONNECT_FAILED = "Couldn't connect to playback"
+        const val REJECTED_PASSWORD =
+            "Your server rejected the saved password. Update it in Settings → Music servers."
     }
 }

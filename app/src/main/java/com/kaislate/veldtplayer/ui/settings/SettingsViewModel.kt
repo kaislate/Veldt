@@ -17,7 +17,7 @@ import javax.inject.Inject
 /**
  * The thin edge between [SettingsScreen] and [SettingsRepository]. Holds no theme-resolution
  * logic of its own — that decision lives only in `ui/theme/Theme.kt`, per
- * `ThemeSourceGuardTest` — this just carries the stored mode and the write that changes it.
+ * `ThemeSourceGuardTest` — this just carries the stored values and the writes that change them.
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -32,5 +32,16 @@ class SettingsViewModel @Inject constructor(
 
     fun setThemeMode(mode: ThemeMode) {
         viewModelScope.launch { settingsRepository.setThemeMode(mode) }
+    }
+
+    /** The mobile-data bitrate cap in kbps; 0 is original quality. */
+    val meteredMaxBitRate: StateFlow<Int> = settingsRepository.meteredMaxBitRate.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        0,
+    )
+
+    fun setMeteredMaxBitRate(kbps: Int) {
+        viewModelScope.launch { settingsRepository.setMeteredMaxBitRate(kbps) }
     }
 }

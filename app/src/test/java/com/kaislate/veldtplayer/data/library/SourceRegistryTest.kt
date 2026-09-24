@@ -85,4 +85,47 @@ class SourceRegistryTest {
         val registry = SourceRegistry(setOf(source("alpha"), source("beta")))
         assertEquals(setOf("alpha", "beta"), registry.all.map { it.id }.toSet())
     }
+
+    // ---- remote sources (N2 Task 2) ------------------------------------------------------------
+
+    private fun remoteOf(vararg sources: LibrarySource): RemoteSources {
+        val byId = sources.associateBy { it.id }
+        return object : RemoteSources {
+            override fun byId(sourceId: String): LibrarySource? = byId[sourceId]
+            override val all: Collection<LibrarySource> = sources.toList()
+        }
+    }
+
+    @Test
+    fun `byId falls back to remote for an id no static source has`() {
+        val remoteOnly = source("y")
+        val registry = SourceRegistry(setOf(source("x")), remoteOf(remoteOnly))
+        assertEquals(remoteOnly, registry.byId("y"))
+    }
+
+    @Test
+    fun `a remote source sharing a static id loses to the static one`() {
+        // Two DISTINCT instances agreeing on "x" — the static/remote analogue of the
+        // duplicate-id test above, which the constructor's own check cannot catch here because it
+        // only ever sees the fixed Set.
+        val staticX = source("x")
+        val remoteX = source("x")
+        val registry = SourceRegistry(setOf(staticX), remoteOf(remoteX))
+        assertEquals(staticX, registry.byId("x"))
+    }
+
+    @Test
+    fun `all includes both the static and the remote sources`() {
+        val registry = SourceRegistry(setOf(source("x")), remoteOf(source("y")))
+        assertEquals(setOf("x", "y"), registry.all.map { it.id }.toSet())
+    }
+
+    @Test
+    fun `byId and all ignore remote entirely when none is supplied`() {
+        // The default-argument path: every call site that predates N2 still gets exactly the
+        // behaviour it always had.
+        val registry = SourceRegistry(setOf(source("x")))
+        assertNull(registry.byId("y"))
+        assertEquals(setOf("x"), registry.all.map { it.id }.toSet())
+    }
 }

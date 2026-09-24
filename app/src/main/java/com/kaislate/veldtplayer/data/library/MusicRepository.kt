@@ -11,6 +11,7 @@ import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import androidx.work.WorkManager
 import com.kaislate.veldtplayer.data.library.scan.LibraryScanWorker
+import com.kaislate.veldtplayer.di.LocalLibrary
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -27,6 +28,7 @@ import javax.inject.Singleton
 class MusicRepository @Inject constructor(
     private val songDao: SongDao,
     private val registry: SourceRegistry,
+    @LocalLibrary private val local: LibrarySource,
     @ApplicationContext private val context: Context,
 ) {
     /** Observe the full library, ordered by title. */
@@ -87,9 +89,17 @@ class MusicRepository @Inject constructor(
      * ever rebuilds. Surviving RECOMPOSITION is the collector's half, as above. A second concurrent
      * collector re-derives rather than sharing; if one ever appears this wants `shareIn` rather than
      * a comment.
+     *
+     * **Local-only (N2 Task 2).** The folder tree is a filesystem concept: a server track has no
+     * path, so [songs] is filtered to `sourceId == `[local]`.id` before anything else runs. Without
+     * it a remote song — [filePath] and [relativeKey] both null — would fall into
+     * [FolderTree.build]'s `unfiled` bucket, and every account added would grow a folder tab
+     * "Unfiled" pile that has nothing to do with folders at all.
      */
     fun folderTree(): Flow<List<FolderNode>> =
-        songs().distinctUntilChanged().map { FolderTree.build(it) }
+        songs().map { it.filter { song -> song.sourceId == local.id } }
+            .distinctUntilChanged()
+            .map { FolderTree.build(it) }
 
     /**
      * One album's tracks, in disc-then-track order. [key] is an [Album.key]; it is

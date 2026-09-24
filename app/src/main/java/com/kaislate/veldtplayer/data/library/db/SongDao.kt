@@ -8,6 +8,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.kaislate.veldtplayer.data.library.sync.RemoteDiff
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -99,6 +100,89 @@ interface SongDao {
      */
     @Query("DELETE FROM songs WHERE sourceId = :sourceId AND externalId IN (:externalIds)")
     suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>)
+
+    /**
+     * [deleteByExternalIds], chunked at 500 — SQLite's per-statement bound-variable limit on API
+     * 29 (this app's minSdk) is 999, and a delete driven by a full-catalog resync (N2 Task 3) can
+     * legitimately name thousands of ids in one call. 500 leaves headroom for the query's other
+     * bound parameter ([sourceId]) and is a round number well under the ceiling, not a value
+     * chosen to sit exactly at it.
+     *
+     * `@Transaction` so a multi-chunk delete commits atomically — a caller that reads the source
+     * back between chunks must never see a partially-applied delete.
+     */
+    @Transaction
+    suspend fun deleteAllByExternalIds(sourceId: String, externalIds: List<String>) {
+        externalIds.chunked(500).forEach { chunk -> deleteByExternalIds(sourceId, chunk) }
+    }
+
+    /**
+     * N2 Task 3: make [sourceId]'s whole contribution exactly [fetched], in one transaction.
+     *
+     * [RemoteDiff.plan] decides what changed against the rows already stored for [sourceId]; the
+     * upsert and the delete are then each skipped when there is nothing for them to do — not an
+     * optimisation for its own sake, but the reason an unchanged resync causes
+     * [observeAllSongs]'s Flow not to emit again at all (spec §5.4, "don't redraw an unchanged
+     * library"): an empty `IN ()` delete matches no rows and fires no invalidation, but skipping
+     * the call entirely is what keeps that true regardless of how the query compiles, and avoids
+     * the pointless round trip either way.
+     */
+    @Transaction
+    suspend fun replaceSource(sourceId: String, fetched: List<SongEntity>): RemoteDiff.Plan {
+        val existing = getBySource(sourceId)
+        val plan = RemoteDiff.plan(existing, fetched)
+        if (plan.upserts.isNotEmpty()) upsertBySourceKey(plan.upserts)
+        if (plan.removedExternalIds.isNotEmpty()) deleteAllByExternalIds(sourceId, plan.removedExternalIds)
+        return plan
+    }
+
+    /** Whether an `accounts` row named [sourceId] exists — the `accounts` table lives in the same
+     *  [VeldtDatabase], so this is a plain cross-table `@Query`, not a schema change. Exists only
+     *  to back [replaceSourceIfPresent]'s in-transaction check. */
+    @Query("SELECT COUNT(*) FROM accounts WHERE sourceId = :sourceId")
+    suspend fun accountRowCount(sourceId: String): Int
+
+    /**
+     * As [replaceSource], but refuses to write anything for an account that is being (or has
+     * been) deleted — returns null instead.
+     *
+     * **Why this exists (fix round 1, Important finding):** `WorkManager.cancelUniqueWork` is
+     * cooperative — it does not wait for a `doWork()` already past `fetchCatalog` to stop. Without
+     * this check, that in-flight worker's [replaceSource] call could commit AFTER
+     * `AccountsViewModel.delete`'s `deleteBySource` purge, re-inserting rows for a `sourceId`
+     * whose account no longer exists and that will never sync again — a permanent orphan.
+     * Checking [accountRowCount] INSIDE the same `@Transaction` as the write closes the race
+     * structurally: SQLite serializes writers, so this call either sees the account row and
+     * commits before a concurrent account-row delete, or does not see it and writes nothing —
+     * there is no third interleaving. The delete order (cancel the sync → delete the account row
+     * → purge songs and status, see `AccountsViewModel.delete`) is what makes "writes nothing" the
+     * CORRECT outcome in the second case: the later `deleteBySource` purge still removes any rows
+     * a transaction that beat this check managed to commit.
+     */
+    @Transaction
+    suspend fun replaceSourceIfPresent(sourceId: String, fetched: List<SongEntity>): RemoteDiff.Plan? {
+        if (accountRowCount(sourceId) <= 0) return null
+        return replaceSource(sourceId, fetched)
+    }
+
+    /**
+     * One source's whole contribution to the library (N2 Task 2) — what
+     * [com.kaislate.veldtplayer.data.library.SubsonicSource.listSongs] returns, and Task 6's cover
+     * art path over the same account. Unordered here; a caller that needs an order imposes one, the
+     * same convention [getIndex] follows.
+     */
+    @Query("SELECT * FROM songs WHERE sourceId = :sourceId")
+    suspend fun getBySource(sourceId: String): List<SongEntity>
+
+    /**
+     * Drop one source's whole contribution — Task 3's sync worker uses this for an account that was
+     * removed, or ahead of a full resync it does not want to diff against. Scoped to [sourceId] for
+     * the same reason [deleteByExternalIds] is: there is no id-keyed delete on this DAO, because two
+     * sources share one surrogate id space and an unscoped delete driven by one source's logic is a
+     * data-loss bug waiting for its second caller.
+     */
+    @Query("DELETE FROM songs WHERE sourceId = :sourceId")
+    suspend fun deleteBySource(sourceId: String)
 
     @Query("DELETE FROM songs")
     suspend fun clear()

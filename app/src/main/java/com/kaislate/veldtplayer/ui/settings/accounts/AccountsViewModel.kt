@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.data.account.Account
 import com.kaislate.veldtplayer.data.account.AccountRepository
 import com.kaislate.veldtplayer.data.account.AccountWriteResult
+import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
+import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.data.net.ConnectionOutcome
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -15,8 +17,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
 /** What the "Test connection" button has to say. */
@@ -55,10 +59,20 @@ sealed interface SaveState {
 class AccountsViewModel @Inject constructor(
     private val repo: AccountRepository,
     private val client: SubsonicClient,
+    private val sync: SubsonicSync,
 ) : ViewModel() {
 
     val accounts: StateFlow<List<Account>> = repo.observe()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** One shared [SyncStatus] [StateFlow] per account, built lazily. Never a fresh `stateIn` per
+     *  call: [AccountsScreen] reads [syncStatus] on every recomposition, and a fresh upstream
+     *  collection each time would mean a fresh `WorkManager` flow subscription each time too.
+     *  [syncStatus] uses `computeIfAbsent`, not the `getOrPut` extension (fix round 1, Minor) —
+     *  `getOrPut` on a `ConcurrentHashMap` is a plain get-then-put, not one atomic operation, so
+     *  two callers racing on the same never-yet-seen [sourceId] could each build and subscribe
+     *  their own `stateIn`, silently doubling the `WorkManager` flow subscriptions for it. */
+    private val syncStatuses = ConcurrentHashMap<String, StateFlow<SyncStatus>>()
 
     private val _test = MutableStateFlow<TestState>(TestState.Idle)
     val test: StateFlow<TestState> = _test.asStateFlow()
@@ -109,18 +123,38 @@ class AccountsViewModel @Inject constructor(
             return
         }
         val name = displayName.ifBlank { AccountForm.defaultName(url) }
-        viewModelScope.launch { _save.value = saveStateOf(repo.add(name, base, username, password)) }
+        viewModelScope.launch {
+            val result = repo.add(name, base, username, password)
+            _save.value = saveStateOf(result)
+            // A brand new account has never synced; always worth requesting (N2 Task 3, spec
+            // §5.4). SecretUnavailable also lands here with no sourceId to sync — nothing to do.
+            if (result is AccountWriteResult.Saved) sync.request(result.sourceId)
+        }
     }
 
+    /**
+     * Only a URL change or a new password justifies a re-sync here (owner decision — spec §10:
+     * sync runs on add, on a credential/URL change, and on the Refresh button, never merely
+     * because the screen was saved). The previous url is read with a fresh [AccountRepository
+     * .observe] call, deliberately NOT from [accounts] — that `StateFlow` is
+     * `SharingStarted.WhileSubscribed`, so its cached value can still be the construction-time
+     * default until something actually collects it, and this decision must not depend on whether
+     * anything has.
+     */
     fun update(sourceId: String, url: String, username: String, password: String) {
         val base = baseUrlOf(url) ?: run {
             _save.value = SaveState.InvalidUrl
             return
         }
+        val passwordChanged = password.isNotEmpty()
         viewModelScope.launch {
-            _save.value = saveStateOf(
-                repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
-            )
+            val previousUrl = repo.observe().first().firstOrNull { it.sourceId == sourceId }?.baseUrl
+            val urlChanged = previousUrl != base
+            val result = repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
+            _save.value = saveStateOf(result)
+            if (result is AccountWriteResult.Saved && (urlChanged || passwordChanged)) {
+                sync.request(sourceId)
+            }
         }
     }
 
@@ -138,8 +172,34 @@ class AccountsViewModel @Inject constructor(
         AccountWriteResult.NoSuchAccount -> SaveState.Gone
     }
 
+    /**
+     * The exact order matters (fix round 1, Important finding): [SubsonicSync.cancel] first — a
+     * best-effort, cooperative stop that does NOT wait for a `doWork()` already past its network
+     * call — THEN [AccountRepository.delete], THEN [SubsonicSync.purge]. `SongDao
+     * .replaceSourceIfPresent` checks the account row inside its own write transaction, so once
+     * the account row is gone (the middle step), any sync transaction still in flight writes
+     * nothing; [purge]'s own delete only needs to clean up whatever committed BEFORE that middle
+     * step. Purging before deleting the account row would race a sync that is still mid-write and
+     * could leave its rows behind forever, for an id nothing will ever sync again — see
+     * [SubsonicSync]'s KDoc.
+     */
     fun delete(sourceId: String) {
-        viewModelScope.launch { repo.delete(sourceId) }
+        viewModelScope.launch {
+            sync.cancel(sourceId)
+            repo.delete(sourceId)
+            sync.purge(sourceId)
+        }
+    }
+
+    /** The Servers screen's Refresh button. */
+    fun refresh(sourceId: String) = sync.request(sourceId)
+
+    fun syncStatus(sourceId: String): StateFlow<SyncStatus> = syncStatuses.computeIfAbsent(sourceId) {
+        sync.status(sourceId).stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            SyncStatus(running = false, lastSuccessMs = null, songCount = null, lastError = null),
+        )
     }
 
     /**

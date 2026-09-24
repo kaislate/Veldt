@@ -19,6 +19,7 @@ import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.playlist.PlaylistRepository
 import com.kaislate.veldtplayer.data.playlist.m3u.DocumentNameReader
 import com.kaislate.veldtplayer.data.playlist.m3u.PlaylistImporter
+import com.kaislate.veldtplayer.playback.NetworkReturn
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -92,13 +93,13 @@ class PlaylistViewModelTest {
         source = FakeSource()
         val registry = SourceRegistry(setOf(source))
         playlists = PlaylistRepository(db.playlistDao(), db.songDao(), registry) { ++clock }
-        music = MusicRepository(db.songDao(), registry, context)
+        music = MusicRepository(db.songDao(), registry, source, context)
         vm = PlaylistViewModel(
             playlists = playlists,
             importer = PlaylistImporter(context, source, playlists),
             documentNames = DocumentNameReader(context),
             music = music,
-            connection = PlaybackConnection(context, music),
+            connection = PlaybackConnection(context, music, NetworkReturn.NONE),
         )
     }
 

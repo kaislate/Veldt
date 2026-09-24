@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.playlist
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
+import com.kaislate.veldtplayer.data.library.RemoteSources
 import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
@@ -982,6 +983,90 @@ class PlaylistRepositoryTest {
         )
 
         assertNull(mixedRepo.resolve(pl).single().song)
+    }
+
+    // ---------------------------------------------------------------- remote sources (N2 Task 2)
+
+    /** A trivial [RemoteSources] fake: exactly the accounts named in [map], nothing more. */
+    private class FakeRemoteSources(private val map: Map<String, LibrarySource>) : RemoteSources {
+        override fun byId(sourceId: String): LibrarySource? = map[sourceId]
+        override val all: Collection<LibrarySource> get() = map.values
+    }
+
+    /** A [SubsonicSource]-shaped fake: playable uri and stable key both keyed on `externalId`,
+     *  never on a path — a remote track has none. Faithful to the shape only; the real
+     *  implementation is `SubsonicSourceTest`'s to guard. */
+    private class FakeRemoteSource(override val id: String) : LibrarySource {
+        override fun resolvePlayableUri(song: Song): String = song.uri
+        override fun stableKey(song: Song): String = "sid:${song.externalId}"
+        override suspend fun listSongs(): List<Song> =
+            error("resolve() must read the Room songs projection, not the live source")
+        override suspend fun listAlbums(): List<Album> = emptyList()
+        override suspend fun listArtists(): List<Artist> = emptyList()
+        override suspend fun search(query: String): List<Song> = emptyList()
+    }
+
+    /** A remote song row: no relativeKey, no filePath — a Subsonic track has no filesystem
+     *  location, only its own externalId. */
+    private fun remoteSong(id: Long, externalId: String, sourceId: String, title: String = "T$id") = Song(
+        id = id, sourceId = sourceId, externalId = externalId,
+        uri = "veldt://track/$sourceId/$externalId",
+        filePath = null, relativeKey = null,
+        title = title, artist = "Artist", album = "Album", albumArtist = null,
+        trackNumber = null, discNumber = null, year = null,
+        durationMs = 1000L, dateModifiedSec = 0L, hasEmbeddedArt = false,
+    )
+
+    /**
+     * The registry's remote fallback (Task 2, step 4) is what makes this resolve at all: `source`
+     * alone does not know "acct-1", so this is really asserting that [SourceRegistry.byId]'s
+     * `remote.byId` fallback reaches [PlaylistRepository.resolve] rather than being dead wiring.
+     */
+    @Test fun `an entry resolves to a remote source's song when the registry's remote knows it`() = runTest {
+        val remote = FakeRemoteSources(mapOf("acct-1" to FakeRemoteSource("acct-1")))
+        val remoteRepo = PlaylistRepository(dao, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        songDao.upsertBySourceKey(listOf(remoteSong(42, "s1", "acct-1", "Remote Track").toEntity()))
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:s1", songId = null,
+                    sourceTitle = "Remote Track", sourceArtist = "Artist", sourceAlbum = "Album",
+                ),
+            ),
+        )
+
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals("Remote Track", track.song?.title)
+        assertEquals(42L, track.song?.id)
+    }
+
+    /**
+     * The complement: an entry naming an account the registry's [RemoteSources] does NOT know —
+     * removed, or never synced — renders unresolved and writes nothing, exactly like the
+     * static-registry case above. Reuses the same zero-writes idiom via [CountingDao].
+     */
+    @Test fun `an entry naming an unknown remote source resolves to null and writes nothing`() = runTest {
+        val counting = CountingDao(dao)
+        val noRemoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), RemoteSources.NONE)) { ++clock }
+        songDao.upsertBySourceKey(listOf(remoteSong(42, "s1", "acct-1", "Remote Track").toEntity()))
+        val pl = noRemoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:s1", songId = 42L,
+                    sourceTitle = "Remote Track", sourceArtist = "Artist", sourceAlbum = "Album",
+                ),
+            ),
+        )
+
+        counting.reset()
+        val track = noRemoteRepo.resolve(pl).single()
+        assertNull(track.song)
+        assertEquals(0, counting.idWrites + counting.keyWrites)
     }
 
     /**

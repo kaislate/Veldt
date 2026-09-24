@@ -2,9 +2,10 @@
 
 **A local + self-hosted music player for Android — with the Veldt Wisp pill built in.**
 
-> ⚠️ **Early development.** Veldt is being built in phases. The library, browse,
-> now-playing and playlist slices are in; settings, the built-in pill and the
-> self-hosted backends are not. Treat it as a working preview, not a release.
+> ⚠️ **Early development.** Veldt is being built in phases. The local library, browse,
+> now-playing, playlists, folders and settings are in, and server accounts can be added;
+> streaming from a server, the built-in pill and lyrics are not yet. Treat it as a working
+> preview, not a release.
 
 Veldt is the full-player companion to [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp)
 (the standalone One UI-style now-playing pill). Where Veldt Wisp rides *any*
@@ -39,13 +40,16 @@ arm64 devices alike.
   Entries are keyed on a rescan-stable source identity, so a track that moves — or a
   volume that remounts — re-links itself instead of going permanently blank.
 
-Not yet: a settings screen, the built-in pill, lyrics, and the self-hosted backends.
+- **Folders.** Browse the library as it sits on disk, across internal storage and SD
+  cards, with audiobooks and podcasts included.
+- **Settings.** Light / Dark / Follow-system theme, with now-playing colours solved for
+  legible contrast against the artwork actually on screen.
+- **Server accounts.** Add an OpenSubsonic server (tested against Navidrome), test the
+  connection, and store the password encrypted with an Android Keystore key. Plain
+  `http://` is allowed for LAN and Tailscale setups, with a warning as you type it.
 
-**Under way — N0, the source-identity refactor.** `Song.id` is now a Room surrogate
-rather than the MediaStore `_ID`, with `(sourceId, externalId)` as the real identity
-and a `SourceRegistry` keying every source by its own id. This is the groundwork a
-Subsonic or Jellyfin backend needs, and it is being done pre-release because it is
-free now and a user-data migration later.
+Not yet: browsing and streaming a server's library (under way — **N2**), the built-in
+pill, lyrics, and scrobbling.
 
 ## Requirements
 

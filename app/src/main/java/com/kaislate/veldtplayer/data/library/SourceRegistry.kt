@@ -24,10 +24,18 @@ import javax.inject.Singleton
  * Duplicate ids are rejected rather than silently deduped. A `Set` cannot collapse two distinct
  * instances that merely agree on `id`, so `associateBy` would keep whichever iterated last and the
  * other source would be invisible — a wiring bug that looks like an empty library.
+ *
+ * **[remote] is the account-backed half (N2 Task 2).** The `Set<LibrarySource>` above is fixed at
+ * graph-construction time; a server account is not — it appears and disappears at runtime as
+ * [com.kaislate.veldtplayer.data.account.AccountRepository] writes and deletes rows. A remote id
+ * that happens to collide with a static one LOSES: the duplicate-id check above only runs over
+ * the fixed set, so a colliding remote source cannot be rejected the same way, and the static
+ * source — the one Hilt wired deliberately — is what every lookup must keep answering.
  */
 @Singleton
 class SourceRegistry @Inject constructor(
     sources: Set<@JvmSuppressWildcards LibrarySource>,
+    private val remote: RemoteSources = RemoteSources.NONE,
 ) {
     private val sourcesById: Map<String, LibrarySource> = sources.associateBy { it.id }
 
@@ -43,12 +51,18 @@ class SourceRegistry @Inject constructor(
         }
     }
 
-    /** Every registered source. Order is unspecified — callers that care must sort. */
-    val all: Collection<LibrarySource> get() = sourcesById.values
+    /** Every registered source, static then remote. Order is unspecified beyond that — callers
+     *  that care must sort. */
+    val all: Collection<LibrarySource> get() = sourcesById.values + remote.all
 
-    /** The source registered under [sourceId], or null if none is — a *legitimate* answer for a
-     *  playlist entry whose account was removed, which must render unresolved, not crash. */
-    fun byId(sourceId: String): LibrarySource? = sourcesById[sourceId]
+    /**
+     * The source registered under [sourceId], or null if none is — a *legitimate* answer for a
+     * playlist entry whose account was removed, which must render unresolved, not crash.
+     *
+     * The static map is checked FIRST, so a static source always wins a colliding id; see the
+     * class KDoc.
+     */
+    fun byId(sourceId: String): LibrarySource? = sourcesById[sourceId] ?: remote.byId(sourceId)
 
     /**
      * The source registered under [sourceId], or a hard failure.
