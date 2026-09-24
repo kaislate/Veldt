@@ -10,6 +10,7 @@ import coil.ImageLoader
 import coil.ImageLoaderFactory
 import com.kaislate.veldtplayer.data.art.AlbumArtFetcher
 import com.kaislate.veldtplayer.data.art.AlbumArtKeyer
+import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import dagger.hilt.android.HiltAndroidApp
 import ealvatag.tag.TagOptionSingleton
 import javax.inject.Inject
@@ -18,6 +19,9 @@ import javax.inject.Inject
 class VeldtApp : Application(), Configuration.Provider, ImageLoaderFactory {
 
     @Inject lateinit var workerFactory: HiltWorkerFactory
+
+    /** So browse screens and now-playing show a streamed track's server art (spec §5.6). */
+    @Inject lateinit var remoteArt: RemoteArtLoader
 
     override fun onCreate() {
         super.onCreate()
@@ -42,7 +46,7 @@ class VeldtApp : Application(), Configuration.Provider, ImageLoaderFactory {
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .components {
             add(AlbumArtKeyer())
-            add(AlbumArtFetcher.Factory(this@VeldtApp))
+            add(AlbumArtFetcher.Factory(this@VeldtApp, remoteArt))
         }
         .crossfade(false)
         .build()

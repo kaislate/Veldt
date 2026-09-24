@@ -18,6 +18,7 @@ import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.kaislate.veldtplayer.MainActivity
+import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
 import com.kaislate.veldtplayer.data.net.SubsonicAuth
 import dagger.hilt.android.AndroidEntryPoint
@@ -38,6 +39,10 @@ class PlaybackService : MediaLibraryService() {
      * the server accounts' `RemoteResolverLookup` — is Hilt's to assemble.
      */
     @Inject lateinit var uriResolver: PlaybackUriResolver
+
+    /** So the notification, lock screen, Android Auto and the pill show a streamed track's
+     *  server art (spec §5.6), the same as `VeldtApp`'s Coil `AlbumArtFetcher.Factory`. */
+    @Inject lateinit var remoteArt: RemoteArtLoader
 
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
@@ -75,7 +80,7 @@ class PlaybackService : MediaLibraryService() {
         // both ask for the current track's cover, and it holds the last request. (The
         // session would wrap the loader in one anyway; wrapping here puts the adapter
         // inside the same cache instead of outside it.)
-        val loader = VeldtBitmapLoader(this)
+        val loader = VeldtBitmapLoader(this, remoteArt)
         bitmapLoader = loader
         val sessionLoader = CacheBitmapLoader(loader)
 

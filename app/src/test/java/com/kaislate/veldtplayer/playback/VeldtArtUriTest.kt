@@ -5,6 +5,7 @@ package com.kaislate.veldtplayer.playback
 
 import android.net.Uri
 import com.kaislate.veldtplayer.data.art.SongArt
+import com.kaislate.veldtplayer.data.art.remoteRef
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -102,5 +103,24 @@ class VeldtArtUriTest {
         assertNull(VeldtArtUri.parse(Uri.parse("${VeldtArtUri.SCHEME}://song/not-a-number")))
         assertNull(VeldtArtUri.parse(Uri.parse("${VeldtArtUri.SCHEME}://song")))
         assertNull(VeldtArtUri.parse(Uri.parse("${VeldtArtUri.SCHEME}://album/42")))
+    }
+
+    // ---------- a remote row's uri, nested inside this uri (N2 §5.6) ----------
+
+    /**
+     * A remote row's [SongArt.uri] IS `veldt://track/<sourceId>/<externalId>` — a full uri of
+     * its own, with its own `://` and `/`, riding as the value of THIS uri's `src` query
+     * parameter. [Uri.appendQueryParameter]/[Uri.getQueryParameter] percent-encode and decode
+     * that value opaquely, so the nested uri must come back byte-for-byte and still resolve to
+     * the same [com.kaislate.veldtplayer.data.art.remoteRef] — proving [VeldtArtUri] needed no
+     * change for the remote rung, exactly as the design says.
+     */
+    @Test fun `a remote row's nested veldt track uri survives the round trip and still resolves`() {
+        val remote = art(uri = VeldtUri.track("acct-1", "song a/b?c"), filePath = null, hasEmbeddedArt = true)
+
+        val roundTripped = roundTrip(remote)
+
+        assertEquals(remote, roundTripped)
+        assertEquals(TrackRef("acct-1", "song a/b?c"), roundTripped?.remoteRef)
     }
 }

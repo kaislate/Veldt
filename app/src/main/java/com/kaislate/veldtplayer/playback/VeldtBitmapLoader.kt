@@ -14,6 +14,7 @@ import com.google.common.util.concurrent.MoreExecutors
 import com.google.common.util.concurrent.SettableFuture
 import com.kaislate.veldtplayer.data.art.AlbumArtFetcher
 import com.kaislate.veldtplayer.data.art.ArtDecode
+import com.kaislate.veldtplayer.data.art.RemoteArt
 import com.kaislate.veldtplayer.data.art.SongArt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -53,10 +54,17 @@ class VeldtBitmapLoader(
      * the heap cap on the 2 GB device this app targets, with two of them in flight across a
      * track change. [AlbumArtFetcher.SESSION_MAX_PX] is the same size the thumbnail rung is
      * already bounded to, so this only closes the gap between the two rungs.
+     *
+     * [remote] defaults to null so every existing caller of the one-argument form — including
+     * `VeldtBitmapLoaderTest`'s "the production loader walks the real ladder" case, which
+     * exercises a `content://` row that never reaches [com.kaislate.veldtplayer.data.art
+     * .ArtSource.Remote] anyway — keeps compiling unchanged. Production (`PlaybackService`)
+     * passes its injected `RemoteArtLoader` so the notification, lock screen and pill get
+     * streamed-track art too (spec §5.6).
      */
-    constructor(context: Context) : this(
+    constructor(context: Context, remote: RemoteArt? = null) : this(
         loadArt = { art ->
-            AlbumArtFetcher(art, context, ArtDecode.FULL, AlbumArtFetcher.SESSION_MAX_PX)
+            AlbumArtFetcher(art, context, ArtDecode.FULL, AlbumArtFetcher.SESSION_MAX_PX, remote)
                 .fetchBitmap()
         }
     )

@@ -120,6 +120,44 @@ class SubsonicClient @Inject constructor(
     private suspend fun call(url: HttpUrl): SubsonicResult = execute(Request.Builder().url(url).build())
 
     /**
+     * `getCoverArt` bytes for [id] at [sizePx], or null.
+     *
+     * Measured 2026-09-23 against Navidrome 0.64.0: `getCoverArt?id=<song id>&size=300` returns
+     * the byte-identical `image/jpeg` as the song's own `coverArt` id and its parent album's
+     * `al-…` id — so keying art by the song's [com.kaislate.veldtplayer.playback.TrackRef
+     * .externalId] (spec §5.6) needs no extra id stored anywhere. An unknown id answers HTTP 200
+     * with the usual JSON error envelope rather than a 4xx, which is why the Content-Type check
+     * below — not the status alone — is what tells a real cover apart from that envelope.
+     *
+     * Shares [buildRequest] with [call] so the formPost-vs-GET choice and credential placement
+     * are decided in exactly one place; this is the "future binary path" that KDoc already names.
+     * Never throws and never puts [creds]`.baseUrl` (or anything else identifying the request)
+     * in a message: every failure — missing credentials handled by the caller, a malformed base
+     * url, a non-2xx, a non-image body, a dead socket — resolves to plain `null`.
+     */
+    suspend fun coverArt(
+        creds: SubsonicCredentials,
+        caps: ServerCapabilities,
+        id: String,
+        sizePx: Int,
+    ): ByteArray? {
+        val request = buildRequest(creds, "getCoverArt", listOf("id" to id, "size" to sizePx.toString()), caps)
+            ?: return null
+        return withContext(Dispatchers.IO) {
+            try {
+                http.newCall(request).execute().use { response ->
+                    val body = response.body
+                    // `type == "image"` rather than a raw header-string check: it tolerates a
+                    // `; charset=` suffix and normalises case the way OkHttp's own MediaType does.
+                    if (response.isSuccessful && body?.contentType()?.type == "image") body.bytes() else null
+                }
+            } catch (e: IOException) {
+                null
+            }
+        }
+    }
+
+    /**
      * `endpoint` with `params` (plus a fresh token+salt) using whatever transport [caps] allow:
      * a form-encoded POST when the server advertises `formPost`, else a GET with the credentials
      * in the query string. Used by [fetchCatalog]; `probe`/`capabilities` predate this and are

@@ -12,6 +12,7 @@ import com.kaislate.veldtplayer.data.net.SubsonicCredentials
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
@@ -79,18 +80,29 @@ class SubsonicSources internal constructor(
 
     init {
         scope.launch {
-            accountDao.observeAll().collect { list ->
-                val next = list.filterValidIds()
-                // Drop a cached credential for any row that changed VALUE or vanished.
-                // AccountEntity is a data class, so this is a genuine content comparison, not a
-                // presence check — a baseUrl or username edit is the whole reason this cache
-                // needs eviction at all.
-                credentialCache.keys.retainAll { k -> k in next && next[k] == rows[k] }
-                rows = next
-                // Reuse the existing SubsonicSource for an id that survives, so a caller holding
-                // a reference across an edit does not silently start comparing unequal instances.
-                sources = next.mapValues { (id, _) -> sources[id] ?: SubsonicSource(id, songDao) }
-            }
+            accountDao.observeAll()
+                // A closed database reached by this collector — the app's own teardown, or (as
+                // measured while adding N2 Task 6's tests) a short-lived Robolectric test's
+                // `db.close()` racing an already-dispatched Room query on Room's OWN internal
+                // executor — must degrade to "stop observing", not crash. `SupervisorJob` keeps a
+                // sibling failure from cancelling other users of [scope], but does nothing for an
+                // exception thrown BY this coroutine itself, which otherwise propagates as an
+                // uncaught exception with no listener anywhere near it. `catch` is transparent to
+                // `CancellationException` (kotlinx-coroutines' own guarantee), so real
+                // cancellation of [scope] is unaffected.
+                .catch { }
+                .collect { list ->
+                    val next = list.filterValidIds()
+                    // Drop a cached credential for any row that changed VALUE or vanished.
+                    // AccountEntity is a data class, so this is a genuine content comparison, not a
+                    // presence check — a baseUrl or username edit is the whole reason this cache
+                    // needs eviction at all.
+                    credentialCache.keys.retainAll { k -> k in next && next[k] == rows[k] }
+                    rows = next
+                    // Reuse the existing SubsonicSource for an id that survives, so a caller holding
+                    // a reference across an edit does not silently start comparing unequal instances.
+                    sources = next.mapValues { (id, _) -> sources[id] ?: SubsonicSource(id, songDao) }
+                }
         }
     }
 
