@@ -284,17 +284,33 @@ class PlaybackConnection @Inject constructor(
     fun toggle() = withController { if (it.isPlaying) it.pause() else it.play() }
 
     @MainThread
-    fun next() = withController { it.seekToNextMediaItem() }
+    fun next() {
+        // The user is navigating OFF whatever item might be paused (task 4+5 review round 2, item
+        // b): a network-paused item left behind must never auto-resume once the user has moved
+        // away from it, and a skip on an otherwise-idle player may never reach STATE_READY to
+        // disarm it the ordinary way. Unconditional (not inside withController): navigation intent
+        // is real the instant it is called, whether or not a controller is connected yet.
+        resumeCoordinator.disarm()
+        withController { it.seekToNextMediaItem() }
+    }
 
     @MainThread
-    fun previous() = withController { it.seekToPreviousMediaItem() }
+    fun previous() {
+        resumeCoordinator.disarm()
+        withController { it.seekToPreviousMediaItem() }
+    }
 
+    /** Seeking WITHIN the current item does not change which item is paused, so — unlike [next],
+     *  [previous] and [skipToQueueIndex] — this deliberately leaves resumeCoordinator alone. */
     @MainThread
     fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
 
     @MainThread
     fun skipToQueueIndex(index: Int) = withController { c ->
-        if (index in 0 until c.mediaItemCount) c.seekTo(index, 0L)
+        if (index in 0 until c.mediaItemCount) {
+            resumeCoordinator.disarm()
+            c.seekTo(index, 0L)
+        }
     }
 
     @MainThread

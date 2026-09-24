@@ -26,12 +26,19 @@ class ResumeCoordinatorTest {
         /** Never cleared by unregistering — see [fireStale]. */
         private var lastRegistered: ((Any) -> Unit)? = null
 
+        /** Every callback ever registered, in arrival order, never cleared — lets a test invoke a
+         *  SPECIFIC earlier registration directly (round 2, item c: a stale callback from a
+         *  registration a later `arm()` has already superseded), not just "whatever's most recent"
+         *  ([fireStale]). */
+        val registrations = mutableListOf<(Any) -> Unit>()
+
         override fun current(): Any? = current
 
         override fun listen(onAvailable: (Any) -> Unit): () -> Unit {
             live++
             this.onAvailable = onAvailable
             lastRegistered = onAvailable
+            registrations += onAvailable
             return {
                 if (this.onAvailable != null) {
                     live--
@@ -128,5 +135,49 @@ class ResumeCoordinatorTest {
 
         network.fireStale("C") // the race: already in flight when the unregister above ran
         assertEquals("a resume already in flight must not be duplicated", 1, resumeCalls)
+    }
+
+    @Test fun `a callback that disarms the gate without granting a resume also unregisters`() {
+        // Round 2, item a. The gate can disarm ITSELF — here, a mediaId mismatch — without ever
+        // granting a resume. Before this fix the registration stayed live until the next
+        // onReady/arm/disarm, even though nothing armed is left for it to watch for.
+        val network = CountingNetworkReturn().also { it.current = "A" }
+        val coordinator = ResumeCoordinator(ResumeGate(), network)
+        var mediaId = "m0"
+
+        coordinator.arm(itemIndex = 0, mediaId = "m0", state = { state(0, mediaId, false) }, resume = {})
+        assertEquals(1, network.live)
+
+        mediaId = "different" // the queue moved on to a different item sitting at the same index
+        network.fire("B") // a genuinely different network, but the gate now sees a mediaId mismatch
+        assertEquals(
+            "the gate disarmed itself without granting a resume, so nothing should still be registered",
+            0,
+            network.live,
+        )
+    }
+
+    @Test fun `a stale callback from a registration a later arm has superseded is ignored`() {
+        // Round 2, item c. Not the SAME registration firing twice (that is item 3's "granted resume
+        // unregisters immediately" test, above) but TWO DIFFERENT registrations: arm() is called
+        // again — a fresh pause re-arming before callback 1 ever ran — and callback 1 then fires
+        // anyway, modelling a Handler message already queued before arm()'s own stop() unregistered
+        // it. Unguarded, callback 1 would evaluate against the GATE'S CURRENT (registration 2)
+        // state and its own stop() would tear down registration 2's still-live listen out from
+        // under it.
+        val network = CountingNetworkReturn().also { it.current = "A" }
+        val coordinator = ResumeCoordinator(ResumeGate(), network)
+        var resumeCalls = 0
+
+        coordinator.arm(itemIndex = 0, mediaId = "m0", state = { state(0, "m0", false) }, resume = { resumeCalls++ })
+        val callback1 = network.registrations[0]
+
+        coordinator.arm(itemIndex = 0, mediaId = "m0", state = { state(0, "m0", false) }, resume = { resumeCalls++ })
+        assertEquals(2, network.registrations.size)
+        assertEquals("arm()'s own stop() must have unregistered callback 1; only callback 2 is live", 1, network.live)
+
+        callback1.invoke("Z") // the stale race: callback 1 fires anyway, with a genuinely new network
+        assertEquals("a superseded registration must not grant a resume", 0, resumeCalls)
+        assertEquals("callback 2's still-live registration must be untouched", 1, network.live)
     }
 }

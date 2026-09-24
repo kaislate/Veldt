@@ -114,6 +114,12 @@ internal class ResumeGate(private val maxAttempts: Int = 3) {
         return true
     }
 
+    /** Whether something is currently armed. [ResumeCoordinator] reads this after a callback that
+     *  did not grant a resume, to tell "still waiting for a real change" (stay registered) apart
+     *  from "the gate disarmed itself" — mediaId mismatch, `playWhenReady`, or the cap — (stop
+     *  registering; task 4+5 review round 2, item a). */
+    fun isArmed(): Boolean = armed
+
     /** Call when playback reaches `STATE_READY`: the resume worked, so disarm — nothing more to
      *  watch for until the next pause re-arms — and refill the budget. */
     fun onReady() {
