@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.data.playlist
 
+import com.kaislate.veldtplayer.data.library.LibraryKeys
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.db.SongDao
@@ -210,26 +211,48 @@ class PlaylistRepository(
      * The ladder, in order:
      * 1. `(sourceId, sourceKey)` — the durable identity, [LibrarySource.stableKey] **of the entry's
      *    own source**, looked up in that source's own key map. A rescan changes MediaStore ids but
-     *    not the source's own key, so this rung is what survives one.
+     *    not the source's own key, so this rung is what survives one. The map also carries each
+     *    song's [LibrarySource.alternateKeys] — an OLD identity [stableKey] has since moved on
+     *    from — so an entry cached under a stale-but-still-findable key hits here too; see the
+     *    key-upgrade note below.
      * 2. the cached [PlaylistEntryEntity.songId] — accepted only when the row it finds belongs to
      *    the entry's source, so one source's ids can never collide into another's match.
+     * 3. **tag relink**, only when [LibrarySource.relinksByTags] is true for this entry's source —
+     *    normalized `(title, artist, album)` (`LibraryKeys.normalize`, matching the album/artist
+     *    grouping fold) against the entry's own denormalised `sourceTitle`/`sourceArtist`/
+     *    `sourceAlbum`. A hit requires this source's library to hold **exactly one** song with
+     *    that normalized triple; two or more is an unresolved ambiguity, never a guess — a library
+     *    routinely holds two editions of one album sharing a track's tags, and picking one would
+     *    corrupt the `songId` cache with no way for the user to know which edition they actually
+     *    got. Off for the local source (see [LibrarySource.relinksByTags]'s KDoc): a local tag
+     *    match is not independent evidence, since it comes from the same file the other two rungs
+     *    already failed to relocate. On for a server source: an id reissue that ALSO moved the
+     *    path leaves rungs 1 and 2 nothing to match on, and the server's own tags are catalogue
+     *    data, not derived from either identity that just moved.
      *
      * An entry naming a source the [SourceRegistry] does not hold resolves to `null` at rung 0 and
      * is never written to at all — see the early return.
      *
      * Two corrections are written back, and they are deliberately not the same one:
-     * - rung 1 hit, cached id disagrees ⇒ write the corrected `songId`.
-     * - rung 1 **missed** and rung 2 hit ⇒ write a fresh `sourceKey` = [LibrarySource.stableKey] of
-     *   the song the id found.
+     * - `songId`: written whenever a `song` was found and its id disagrees with the cached one.
+     * - `sourceKey`: written whenever a `song` was found whose [LibrarySource.stableKey] disagrees
+     *   with the entry's own key — which happens after a rung-2 or rung-3 hit (rung 1 missed
+     *   entirely, so the two necessarily differ), AND after a rung-1 hit that matched only an
+     *   ALTERNATE key (the "key upgrade": [LibrarySource.stableKey] moved on from the identity the
+     *   entry is still cached under, so the entry is rewritten to the current one). A rung-1 hit
+     *   on the CURRENT stable key writes nothing here, because that key, by construction, already
+     *   equals `stableKey(song)`.
      *
-     * The second exists because a rung-2 hit is looked up *by* `entry.songId`, so `song.id` always
-     * equals `entry.songId` and the first correction can never fire for it. That is the file-MOVED
-     * case: the row keeps its MediaStore `_ID`, the scan re-upserts it with a new location (see
-     * [com.kaislate.veldtplayer.data.library.scan.ScanDiffer]), rung 1 misses on the old key, rung 2
-     * carries it — and without a write-back the entry's key stays stale FOREVER. It would then hang
-     * entirely off the cached id, and the next id reissue (a remount, a MediaStore rebuild — the
-     * exact case rung 1 exists for) would blank it. Writing the key restores rung 1 as the load
-     * bearing rung.
+     * The `songId` correction exists because a rung-2 hit is looked up *by* `entry.songId`, so
+     * `song.id` always equals `entry.songId` there and only a rung-1 or rung-3 hit can disagree.
+     * The `sourceKey` correction's file-MOVED case is the same as ever: the row keeps its
+     * MediaStore `_ID`, the scan re-upserts it with a new location (see
+     * [com.kaislate.veldtplayer.data.library.scan.ScanDiffer]), rung 1 misses on the old key, rung
+     * 2 carries it — and without a write-back the entry's key stays stale FOREVER. It would then
+     * hang entirely off the cached id, and the next id reissue (a remount, a MediaStore rebuild —
+     * the exact case rung 1 exists for) would blank it. Writing the key restores rung 1 as the load
+     * bearing rung. The key-upgrade case is the same story for a server source whose id-only key
+     * predates a path becoming available.
      *
      * A stale id that resolves to nothing is deliberately left alone rather than nulled: an empty
      * library (unmounted volume, scan not yet run) would otherwise wipe every fallback in the
@@ -246,27 +269,33 @@ class PlaylistRepository(
      *
      * - `songId`: populated under `song.id != entry.songId`. The pass that writes it makes the ids
      *   agree, so the next pass writes nothing.
-     * - `sourceKey`: populated under "rung 1 missed and rung 2 hit", and guarded on
-     *   `freshKey != entry.sourceKey`. **That guard is what terminates it**, and it terminates it
-     *   because `freshKey` is a function of `song` ALONE and never of `entry.sourceKey`: whatever it
-     *   computes on the repair pass it computes again on the next, finds it already stored, and
-     *   writes nothing. A `freshKey` derived from the entry's own key could oscillate; do not make
-     *   one.
+     * - `sourceKey`: populated under `stableKey(song) != entry.sourceKey`, for whatever `song`
+     *   rung 1, 2 or 3 found. **That inequality is what terminates it**, and it terminates it
+     *   because the value compared and written — `stableKey(song)` — is a function of `song` ALONE
+     *   and never of `entry.sourceKey`: whatever it computes on the repair pass it computes again
+     *   on the next, finds it already stored (now `entry.sourceKey` too), and writes nothing. A
+     *   `freshKey` derived from the entry's own key could oscillate; do not make one. This is also
+     *   why a rung-1 hit on the CURRENT stable key never writes: `stableKey(song)` is, by
+     *   construction, the very key that was just looked up, so the two can never disagree there —
+     *   no separate guard is needed to keep that case quiet.
      *
      * Separately — and this is the *point* of the repair rather than its safety property — the value
      * written is `stableKey(song)` for a `song` **taken from the very map rung 1 searched**, so
-     * `byKey[entry.sourceKey]` is non-null by construction afterwards and rung 1 becomes load
-     * bearing again. That is the difference between repairing the entry and merely moving its
-     * staleness somewhere new. A repair that rung 1 would still miss leaves the entry hanging off
-     * its cached id exactly as before, and `resolve still quiesces when two library rows collide on
-     * one key` is the test that can tell the two apart (a mutant writing an unfindable key is caught
-     * there, not by the single-entry quiescence test — the guard above hides it).
+     * `byKey[entry.sourceId][stableKey(song)]` is non-null by construction afterwards and rung 1
+     * becomes load bearing again. That is the difference between repairing the entry and merely
+     * moving its staleness somewhere new. A repair that rung 1 would still miss leaves the entry
+     * hanging off its cached id exactly as before, and `resolve still quiesces when two library rows
+     * collide on one key` is the test that can tell the two apart (a mutant writing an unfindable
+     * key is caught there, not by the single-entry quiescence test — the guard above hides it).
      *
-     * If two songs collide on one key, `associateBy` keeps the last and rung 1 returns that one —
+     * If two songs collide on one key, the LAST one inserted wins and rung 1 returns that one —
      * still a hit, so the key is not rewritten; one further `songId` correction settles it. Bounded
      * at two extra bounces, never unbounded. Note that collision is now scoped *within* a source:
      * two songs from DIFFERENT sources sharing a key string do not collide at all, which is the
-     * whole reason the map is nested rather than flat.
+     * whole reason the map is nested rather than flat. A stable key always wins a collision against
+     * an alternate key of a DIFFERENT song — alternates are inserted into the per-source map first,
+     * stable keys second — so a live identity can never be shadowed by a stale one still lingering
+     * as somebody else's fallback.
      */
     suspend fun resolve(playlistId: Long): List<PlaylistTrack> {
         val entries = dao.getEntries(playlistId)
@@ -275,18 +304,35 @@ class PlaylistRepository(
         // The Room projection, not source.listSongs(): these are the tag-merged rows the rest of
         // the app renders, and it is one indexed table read instead of a device-wide enumeration.
         val songs = songDao.getAllSongs().map { it.toDomain() }
-        // Per-source key maps, NOT one flat associateBy over every song. Two sources may
-        // legitimately emit the SAME key string for different tracks — nothing coordinates their
-        // key spaces — and a flat map silently keeps whichever came last, handing both entries the
-        // same song. That is the P1.4 defect class exactly: locally correct, collapses two distinct
-        // inputs. Songs whose source is not registered are dropped from the maps rather than keyed
-        // under a source that cannot describe them.
-        val byKey: Map<String, Map<String, Song>> = songs.groupBy { it.sourceId }
-            .mapNotNull { (sid, list) ->
-                val src = registry.byId(sid) ?: return@mapNotNull null
-                sid to list.associateBy { src.stableKey(it) }
-            }.toMap()
+        val songsBySource: Map<String, List<Song>> = songs.groupBy { it.sourceId }
+
+        // Per-source key maps, NOT one flat map over every song. Two sources may legitimately emit
+        // the SAME key string for different tracks — nothing coordinates their key spaces — and a
+        // flat map silently keeps whichever came last, handing both entries the same song. That is
+        // the P1.4 defect class exactly: locally correct, collapses two distinct inputs. Songs
+        // whose source is not registered are dropped from the maps rather than keyed under a
+        // source that cannot describe them.
+        //
+        // Alternates are inserted FIRST and stable keys SECOND, so a stable key always wins a
+        // string collision against some other song's alternate — a live identity is never shadowed
+        // by a stale one still lingering as a fallback.
+        val byKey: Map<String, Map<String, Song>> = songsBySource.mapNotNull { (sid, list) ->
+            val src = registry.byId(sid) ?: return@mapNotNull null
+            val map = LinkedHashMap<String, Song>()
+            for (song in list) for (alt in src.alternateKeys(song)) map[alt] = song
+            for (song in list) map[src.stableKey(song)] = song
+            sid to map
+        }.toMap()
         val byId = songs.associateBy { it.id }
+        // Rung 3, built only for a source that opts in — most sources' tags describe the very file
+        // the other two rungs already failed on, and building this map for them would be pure
+        // waste. Grouped, not associateBy: a normalized triple shared by two songs (two editions of
+        // one album) must read back as an ambiguous bucket, not silently keep the last one.
+        val byTagKey: Map<String, Map<List<String>, List<Song>>> = songsBySource.mapNotNull { (sid, list) ->
+            val src = registry.byId(sid) ?: return@mapNotNull null
+            if (!src.relinksByTags) return@mapNotNull null
+            sid to list.groupBy { tagKeyOf(it.title, it.artist, it.album) }
+        }.toMap()
 
         val corrections = LinkedHashMap<Long, Long?>()
         val keyCorrections = LinkedHashMap<Long, String>()
@@ -299,9 +345,9 @@ class PlaylistRepository(
             val src = registry.byId(entry.sourceId)
                 ?: return@map PlaylistTrack(entry = entry, song = null)
 
-            // Rung 1 and rung 2 are kept apart, not collapsed into one elvis, because WHICH rung
-            // answered is itself the signal: only a rung-2-after-rung-1-missed hit means the key
-            // went stale under a preserved id.
+            // The three rungs are kept apart, not collapsed into one elvis, because the shape of
+            // the KDoc's write-back reasoning depends on knowing which one answered — rung 1 alone
+            // can turn out to need no key correction; rungs 2 and 3 always do.
             val byKeyHit = byKey[entry.sourceId]?.get(entry.sourceKey)
             // Rung 2 is guarded BY SOURCE. Surrogate ids now share one AUTOINCREMENT space across
             // every source, so a cached id names a real row that may belong to somebody else; it
@@ -309,14 +355,21 @@ class PlaylistRepository(
             // takeIf, a stale cache resolves cross-source into a different track entirely.
             val song = byKeyHit
                 ?: entry.songId?.let { byId[it] }?.takeIf { it.sourceId == entry.sourceId }
+                // Rung 3: unique tag match, entry-side key built from the SAME denormalised fields
+                // `addSongs`/`addEntries` cached at import time — an unresolved entry has no `Song`
+                // of its own to ask.
+                ?: byTagKey[entry.sourceId]
+                    ?.get(tagKeyOf(entry.sourceTitle, entry.sourceArtist, entry.sourceAlbum))
+                    ?.singleOrNull()
 
             if (song != null && song.id != entry.songId) corrections[entry.id] = song.id
-            // The file moved but kept its id. Two things are load bearing here and they are NOT
-            // the same thing (see the KDoc): the inequality guard is what makes this terminate,
-            // and `stableKey(song)` — a key of a row already in `byKey` — is what makes rung 1 hit
-            // again afterwards instead of the entry staying pinned to its cached id.
-            val freshKey = if (byKeyHit == null && song != null) src.stableKey(song) else null
-            if (freshKey != null && freshKey != entry.sourceKey) keyCorrections[entry.id] = freshKey
+            // Written whenever the song's OWN current key disagrees with what the entry is cached
+            // under — true after any rung 2 or 3 hit (rung 1 missed entirely), and true after a
+            // rung 1 hit that matched only an alternate key (the key upgrade). A rung 1 hit on the
+            // current stable key can never disagree, by construction, so it needs no separate guard
+            // to stay quiet — see the KDoc.
+            val freshKey = song?.let { src.stableKey(it) }?.takeIf { it != entry.sourceKey }
+            if (freshKey != null) keyCorrections[entry.id] = freshKey
 
             PlaylistTrack(
                 entry = entry.copy(
@@ -330,4 +383,16 @@ class PlaylistRepository(
         if (keyCorrections.isNotEmpty()) dao.updateResolvedSourceKeys(keyCorrections)
         return tracks
     }
+
+    /**
+     * Rung 3's grouping/lookup key: normalized `(title, artist, album)`, using the same fold
+     * [LibraryKeys.normalize] applies for album/artist grouping — so "Poppy" / "poppy " / "POPPY"
+     * are one artist here exactly as they are one artist on the artist screen.
+     *
+     * A `List`, not a joined string: [LibraryKeys.normalize] can fold a field to the empty string
+     * (a missing tag), and a delimiter-joined key would then let `("", "a:b")` and `("a", "b")`
+     * alias onto each other. A `List<String>` compares structurally with no such collision.
+     */
+    private fun tagKeyOf(title: String, artist: String, album: String): List<String> =
+        listOf(title, artist, album).map(LibraryKeys::normalize)
 }
