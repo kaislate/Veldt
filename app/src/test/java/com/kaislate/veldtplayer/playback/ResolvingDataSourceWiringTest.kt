@@ -75,12 +75,19 @@ class ResolvingDataSourceWiringTest {
         assertEquals(real, returned.uri.toString())
     }
 
-    @Test fun `a veldt uri no source claims is handed back untouched`() {
-        // This slice's real configuration: the multibinding is empty until N2, so every load in
-        // the shipped app takes this branch or the one above it.
+    @Test fun `a veldt uri no source claims throws a REMOTE_REFUSED data source exception`() {
+        // Superseded behaviour (task 4 controller ruling): this used to be handed back untouched,
+        // which let the raw `veldt://` uri reach DefaultHttpDataSource and throw
+        // `MalformedURLException: unknown protocol: veldt` — surfacing as 2001
+        // (IO_NETWORK_CONNECTION_FAILED), a PAUSE_IN_PLACE nothing can ever recover from, since the
+        // item itself is the problem, not the network. An already-queued item whose account was
+        // removed (or whose credentials cannot be read) must SKIP once instead, exactly as a live
+        // 404 does — see PlayerErrorPolicy.errorAction(ERROR_CODE_REMOTE_REFUSED).
         val spec = DataSpec(Uri.parse(logical))
-        val returned = VeldtDataSpecResolver(PlaybackUriResolver(emptySet())).resolveDataSpec(spec)
-        assertSame(spec, returned)
+        val e = assertThrows(DataSourceException::class.java) {
+            VeldtDataSpecResolver(PlaybackUriResolver(emptySet())).resolveDataSpec(spec)
+        }
+        assertEquals(ERROR_CODE_REMOTE_REFUSED, e.reason)
     }
 
     @Test fun `resolution rewrites the uri and carries the rest of the request across`() {
@@ -196,6 +203,16 @@ class ResolvingDataSourceWiringTest {
         server.enqueue("""{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":40,"message":"Wrong username or password"}}}""")
         val e = assertThrows(DataSourceException::class.java) { source.open(track) }
         assertEquals(ERROR_CODE_REMOTE_AUTH, e.reason)
+    }
+
+    @Test fun `an already-queued veldt uri no resolver claims fails as REMOTE_REFUSED, not a network error`() = withServer { _, source ->
+        // The account behind "unknown" was removed (or its credentials could not be read) between
+        // enqueue and this load. Through the real factory the failure must be the typed
+        // ERROR_CODE_REMOTE_REFUSED (which VeldtLoadErrorPolicy never retries and errorAction skips
+        // once), never a bare MalformedURLException surfacing as 2001/PAUSE_IN_PLACE.
+        val unclaimed = DataSpec(Uri.parse(VeldtUri.track("unknown", "s1")))
+        val e = assertThrows(DataSourceException::class.java) { source.open(unclaimed) }
+        assertEquals(ERROR_CODE_REMOTE_REFUSED, e.reason)
     }
 
     @Test fun `the uri reported after open is redacted`() = withServer { server, source ->

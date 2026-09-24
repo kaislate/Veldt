@@ -10,6 +10,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -192,12 +193,27 @@ internal class VeldtDataSpecResolver(
     override fun resolveDataSpec(dataSpec: DataSpec): DataSpec {
         val requested = dataSpec.uri.toString()
         val resolved = uris.resolve(requested)
-        // The passthrough, and the reason this layer is invisible to local playback. Returning the
-        // *same* `DataSpec` matters rather than an equal one: `withUri`/`buildUpon` allocate a copy
-        // on every open of every `content://` track, and `DataSpec` declares no `equals`, so a copy
-        // is not interchangeable with the original to anything that compares them. Global
-        // Constraint 5 lives on this line.
-        if (resolved == requested) return dataSpec
+        if (resolved == requested) {
+            // Unchanged is ambiguous by itself: it is either a `content://` uri nothing here owns
+            // (the passthrough below), or a `veldt://track/…` uri that PlaybackUriResolver could not
+            // route to anything — the account was removed, or its credentials could not be read
+            // (spec Review Focus 5). The second case must NOT reach DefaultDataSource: it hands the
+            // unrecognised `veldt` scheme to DefaultHttpDataSource, which throws
+            // `MalformedURLException: unknown protocol: veldt`, surfacing as 2001
+            // (IO_NETWORK_CONNECTION_FAILED) — a PAUSE_IN_PLACE that no retry, including the
+            // network-return resume, can ever fix, since the item itself is the problem. Raising
+            // ERROR_CODE_REMOTE_REFUSED here instead routes it through the same "the server refused
+            // THIS item" policy a live 404 or 403 already gets: SKIP, once, and move on.
+            if (VeldtUri.parse(requested) != null) {
+                throw DataSourceException("no source can resolve this track", ERROR_CODE_REMOTE_REFUSED)
+            }
+            // The passthrough, and the reason this layer is invisible to local playback. Returning
+            // the *same* `DataSpec` matters rather than an equal one: `withUri`/`buildUpon` allocate a
+            // copy on every open of every `content://` track, and `DataSpec` declares no `equals`, so
+            // a copy is not interchangeable with the original to anything that compares them. Global
+            // Constraint 5 lives on this line.
+            return dataSpec
+        }
         return dataSpec.buildUpon()
             .setUri(resolved)
             .setKey(dataSpec.key ?: requested)
