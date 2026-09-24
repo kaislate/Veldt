@@ -224,11 +224,14 @@ class PlaylistRepository(
      *    that normalized triple; two or more is an unresolved ambiguity, never a guess — a library
      *    routinely holds two editions of one album sharing a track's tags, and picking one would
      *    corrupt the `songId` cache with no way for the user to know which edition they actually
-     *    got. Off for the local source (see [LibrarySource.relinksByTags]'s KDoc): a local tag
-     *    match is not independent evidence, since it comes from the same file the other two rungs
-     *    already failed to relocate. On for a server source: an id reissue that ALSO moved the
-     *    path leaves rungs 1 and 2 nothing to match on, and the server's own tags are catalogue
-     *    data, not derived from either identity that just moved.
+     *    got. Skipped entirely — on both the entry side and the song side — when the tags are too
+     *    thin to mean anything: `normalize` folds a missing tag to `""`, so an unknown artist and
+     *    album would otherwise "match" on title alone and an all-blank entry would match any other
+     *    all-blank one; see [tagKeyOf]. Off for the local source (see [LibrarySource.relinksByTags]'s
+     *    KDoc): a local tag match is not independent evidence, since it comes from the same file the
+     *    other two rungs already failed to relocate. On for a server source: an id reissue that ALSO
+     *    moved the path leaves rungs 1 and 2 nothing to match on, and the server's own tags are
+     *    catalogue data, not derived from either identity that just moved.
      *
      * An entry naming a source the [SourceRegistry] does not hold resolves to `null` at rung 0 and
      * is never written to at all — see the early return.
@@ -327,11 +330,16 @@ class PlaylistRepository(
         // Rung 3, built only for a source that opts in — most sources' tags describe the very file
         // the other two rungs already failed on, and building this map for them would be pure
         // waste. Grouped, not associateBy: a normalized triple shared by two songs (two editions of
-        // one album) must read back as an ambiguous bucket, not silently keep the last one.
+        // one album) must read back as an ambiguous bucket, not silently keep the last one. Songs
+        // whose tags are too thin to identify anything ([tagKeyOf] returns null — see its KDoc)
+        // are dropped rather than keyed, so they can never BE the match either.
         val byTagKey: Map<String, Map<List<String>, List<Song>>> = songsBySource.mapNotNull { (sid, list) ->
             val src = registry.byId(sid) ?: return@mapNotNull null
             if (!src.relinksByTags) return@mapNotNull null
-            sid to list.groupBy { tagKeyOf(it.title, it.artist, it.album) }
+            val keyed = list.mapNotNull { song ->
+                tagKeyOf(song.title, song.artist, song.album)?.let { key -> key to song }
+            }
+            sid to keyed.groupBy({ it.first }, { it.second })
         }.toMap()
 
         val corrections = LinkedHashMap<Long, Long?>()
@@ -357,10 +365,11 @@ class PlaylistRepository(
                 ?: entry.songId?.let { byId[it] }?.takeIf { it.sourceId == entry.sourceId }
                 // Rung 3: unique tag match, entry-side key built from the SAME denormalised fields
                 // `addSongs`/`addEntries` cached at import time — an unresolved entry has no `Song`
-                // of its own to ask.
-                ?: byTagKey[entry.sourceId]
-                    ?.get(tagKeyOf(entry.sourceTitle, entry.sourceArtist, entry.sourceAlbum))
-                    ?.singleOrNull()
+                // of its own to ask. `tagKeyOf` returning null (tags too thin — see its KDoc) skips
+                // rung 3 entirely for this entry, same as `byTagKey` having no entry for the source.
+                ?: tagKeyOf(entry.sourceTitle, entry.sourceArtist, entry.sourceAlbum)?.let { key ->
+                    byTagKey[entry.sourceId]?.get(key)?.singleOrNull()
+                }
 
             if (song != null && song.id != entry.songId) corrections[entry.id] = song.id
             // Written whenever the song's OWN current key disagrees with what the entry is cached
@@ -392,7 +401,25 @@ class PlaylistRepository(
      * A `List`, not a joined string: [LibraryKeys.normalize] can fold a field to the empty string
      * (a missing tag), and a delimiter-joined key would then let `("", "a:b")` and `("a", "b")`
      * alias onto each other. A `List<String>` compares structurally with no such collision.
+     *
+     * **Null when the tags are too thin to identify anything**, and null is what keeps a thin
+     * triple out of rung 3 on BOTH sides — a song this excludes from [byTagKey] and an entry this
+     * makes [resolve] skip rung 3 for entirely. [LibraryKeys.normalize] folds a missing tag to `""`,
+     * so without this guard an entry with an unknown artist and album would "relink" on title
+     * alone — not a real identity check, since two completely different tracks sharing only a
+     * title (a cover, a live version, a reissue's title track) would collide into one bucket and
+     * either look ambiguous for the wrong reason or, worse, match uniquely and be wrong — and an
+     * entry with every tag missing would match every other all-blank entry in the same source. The
+     * rule: skip when the normalized title is empty, OR when the normalized artist AND album are
+     * BOTH empty. Title alone is not enough either — see the first clause — because title-only
+     * matching is exactly the collision this guard exists to prevent; it takes title plus at least
+     * one of artist/album for the triple to mean anything.
      */
-    private fun tagKeyOf(title: String, artist: String, album: String): List<String> =
-        listOf(title, artist, album).map(LibraryKeys::normalize)
+    private fun tagKeyOf(title: String, artist: String, album: String): List<String>? {
+        val t = LibraryKeys.normalize(title)
+        val a = LibraryKeys.normalize(artist)
+        val al = LibraryKeys.normalize(album)
+        if (t.isEmpty() || (a.isEmpty() && al.isEmpty())) return null
+        return listOf(t, a, al)
+    }
 }

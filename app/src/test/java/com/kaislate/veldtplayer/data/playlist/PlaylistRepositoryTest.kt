@@ -1290,11 +1290,12 @@ class PlaylistRepositoryTest {
     }
 
     @Test fun `tag relink never crosses sources`() = runTest {
+        val counting = CountingDao(dao)
         val remoteSrc = SubsonicSource("acct-1", songDao)
         val otherSrc = SubsonicSource("acct-2", songDao)
         val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc, "acct-2" to otherSrc))
         val remoteRepo =
-            PlaylistRepository(dao, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
         val pl = remoteRepo.create("Mix")
         dao.insertEntries(
             listOf(
@@ -1310,8 +1311,79 @@ class PlaylistRepositoryTest {
             listOf(remoteSong(9, "e1", "acct-2", "T").copy(artist = "A", album = "Al").toEntity())
         )
 
+        counting.reset()
         val track = remoteRepo.resolve(pl).single()
         assertNull("a tag match in another source's catalogue must not resolve this entry", track.song)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    /**
+     * Tag relink must not match on tags too thin to mean anything. `LibraryKeys.normalize` folds
+     * a missing tag to `""`, so without a guard an unknown artist and album would let this entry
+     * "relink" on title alone — not a real identity check, since any other track sharing only a
+     * title would collide into the same bucket.
+     */
+    @Test fun `tag relink does not match on an empty artist and album`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "T", sourceArtist = "", sourceAlbum = "",
+                ),
+            ),
+        )
+        // Exactly one song shares the title, with the same empty artist and album.
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(9, "new", "acct-1", "T").copy(artist = "", album = "").toEntity())
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertNull("title alone, with no artist or album, is not a real tag match", track.song)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    /**
+     * Review Focus 3: a server that hides `path` entirely. Every rung above tag relink has
+     * nothing to work with — [Song.relativeKey] is null, so [SubsonicSource.stableKey] falls back
+     * to `sid:<id>` for every row on that server — but rung 3 still finds the reissued id by tags.
+     */
+    @Test fun `tag relink works when the server hides path, keying the repair on sid`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "T", sourceArtist = "A", sourceAlbum = "Al",
+                ),
+            ),
+        )
+        // No relativeKey at all — this server never sends `path` — but the id has changed.
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(9, "new", "acct-1", "T").copy(artist = "A", album = "Al").toEntity())
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals(9L, track.song?.id)
+        assertEquals("sid:new", dao.getEntries(pl).single().sourceKey)
+
+        counting.reset()
+        remoteRepo.resolve(pl)
+        assertEquals("a second resolve on unchanged input writes nothing", 0, counting.keyWrites + counting.idWrites)
     }
 
     /** Review Focus 5: tag relink is off for the local source. */
