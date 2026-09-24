@@ -41,6 +41,10 @@ class SubsonicClientCatalogTest {
             songIds.joinToString(",") { """{"id":"$it","title":"$it"}""" }
         }]}}}"""
 
+    /** `getAlbumList2` and `getAlbum` both share `/rest/<endpoint>`; the endpoint name is the last
+     *  path segment, whether or not a query string follows it (form POSTs strip the query). */
+    private fun endpointOf(target: String): String = target.substringAfterLast('/').substringBefore('?')
+
     @Before fun setUp() {
         server = FakeHttpServer().also { it.start() }
         client = SubsonicClient(
@@ -66,10 +70,22 @@ class SubsonicClientCatalogTest {
         )
     }
 
+    /**
+     * Review Focus (Task 1 fold-in). The original version of this test queued a zero-album page,
+     * so `fetchCatalog` never issued a `getAlbum` request at all — every assertion below ran over
+     * the ONE `getAlbumList2` call and the request builder's `getAlbum` path went unexercised by
+     * either credential-placement test. One album closes that: both endpoints are now requested,
+     * and the assertion on the endpoint SET is what would catch either one going missing.
+     */
     @Test fun `with formPost the credentials travel in the body and not in the url`() = runTest {
-        server.enqueue(albumPage())
+        server.enqueue(albumPage("a1"))
+        server.enqueue(album("a1", "s1"))
         client.fetchCatalog("acct", creds, formPost)
-        assertTrue("no request was made", server.requests.isNotEmpty())
+        assertEquals(
+            "expected exactly one getAlbumList2 request and one getAlbum request",
+            setOf("getAlbumList2", "getAlbum"),
+            server.requests.map { endpointOf(it.target) }.toSet(),
+        )
         server.requests.forEach { req ->
             assertEquals("POST", req.method)
             val leakedInUrl = listOf("t=", "s=", "u=").filter { it in req.target }
@@ -80,10 +96,16 @@ class SubsonicClientCatalogTest {
         }
     }
 
+    /** See the KDoc on the formPost test above — the same gap, the same fix. */
     @Test fun `without formPost the request is a GET carrying the token`() = runTest {
-        server.enqueue(albumPage())
+        server.enqueue(albumPage("a1"))
+        server.enqueue(album("a1", "s1"))
         client.fetchCatalog("acct", creds, ServerCapabilities.BASELINE)
-        assertTrue("no request was made", server.requests.isNotEmpty())
+        assertEquals(
+            "expected exactly one getAlbumList2 request and one getAlbum request",
+            setOf("getAlbumList2", "getAlbum"),
+            server.requests.map { endpointOf(it.target) }.toSet(),
+        )
         server.requests.forEach { req ->
             assertEquals("GET", req.method)
             assertTrue("token missing from url: ${req.target}", "u=kyle&t=" in req.target)
