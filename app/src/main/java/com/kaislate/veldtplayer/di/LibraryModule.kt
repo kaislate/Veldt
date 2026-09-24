@@ -8,6 +8,8 @@ import com.kaislate.veldtplayer.data.account.KeyProvider
 import com.kaislate.veldtplayer.data.account.KeystoreKeyProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.LocalSource
+import com.kaislate.veldtplayer.data.library.RemoteSources
+import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
 import com.kaislate.veldtplayer.data.library.tag.EAlvaTagReader
 import com.kaislate.veldtplayer.data.library.tag.TagReader
@@ -59,6 +61,15 @@ abstract class LibraryModule {
     @Binds
     @Singleton
     abstract fun bindTagReader(impl: EAlvaTagReader): TagReader
+
+    /**
+     * The account-backed sources join [com.kaislate.veldtplayer.data.library.SourceRegistry] as
+     * its [RemoteSources], not the fixed `Set<LibrarySource>` above: an account appears and
+     * disappears at runtime, which the set cannot express (N2 Task 2).
+     */
+    @Binds
+    @Singleton
+    abstract fun bindRemoteSources(impl: SubsonicSources): RemoteSources
 
     /**
      * The real key provider. Bound here rather than annotated `@Inject` at the use site so a

@@ -28,6 +28,15 @@ interface AccountDao {
     @Query("SELECT * FROM accounts WHERE sourceId = :sourceId")
     suspend fun get(sourceId: String): AccountEntity?
 
+    /**
+     * A one-shot read of every account, for [com.kaislate.veldtplayer.data.library.SubsonicSources]'
+     * synchronous construction-time snapshot — see that class for why it cannot wait on [observeAll]'s
+     * first emission. Order is not asserted on by anything that reads this; sort at the call site if
+     * one ever needs to.
+     */
+    @Query("SELECT * FROM accounts")
+    suspend fun getAll(): List<AccountEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(account: AccountEntity)
 

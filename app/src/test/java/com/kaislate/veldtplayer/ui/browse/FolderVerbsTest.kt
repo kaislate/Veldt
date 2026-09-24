@@ -11,6 +11,7 @@ import androidx.work.Configuration
 import androidx.work.testing.SynchronousExecutor
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.kaislate.veldtplayer.data.library.FolderNode
+import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.MusicRepository
 import com.kaislate.veldtplayer.data.library.SourceRegistry
 import com.kaislate.veldtplayer.data.library.TrackSort
@@ -18,6 +19,8 @@ import com.kaislate.veldtplayer.data.library.db.IndexEntry
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.SongEntity
 import com.kaislate.veldtplayer.data.library.VolumeNames
+import com.kaislate.veldtplayer.data.library.model.Album
+import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.playback.PlaybackConnection
@@ -84,7 +87,20 @@ class FolderVerbsTest {
         override fun observeSearch(pattern: String): Flow<List<SongEntity>> = emptyFlow()
         override suspend fun getIndex(sourceId: String): List<IndexEntry> = emptyList()
         override suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>) = Unit
+        override suspend fun getBySource(sourceId: String): List<SongEntity> = emptyList()
+        override suspend fun deleteBySource(sourceId: String) = Unit
         override suspend fun clear() = Unit
+    }
+
+    /** The `@LocalLibrary` source every fixture row belongs to; its id agrees with [row]'s. */
+    private val localSource = object : LibrarySource {
+        override val id = "test"
+        override suspend fun listSongs() = emptyList<Song>()
+        override suspend fun listAlbums() = emptyList<Album>()
+        override suspend fun listArtists() = emptyList<Artist>()
+        override suspend fun search(query: String) = emptyList<Song>()
+        override fun resolvePlayableUri(song: Song) = song.uri
+        override fun stableKey(song: Song) = song.uri
     }
 
     private lateinit var context: Context
@@ -161,6 +177,7 @@ class FolderVerbsTest {
         val repo = MusicRepository(
             FakeSongDao(listOf(rows.toList())),
             SourceRegistry(emptySet()),
+            localSource,
             context,
         )
         connection = PlaybackConnection(context, repo)

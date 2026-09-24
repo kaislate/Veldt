@@ -92,7 +92,7 @@ class PlaylistViewModelTest {
         source = FakeSource()
         val registry = SourceRegistry(setOf(source))
         playlists = PlaylistRepository(db.playlistDao(), db.songDao(), registry) { ++clock }
-        music = MusicRepository(db.songDao(), registry, context)
+        music = MusicRepository(db.songDao(), registry, source, context)
         vm = PlaylistViewModel(
             playlists = playlists,
             importer = PlaylistImporter(context, source, playlists),

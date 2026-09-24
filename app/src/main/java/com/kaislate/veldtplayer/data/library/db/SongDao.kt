@@ -100,6 +100,25 @@ interface SongDao {
     @Query("DELETE FROM songs WHERE sourceId = :sourceId AND externalId IN (:externalIds)")
     suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>)
 
+    /**
+     * One source's whole contribution to the library (N2 Task 2) — what
+     * [com.kaislate.veldtplayer.data.library.SubsonicSource.listSongs] returns, and Task 6's cover
+     * art path over the same account. Unordered here; a caller that needs an order imposes one, the
+     * same convention [getIndex] follows.
+     */
+    @Query("SELECT * FROM songs WHERE sourceId = :sourceId")
+    suspend fun getBySource(sourceId: String): List<SongEntity>
+
+    /**
+     * Drop one source's whole contribution — Task 3's sync worker uses this for an account that was
+     * removed, or ahead of a full resync it does not want to diff against. Scoped to [sourceId] for
+     * the same reason [deleteByExternalIds] is: there is no id-keyed delete on this DAO, because two
+     * sources share one surrogate id space and an unscoped delete driven by one source's logic is a
+     * data-loss bug waiting for its second caller.
+     */
+    @Query("DELETE FROM songs WHERE sourceId = :sourceId")
+    suspend fun deleteBySource(sourceId: String)
+
     @Query("DELETE FROM songs")
     suspend fun clear()
 }
