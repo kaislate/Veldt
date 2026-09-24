@@ -11,6 +11,8 @@ import com.kaislate.veldtplayer.data.library.LocalSource
 import com.kaislate.veldtplayer.data.library.RemoteSources
 import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
+import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
+import com.kaislate.veldtplayer.data.library.sync.SubsonicSyncCoordinator
 import com.kaislate.veldtplayer.data.library.tag.EAlvaTagReader
 import com.kaislate.veldtplayer.data.library.tag.TagReader
 import dagger.Binds
@@ -70,6 +72,11 @@ abstract class LibraryModule {
     @Binds
     @Singleton
     abstract fun bindRemoteSources(impl: SubsonicSources): RemoteSources
+
+    /** N2 Task 3: the Servers screen's whole interface to syncing an account's catalog. */
+    @Binds
+    @Singleton
+    abstract fun bindSubsonicSync(impl: SubsonicSyncCoordinator): SubsonicSync
 
     /**
      * The real key provider. Bound here rather than annotated `@Inject` at the use site so a

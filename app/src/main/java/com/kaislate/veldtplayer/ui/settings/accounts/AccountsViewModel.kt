@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.data.account.Account
 import com.kaislate.veldtplayer.data.account.AccountRepository
 import com.kaislate.veldtplayer.data.account.AccountWriteResult
+import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
+import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.data.net.ConnectionOutcome
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -15,8 +17,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 
 /** What the "Test connection" button has to say. */
@@ -55,10 +59,17 @@ sealed interface SaveState {
 class AccountsViewModel @Inject constructor(
     private val repo: AccountRepository,
     private val client: SubsonicClient,
+    private val sync: SubsonicSync,
 ) : ViewModel() {
 
     val accounts: StateFlow<List<Account>> = repo.observe()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** One shared [SyncStatus] [StateFlow] per account, built lazily. `getOrPut` rather than a
+     *  fresh `stateIn` per call: [AccountsScreen] reads [syncStatus] on every recomposition, and
+     *  a fresh upstream collection each time would mean a fresh `WorkManager` flow subscription
+     *  each time too. */
+    private val syncStatuses = ConcurrentHashMap<String, StateFlow<SyncStatus>>()
 
     private val _test = MutableStateFlow<TestState>(TestState.Idle)
     val test: StateFlow<TestState> = _test.asStateFlow()
@@ -109,18 +120,38 @@ class AccountsViewModel @Inject constructor(
             return
         }
         val name = displayName.ifBlank { AccountForm.defaultName(url) }
-        viewModelScope.launch { _save.value = saveStateOf(repo.add(name, base, username, password)) }
+        viewModelScope.launch {
+            val result = repo.add(name, base, username, password)
+            _save.value = saveStateOf(result)
+            // A brand new account has never synced; always worth requesting (N2 Task 3, spec
+            // §5.4). SecretUnavailable also lands here with no sourceId to sync — nothing to do.
+            if (result is AccountWriteResult.Saved) sync.request(result.sourceId)
+        }
     }
 
+    /**
+     * Only a URL change or a new password justifies a re-sync here (owner decision — spec §10:
+     * sync runs on add, on a credential/URL change, and on the Refresh button, never merely
+     * because the screen was saved). The previous url is read with a fresh [AccountRepository
+     * .observe] call, deliberately NOT from [accounts] — that `StateFlow` is
+     * `SharingStarted.WhileSubscribed`, so its cached value can still be the construction-time
+     * default until something actually collects it, and this decision must not depend on whether
+     * anything has.
+     */
     fun update(sourceId: String, url: String, username: String, password: String) {
         val base = baseUrlOf(url) ?: run {
             _save.value = SaveState.InvalidUrl
             return
         }
+        val passwordChanged = password.isNotEmpty()
         viewModelScope.launch {
-            _save.value = saveStateOf(
-                repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
-            )
+            val previousUrl = repo.observe().first().firstOrNull { it.sourceId == sourceId }?.baseUrl
+            val urlChanged = previousUrl != base
+            val result = repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
+            _save.value = saveStateOf(result)
+            if (result is AccountWriteResult.Saved && (urlChanged || passwordChanged)) {
+                sync.request(sourceId)
+            }
         }
     }
 
@@ -138,8 +169,27 @@ class AccountsViewModel @Inject constructor(
         AccountWriteResult.NoSuchAccount -> SaveState.Gone
     }
 
+    /**
+     * [SubsonicSync.forget] runs BEFORE [AccountRepository.delete], not after: it cancels any
+     * in-flight sync for this id and clears its songs and status while the account row still
+     * exists, so nothing races a sync that is mid-write against a row that has already vanished.
+     */
     fun delete(sourceId: String) {
-        viewModelScope.launch { repo.delete(sourceId) }
+        viewModelScope.launch {
+            sync.forget(sourceId)
+            repo.delete(sourceId)
+        }
+    }
+
+    /** The Servers screen's Refresh button. */
+    fun refresh(sourceId: String) = sync.request(sourceId)
+
+    fun syncStatus(sourceId: String): StateFlow<SyncStatus> = syncStatuses.getOrPut(sourceId) {
+        sync.status(sourceId).stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            SyncStatus(running = false, lastSuccessMs = null, songCount = null, lastError = null),
+        )
     }
 
     /**

@@ -8,6 +8,7 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Transaction
+import com.kaislate.veldtplayer.data.library.sync.RemoteDiff
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -99,6 +100,41 @@ interface SongDao {
      */
     @Query("DELETE FROM songs WHERE sourceId = :sourceId AND externalId IN (:externalIds)")
     suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>)
+
+    /**
+     * [deleteByExternalIds], chunked at 500 — SQLite's per-statement bound-variable limit on API
+     * 29 (this app's minSdk) is 999, and a delete driven by a full-catalog resync (N2 Task 3) can
+     * legitimately name thousands of ids in one call. 500 leaves headroom for the query's other
+     * bound parameter ([sourceId]) and is a round number well under the ceiling, not a value
+     * chosen to sit exactly at it.
+     *
+     * `@Transaction` so a multi-chunk delete commits atomically — a caller that reads the source
+     * back between chunks must never see a partially-applied delete.
+     */
+    @Transaction
+    suspend fun deleteAllByExternalIds(sourceId: String, externalIds: List<String>) {
+        externalIds.chunked(500).forEach { chunk -> deleteByExternalIds(sourceId, chunk) }
+    }
+
+    /**
+     * N2 Task 3: make [sourceId]'s whole contribution exactly [fetched], in one transaction.
+     *
+     * [RemoteDiff.plan] decides what changed against the rows already stored for [sourceId]; the
+     * upsert and the delete are then each skipped when there is nothing for them to do — not an
+     * optimisation for its own sake, but the reason an unchanged resync causes
+     * [observeAllSongs]'s Flow not to emit again at all (spec §5.4, "don't redraw an unchanged
+     * library"): an empty `IN ()` delete matches no rows and fires no invalidation, but skipping
+     * the call entirely is what keeps that true regardless of how the query compiles, and avoids
+     * the pointless round trip either way.
+     */
+    @Transaction
+    suspend fun replaceSource(sourceId: String, fetched: List<SongEntity>): RemoteDiff.Plan {
+        val existing = getBySource(sourceId)
+        val plan = RemoteDiff.plan(existing, fetched)
+        if (plan.upserts.isNotEmpty()) upsertBySourceKey(plan.upserts)
+        if (plan.removedExternalIds.isNotEmpty()) deleteAllByExternalIds(sourceId, plan.removedExternalIds)
+        return plan
+    }
 
     /**
      * One source's whole contribution to the library (N2 Task 2) — what
