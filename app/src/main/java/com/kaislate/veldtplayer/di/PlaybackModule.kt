@@ -5,7 +5,11 @@ package com.kaislate.veldtplayer.di
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
+import android.os.Handler
+import android.os.Looper
 import com.kaislate.veldtplayer.playback.NetworkMeter
+import com.kaislate.veldtplayer.playback.NetworkReturn
 import com.kaislate.veldtplayer.playback.RemoteResolverLookup
 import com.kaislate.veldtplayer.playback.RemoteUriResolver
 import com.kaislate.veldtplayer.playback.SubsonicStreamResolvers
@@ -52,6 +56,31 @@ abstract class PlaybackModule {
         fun provideNetworkMeter(@ApplicationContext context: Context): NetworkMeter {
             val cm = context.getSystemService(ConnectivityManager::class.java)
             return NetworkMeter { cm.isActiveNetworkMetered }
+        }
+
+        /**
+         * Wraps `ConnectivityManager.registerDefaultNetworkCallback`, whose callback runs on a
+         * `ConnectivityManager` internal thread — [Handler.post] onto the main looper before
+         * invoking [NetworkReturn]'s caller-supplied lambda, since it goes on to touch a
+         * `MediaController`, whose methods `PlaybackConnection` documents as main-thread only.
+         */
+        @Provides
+        fun provideNetworkReturn(@ApplicationContext context: Context): NetworkReturn {
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+            val mainHandler = Handler(Looper.getMainLooper())
+            return object : NetworkReturn {
+                override fun current(): Any? = cm.activeNetwork
+
+                override fun listen(onAvailable: (Any) -> Unit): () -> Unit {
+                    val callback = object : ConnectivityManager.NetworkCallback() {
+                        override fun onAvailable(network: Network) {
+                            mainHandler.post { onAvailable(network) }
+                        }
+                    }
+                    cm.registerDefaultNetworkCallback(callback)
+                    return { cm.unregisterNetworkCallback(callback) }
+                }
+            }
         }
     }
 }

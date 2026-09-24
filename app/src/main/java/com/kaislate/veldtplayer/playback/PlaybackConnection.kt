@@ -54,6 +54,7 @@ import javax.inject.Singleton
 class PlaybackConnection @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repo: MusicRepository,
+    private val network: NetworkReturn,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -91,6 +92,16 @@ class PlaybackConnection @Inject constructor(
      * prevent.
      */
     private var consecutiveErrors = 0
+
+    /** The pure decision half of "resume after a network pause" (task 5, carried gap 3) — see its
+     *  KDoc for the immediate-callback and cap rules this class relies on without re-deriving them. */
+    private val resumeGate = ResumeGate()
+
+    /** Set the first time a [ErrorAction.PAUSE_IN_PLACE] registers a [NetworkReturn.listen]
+     *  callback, and left set for the rest of this object's life — a later pause re-arms
+     *  [resumeGate] but must not register a second callback. Invoking it unregisters; only
+     *  [release] does that. */
+    private var stopListeningForNetwork: (() -> Unit)? = null
 
     private val _queue = MutableStateFlow<List<Song>>(emptyList())
     val queue: StateFlow<List<Song>> = _queue.asStateFlow()
@@ -136,11 +147,26 @@ class PlaybackConnection @Inject constructor(
             val title = _nowPlaying.value.title.ifBlank { "this track" }
             _errors.tryEmit("Couldn't play “$title”")
             if (action == ErrorAction.PAUSE_IN_PLACE) {
-                // Stay on this item, at this position. Nothing retries on a timer; the user's
-                // next tap on play re-prepares the same item, by which time the radio is
-                // usually back. prepare() is deliberately NOT called here — re-preparing into
-                // a still-dead network just re-enters this listener.
+                // Stay on this item, at this position — prepare() is deliberately NOT called here;
+                // re-preparing into a still-dead network just re-enters this listener. Instead,
+                // resumeGate arms on the item and the network current right now (see its KDoc for
+                // why the immediate callback for THIS network must not itself count as a return),
+                // and the network callback below re-prepares once a genuinely different network
+                // shows up, up to its cap. A user tap on play is still the fallback if the network
+                // never changes at all.
                 controller?.pause()
+                controller?.let { c ->
+                    resumeGate.arm(c.currentMediaItemIndex, network.current())
+                    if (stopListeningForNetwork == null) {
+                        stopListeningForNetwork = network.listen { n ->
+                            val cc = controller ?: return@listen
+                            if (resumeGate.onNetworkAvailable(n, cc.currentMediaItemIndex, cc.isPlaying)) {
+                                cc.prepare()
+                                cc.play()
+                            }
+                        }
+                    }
+                }
                 return
             }
             // A dead or undecodable file must not kill the whole queue — but the skip-on
@@ -283,6 +309,11 @@ class PlaybackConnection @Inject constructor(
     @MainThread
     internal fun release() {
         released = true
+        // Unregister BEFORE dropping the controller: a leaked NetworkCallback holds the
+        // ConnectivityManager singleton's registration and keeps firing for the life of the
+        // process, and a callback firing after this point would find controller already null.
+        stopListeningForNetwork?.invoke()
+        stopListeningForNetwork = null
         controllerFuture?.cancel(false)
         controllerFuture = null
         pending.clear()
@@ -313,7 +344,12 @@ class PlaybackConnection @Inject constructor(
     @MainThread
     private fun publish() {
         val c = controller ?: return
-        if (c.playbackState == Player.STATE_READY) consecutiveErrors = 0
+        if (c.playbackState == Player.STATE_READY) {
+            consecutiveErrors = 0
+            // A resume (or an ordinary play) reached READY: refill resumeGate's cap so a later,
+            // unrelated pause is not left starting from an old count.
+            resumeGate.onReady()
+        }
         // TODO(p1.4): the current Song is resolved by indexing _queue, which only this
         //  connection ever fills. Playback started OUTSIDE it — session restore via
         //  MediaSession.Callback.onPlaybackResumption, a real browse tree, Android Auto —

@@ -23,6 +23,7 @@ import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
+import com.kaislate.veldtplayer.playback.NetworkReturn
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -181,7 +182,7 @@ class FolderVerbsTest {
             localSource,
             context,
         )
-        connection = PlaybackConnection(context, repo)
+        connection = PlaybackConnection(context, repo, NetworkReturn.NONE)
         return FolderViewModel(
             repo = repo,
             settings = settings,

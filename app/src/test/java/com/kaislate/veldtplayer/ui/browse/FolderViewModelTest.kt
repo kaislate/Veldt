@@ -31,6 +31,7 @@ import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
+import com.kaislate.veldtplayer.playback.NetworkReturn
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import com.kaislate.veldtplayer.ui.nav.Destinations
 import kotlinx.coroutines.Dispatchers
@@ -228,7 +229,7 @@ class FolderViewModelTest {
             repo = repo,
             settings = settings,
             volumeNames = VolumeNames(context),
-            connection = PlaybackConnection(context, repo),
+            connection = PlaybackConnection(context, repo, NetworkReturn.NONE),
         ).also { vm = it }
     }
 
