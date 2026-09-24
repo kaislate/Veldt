@@ -5,6 +5,8 @@ package com.kaislate.veldtplayer.data.library.db
 
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.kaislate.veldtplayer.data.account.db.AccountDao
+import com.kaislate.veldtplayer.data.account.db.AccountEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,6 +35,7 @@ class SongDaoReplaceSourceTest {
 
     private lateinit var db: VeldtDatabase
     private lateinit var dao: SongDao
+    private lateinit var accountDao: AccountDao
     private val scopes = mutableListOf<CoroutineScope>()
 
     private fun entity(
@@ -47,10 +50,16 @@ class SongDaoReplaceSourceTest {
         durationMs = 1_000L, dateModifiedSec = modified, hasEmbeddedArt = false,
     )
 
+    private fun accountEntity(sourceId: String) = AccountEntity(
+        sourceId = sourceId, displayName = "D", baseUrl = "http://h", username = "kyle",
+        authMode = AccountEntity.AUTH_TOKEN, capabilities = null, createdAtMs = 1L,
+    )
+
     @Before fun setUp() {
         db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext(), VeldtDatabase::class.java)
             .allowMainThreadQueries().build()
         dao = db.songDao()
+        accountDao = db.accountDao()
     }
 
     @After fun tearDown() {
@@ -144,5 +153,30 @@ class SongDaoReplaceSourceTest {
         after.forEach { row ->
             assertTrue("row ${row.externalId} lost its surrogate id", idByExternalId[row.externalId] == row.id)
         }
+    }
+
+    // ------------------------------------------------------------------------- replaceSourceIfPresent (fix round 1)
+
+    /**
+     * The Important finding this method exists to close: `WorkManager.cancelUniqueWork` does not
+     * stop a worker already past its network call, so a sync's write can land after the account
+     * row it belongs to is gone. No account row for `sourceId` must mean no write at all — a null
+     * result and an untouched table, not a plan that got applied anyway.
+     */
+    @Test fun `replaceSourceIfPresent writes nothing when the account row is gone`() = runTest {
+        // Deliberately no accountDao.upsert(...) — this is the "account already deleted" case.
+        val plan = dao.replaceSourceIfPresent("A", listOf(entity("A", "a1")))
+
+        assertEquals(null, plan)
+        assertEquals(emptyList<SongEntity>(), dao.getBySource("A"))
+    }
+
+    @Test fun `replaceSourceIfPresent replaces when the account exists`() = runTest {
+        accountDao.upsert(accountEntity("A"))
+
+        val plan = dao.replaceSourceIfPresent("A", listOf(entity("A", "a1")))
+
+        assertEquals(listOf("a1"), plan?.upserts?.map { it.externalId })
+        assertEquals(listOf("a1"), dao.getBySource("A").map { it.externalId })
     }
 }

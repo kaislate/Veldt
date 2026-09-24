@@ -37,8 +37,10 @@ import dagger.assisted.AssistedInject
  * 3. [SubsonicClient.capabilities] is fetched and cached via [AccountRepository.cacheCapabilities]
  *    BEFORE the catalog call, unconditionally — even a sync that goes on to fail has still learned
  *    what the server can do, and the next attempt should not re-probe for it.
- * 4. [fetchCatalog]. [CatalogResult.Ok] replaces the source in one transaction and records
- *    success. A [CatalogResult.Rejected] whose
+ * 4. [fetchCatalog]. [CatalogResult.Ok] calls [SongDao.replaceSourceIfPresent], which refuses to
+ *    write anything for an account row that no longer exists — see that method's KDoc for why a
+ *    plain [SongDao.replaceSource] here would be a data-loss bug (fix round 1, Important
+ *    finding): a null result is [FAILURE_GONE], not a success. A [CatalogResult.Rejected] whose
  *    [com.kaislate.veldtplayer.data.net.SubsonicError.meansCredentialsWontWork] is a definitive
  *    [FAILURE_AUTH] — retrying with the same password cannot succeed. Anything else transient
  *    (a dead socket, a 500, an unclassified rejection) retries up to [MAX_ATTEMPTS], **never**
@@ -93,9 +95,17 @@ class SubsonicSyncWorker internal constructor(
 
         return when (val result = client.fetchCatalog(sourceId, creds, caps)) {
             is CatalogResult.Ok -> {
-                songDao.replaceSource(sourceId, result.songs.map { it.toEntity() })
-                status.recordSuccess(sourceId, now(), result.songs.size)
-                Result.success()
+                // replaceSourceIfPresent, never replaceSource: cancelUniqueWork is cooperative and
+                // does not stop a worker already past this point, so the account row could have
+                // been deleted while fetchCatalog was in flight. Writing rows for a sourceId whose
+                // account is gone would orphan them forever — nothing ever syncs that id again.
+                val plan = songDao.replaceSourceIfPresent(sourceId, result.songs.map { it.toEntity() })
+                if (plan == null) {
+                    Result.failure(failureData(FAILURE_GONE))
+                } else {
+                    status.recordSuccess(sourceId, now(), result.songs.size)
+                    Result.success()
+                }
             }
             is CatalogResult.Rejected ->
                 if (result.error.meansCredentialsWontWork) {

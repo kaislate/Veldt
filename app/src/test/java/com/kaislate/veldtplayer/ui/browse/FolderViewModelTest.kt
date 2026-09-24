@@ -109,6 +109,7 @@ class FolderViewModelTest {
         override suspend fun deleteByExternalIds(sourceId: String, externalIds: List<String>) = Unit
         override suspend fun getBySource(sourceId: String): List<SongEntity> = emptyList()
         override suspend fun deleteBySource(sourceId: String) = Unit
+        override suspend fun accountRowCount(sourceId: String) = 1
         override suspend fun clear() = Unit
     }
 

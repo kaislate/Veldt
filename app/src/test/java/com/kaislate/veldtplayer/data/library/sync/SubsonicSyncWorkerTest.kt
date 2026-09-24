@@ -275,4 +275,46 @@ class SubsonicSyncWorkerTest {
         )
         assertEquals("credentials() must fail before any network call", emptyList<Any>(), server.requests)
     }
+
+    // ---------------------------------------------------------------------------------- fix round 1: the race
+
+    /**
+     * The Important finding fix round 1 closes. `WorkManager.cancelUniqueWork` is cooperative and
+     * does not stop a `doWork()` already past `fetchCatalog`, so the account row can be deleted
+     * (on another screen) WHILE this worker's request is still in flight. There is no way to time
+     * that race directly against real `WorkManager` cancellation in a unit test, so this simulates
+     * it structurally instead: the account row is deleted from inside the `FakeHttpServer`
+     * responder for the (single, unambiguous) `getAlbum` request, i.e. strictly AFTER credentials
+     * and capabilities were already read and strictly BEFORE `fetchCatalog` returns — the exact
+     * window `replaceSourceIfPresent`'s in-transaction check exists to close. The account being
+     * gone by the time the catalog write is attempted must produce zero rows and `KEY_FAILURE =
+     * "gone"`, never a successful write for an id nothing will ever sync again.
+     */
+    @Test fun `an account deleted mid-fetch writes nothing and fails as gone`() = runTest {
+        val sourceId = addAccount()
+        server.respond { recorded ->
+            val target = recorded.target
+            when {
+                "getOpenSubsonicExtensions" in target ->
+                    FakeHttpServer.Canned(200, extensionsJson(emptyList()).toByteArray(), "application/json")
+                "getAlbumList2" in target ->
+                    FakeHttpServer.Canned(200, albumListJson(listOf("al1")).toByteArray(), "application/json")
+                "getAlbum" in target -> {
+                    // The race: delete lands after fetchCatalog has committed to this request but
+                    // before doWork() reaches replaceSourceIfPresent.
+                    runBlocking { accountDao.delete(sourceId) }
+                    FakeHttpServer.Canned(200, albumJson("al1", listOf("s1")).toByteArray(), "application/json")
+                }
+                else -> null
+            }
+        }
+
+        val result = worker(sourceId).doWork()
+
+        assertEquals(
+            ListenableWorker.Result.failure(workDataOf(SubsonicSyncWorker.KEY_FAILURE to "gone")),
+            result,
+        )
+        assertEquals(emptyList<SongEntity>(), songDao.getBySource(sourceId))
+    }
 }

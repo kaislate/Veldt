@@ -19,6 +19,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -50,12 +51,13 @@ import javax.crypto.SecretKey
 class AccountsViewModelTest {
 
     /**
-     * Records what the view model asked of syncing, in ONE list — so an ordering claim ("forget
-     * before the row vanishes") is a single assertion rather than two that could pass separately
-     * while the actual interleaving is wrong. [forget] records whether the account row was still
-     * present in [repo] at the moment it ran, which is the only thing "before" can mean for two
-     * calls inside the same suspend function on `UnconfinedTestDispatcher` (both run to
-     * completion with no real concurrency to race).
+     * Records what the view model asked of syncing, in ONE list — so an ordering claim (fix
+     * round 1: cancel, THEN the account row is deleted, THEN purge) is a single assertion rather
+     * than several that could pass separately while the actual interleaving is wrong. Both
+     * [cancel] and [purge] record whether the account row was still present in [repo] at the
+     * moment they ran: the row must be present for [cancel] and gone for [purge], and only that
+     * order proves `AccountsViewModel.delete` sequences `sync.cancel` → `repo.delete` →
+     * `sync.purge` rather than merely calling all three in some order.
      */
     private inner class FakeSync : SubsonicSync {
         val calls = mutableListOf<String>()
@@ -64,9 +66,16 @@ class AccountsViewModelTest {
         }
         override fun status(sourceId: String): Flow<SyncStatus> =
             flowOf(SyncStatus(running = false, lastSuccessMs = null, songCount = null, lastError = null))
-        override suspend fun forget(sourceId: String) {
+        override fun cancel(sourceId: String) {
+            // cancel() is not suspend (WorkManager.cancelUniqueWork isn't either) — runBlocking
+            // only to read repo state for the assertion below, exactly as SubsonicSourcesTest's
+            // real-thread patterns do elsewhere in this codebase.
+            val stillPresent = runBlocking { repo.observe().first().any { it.sourceId == sourceId } }
+            calls += if (stillPresent) "cancel:$sourceId:row-still-present" else "cancel:$sourceId:row-ALREADY-GONE"
+        }
+        override suspend fun purge(sourceId: String) {
             val stillPresent = repo.observe().first().any { it.sourceId == sourceId }
-            calls += if (stillPresent) "forget:$sourceId:row-still-present" else "forget:$sourceId:row-ALREADY-GONE"
+            calls += if (stillPresent) "purge:$sourceId:row-still-present(BUG)" else "purge:$sourceId:row-gone"
         }
     }
 
@@ -201,23 +210,44 @@ class AccountsViewModelTest {
     }
 
     /**
-     * Delete must forget the sync — cancel any in-flight work, drop the songs, clear the status —
-     * BEFORE the account row disappears, so nothing observing the row mid-delete can race a sync
-     * still writing to it. `FakeSync.forget` records whether the row was still there when it ran;
-     * the assertion is that single recorded fact, not merely that `forget` was called at all.
+     * Fix round 1 (Important finding): `WorkManager.cancelUniqueWork` is cooperative and does not
+     * stop a worker already past its network call, so purging the songs/status BEFORE the account
+     * row is deleted could race a sync still mid-write and leave its rows orphaned forever (see
+     * `SongDao.replaceSourceIfPresent`'s KDoc). The only order that closes that race is cancel →
+     * delete the account row → purge, and this asserts exactly that order via what each `FakeSync`
+     * call observed about the row's presence at the moment it ran — not merely that all three
+     * eventually happened.
      */
-    @Test fun `deleting an account forgets its sync while the row still exists`() = runTest {
+    @Test fun `deleting an account cancels, then deletes the row, then purges`() = runTest {
         vm.add("Home", "192.168.50.111:4533", "Kyle", "hunter2")
         settledSave()
         val sourceId = repo.observe().first().single().sourceId
         sync.calls.clear()
 
         vm.delete(sourceId)
-        // delete() launches on viewModelScope and genuinely suspends (repo.observe() switches
-        // onto Dispatchers.IO), so it has not necessarily finished the moment this call returns;
-        // wait for the row to actually be gone rather than asserting immediately.
-        repo.observe().first { accounts -> accounts.none { it.sourceId == sourceId } }
+        // delete() launches on viewModelScope and genuinely suspends (repo.observe() and
+        // repo.delete() both switch onto Dispatchers.IO), so it has not necessarily finished the
+        // moment this call returns. Wait for the whole sequence (both FakeSync calls recorded)
+        // rather than asserting immediately.
+        awaitCalls(2)
 
-        assertEquals(listOf("forget:$sourceId:row-still-present"), sync.calls)
+        assertEquals(
+            listOf("cancel:$sourceId:row-still-present", "purge:$sourceId:row-gone"),
+            sync.calls,
+        )
+        assertEquals(emptyList<String>(), repo.observe().first().map { it.sourceId })
+    }
+
+    /** Real-time polling for `sync.calls` to reach [min] entries — `vm.delete`'s coroutine
+     *  genuinely suspends on `Dispatchers.IO` work, same reasoning as `SubsonicSourcesTest
+     *  .awaitTrue`. */
+    private fun awaitCalls(min: Int, timeoutMs: Long = 2_000) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (sync.calls.size < min) {
+            if (System.currentTimeMillis() >= deadline) {
+                throw AssertionError("expected at least $min calls within ${timeoutMs}ms, got ${sync.calls}")
+            }
+            Thread.sleep(5)
+        }
     }
 }

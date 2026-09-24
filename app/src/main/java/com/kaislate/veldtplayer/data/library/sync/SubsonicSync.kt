@@ -19,10 +19,24 @@ import javax.inject.Singleton
 
 /**
  * The Servers screen's whole interface to syncing (N2 Task 3 — spec §5.4): request one, watch its
- * status, or drop everything about an account being removed. A plain interface — not just the one
- * concrete implementation — for the same reason [com.kaislate.veldtplayer.data.library.RemoteSources]
- * is: `AccountsViewModelTest` fakes this rather than driving real `WorkManager` state to prove
- * ordering ("forget before the row vanishes").
+ * status, or stop and clean up after an account being removed. A plain interface — not just the
+ * one concrete implementation — for the same reason
+ * [com.kaislate.veldtplayer.data.library.RemoteSources] is: `AccountsViewModelTest` fakes this
+ * rather than driving real `WorkManager` state to prove ordering.
+ *
+ * **[cancel] and [purge] are deliberately two calls, not one `forget`** (fix round 1, Important
+ * finding). `WorkManager.cancelUniqueWork` is cooperative: it does not wait for a `doWork()`
+ * already past its network call to stop, so a worker can still commit
+ * [com.kaislate.veldtplayer.data.library.db.SongDao.replaceSourceIfPresent] after this process
+ * asks it to cancel. Deleting the songs and status BEFORE the account row would race that commit
+ * and could leave orphaned rows behind forever, for an id nothing will ever sync again. The
+ * correct order — enforced by `AccountsViewModel.delete`, not by this interface, since deleting
+ * the account row itself is [com.kaislate.veldtplayer.data.account.AccountRepository]'s job, not
+ * this class's — is [cancel], then the account row, then [purge]:
+ * [com.kaislate.veldtplayer.data.library.db.SongDao.replaceSourceIfPresent] checks the account row
+ * INSIDE its own write transaction, so a worker transaction that commits before the account-row
+ * delete gets its rows swept by the later [purge], and one that runs after sees no account and
+ * writes nothing — there is no interleaving that orphans a row.
  */
 interface SubsonicSync {
     /** Enqueue [sourceId]'s sync, unique per account, keeping an in-flight one rather than piling
@@ -33,10 +47,15 @@ interface SubsonicSync {
      *  whether its unique work is actually running right now. */
     fun status(sourceId: String): Flow<SyncStatus>
 
-    /** An account being removed: cancel any in-flight or pending sync, drop every row it
-     *  contributed to the library, and forget its recorded status — nothing should survive that
-     *  a stale id could later resurrect the appearance of. */
-    suspend fun forget(sourceId: String)
+    /** Best-effort stop for [sourceId]'s sync. Cooperative only — see the class KDoc — so a caller
+     *  must not treat this as a guarantee that no write will land after it returns; that guarantee
+     *  comes from the delete-order this class's KDoc describes, not from this call alone. */
+    fun cancel(sourceId: String)
+
+    /** Drop every song [sourceId] contributed and its recorded status. Callers must call this
+     *  only AFTER the account row itself is gone (see the class KDoc) — calling it first is the
+     *  exact ordering bug fix round 1 fixed. */
+    suspend fun purge(sourceId: String)
 }
 
 /** [SubsonicSync]'s real, `WorkManager`-backed implementation. */
@@ -64,8 +83,11 @@ class SubsonicSyncCoordinator @Inject constructor(
                 stored.copy(running = infos.any { !it.state.isFinished })
             }
 
-    override suspend fun forget(sourceId: String) {
+    override fun cancel(sourceId: String) {
         WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName(sourceId))
+    }
+
+    override suspend fun purge(sourceId: String) {
         songDao.deleteBySource(sourceId)
         statusStore.clear(sourceId)
     }

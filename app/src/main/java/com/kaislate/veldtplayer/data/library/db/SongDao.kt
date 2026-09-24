@@ -136,6 +136,35 @@ interface SongDao {
         return plan
     }
 
+    /** Whether an `accounts` row named [sourceId] exists — the `accounts` table lives in the same
+     *  [VeldtDatabase], so this is a plain cross-table `@Query`, not a schema change. Exists only
+     *  to back [replaceSourceIfPresent]'s in-transaction check. */
+    @Query("SELECT COUNT(*) FROM accounts WHERE sourceId = :sourceId")
+    suspend fun accountRowCount(sourceId: String): Int
+
+    /**
+     * As [replaceSource], but refuses to write anything for an account that is being (or has
+     * been) deleted — returns null instead.
+     *
+     * **Why this exists (fix round 1, Important finding):** `WorkManager.cancelUniqueWork` is
+     * cooperative — it does not wait for a `doWork()` already past `fetchCatalog` to stop. Without
+     * this check, that in-flight worker's [replaceSource] call could commit AFTER
+     * `AccountsViewModel.delete`'s `deleteBySource` purge, re-inserting rows for a `sourceId`
+     * whose account no longer exists and that will never sync again — a permanent orphan.
+     * Checking [accountRowCount] INSIDE the same `@Transaction` as the write closes the race
+     * structurally: SQLite serializes writers, so this call either sees the account row and
+     * commits before a concurrent account-row delete, or does not see it and writes nothing —
+     * there is no third interleaving. The delete order (cancel the sync → delete the account row
+     * → purge songs and status, see `AccountsViewModel.delete`) is what makes "writes nothing" the
+     * CORRECT outcome in the second case: the later `deleteBySource` purge still removes any rows
+     * a transaction that beat this check managed to commit.
+     */
+    @Transaction
+    suspend fun replaceSourceIfPresent(sourceId: String, fetched: List<SongEntity>): RemoteDiff.Plan? {
+        if (accountRowCount(sourceId) <= 0) return null
+        return replaceSource(sourceId, fetched)
+    }
+
     /**
      * One source's whole contribution to the library (N2 Task 2) — what
      * [com.kaislate.veldtplayer.data.library.SubsonicSource.listSongs] returns, and Task 6's cover

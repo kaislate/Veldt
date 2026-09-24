@@ -65,10 +65,13 @@ class AccountsViewModel @Inject constructor(
     val accounts: StateFlow<List<Account>> = repo.observe()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    /** One shared [SyncStatus] [StateFlow] per account, built lazily. `getOrPut` rather than a
-     *  fresh `stateIn` per call: [AccountsScreen] reads [syncStatus] on every recomposition, and
-     *  a fresh upstream collection each time would mean a fresh `WorkManager` flow subscription
-     *  each time too. */
+    /** One shared [SyncStatus] [StateFlow] per account, built lazily. Never a fresh `stateIn` per
+     *  call: [AccountsScreen] reads [syncStatus] on every recomposition, and a fresh upstream
+     *  collection each time would mean a fresh `WorkManager` flow subscription each time too.
+     *  [syncStatus] uses `computeIfAbsent`, not the `getOrPut` extension (fix round 1, Minor) —
+     *  `getOrPut` on a `ConcurrentHashMap` is a plain get-then-put, not one atomic operation, so
+     *  two callers racing on the same never-yet-seen [sourceId] could each build and subscribe
+     *  their own `stateIn`, silently doubling the `WorkManager` flow subscriptions for it. */
     private val syncStatuses = ConcurrentHashMap<String, StateFlow<SyncStatus>>()
 
     private val _test = MutableStateFlow<TestState>(TestState.Idle)
@@ -170,21 +173,28 @@ class AccountsViewModel @Inject constructor(
     }
 
     /**
-     * [SubsonicSync.forget] runs BEFORE [AccountRepository.delete], not after: it cancels any
-     * in-flight sync for this id and clears its songs and status while the account row still
-     * exists, so nothing races a sync that is mid-write against a row that has already vanished.
+     * The exact order matters (fix round 1, Important finding): [SubsonicSync.cancel] first — a
+     * best-effort, cooperative stop that does NOT wait for a `doWork()` already past its network
+     * call — THEN [AccountRepository.delete], THEN [SubsonicSync.purge]. `SongDao
+     * .replaceSourceIfPresent` checks the account row inside its own write transaction, so once
+     * the account row is gone (the middle step), any sync transaction still in flight writes
+     * nothing; [purge]'s own delete only needs to clean up whatever committed BEFORE that middle
+     * step. Purging before deleting the account row would race a sync that is still mid-write and
+     * could leave its rows behind forever, for an id nothing will ever sync again — see
+     * [SubsonicSync]'s KDoc.
      */
     fun delete(sourceId: String) {
         viewModelScope.launch {
-            sync.forget(sourceId)
+            sync.cancel(sourceId)
             repo.delete(sourceId)
+            sync.purge(sourceId)
         }
     }
 
     /** The Servers screen's Refresh button. */
     fun refresh(sourceId: String) = sync.request(sourceId)
 
-    fun syncStatus(sourceId: String): StateFlow<SyncStatus> = syncStatuses.getOrPut(sourceId) {
+    fun syncStatus(sourceId: String): StateFlow<SyncStatus> = syncStatuses.computeIfAbsent(sourceId) {
         sync.status(sourceId).stateIn(
             viewModelScope,
             SharingStarted.WhileSubscribed(5_000),
