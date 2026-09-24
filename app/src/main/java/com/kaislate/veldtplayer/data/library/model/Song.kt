@@ -35,7 +35,7 @@ data class Song(
     val uri: String,            // content:// playable uri, as String
     val filePath: String?,      // MediaStore DATA path for tag reading; null for remote sources
     /**
-     * `VOLUME_NAME + RELATIVE_PATH + DISPLAY_NAME`, e.g.
+     * For the LOCAL source: `VOLUME_NAME + RELATIVE_PATH + DISPLAY_NAME`, e.g.
      * `external_primary:Music/Beck/Lost Cause.mp3` — the fully-qualified location of the file.
      * Present from API 29 (this app's floor) and the non-deprecated replacement for [filePath],
      * which providers may withhold.
@@ -43,8 +43,20 @@ data class Song(
      * This is the preferred playlist identity: unlike [uri] it embeds no MediaStore `_ID`, so it
      * survives a rescan reissuing one. The volume is part of the key because `RELATIVE_PATH` alone
      * is volume-relative while the library query spans volumes — see
-     * `LocalSource.composeRelativeKey`. Null for remote sources, and null whenever any of the
-     * three parts is missing (a partial key would collide, so it is never emitted).
+     * `LocalSource.composeRelativeKey`. Null whenever any of the three parts is missing (a partial
+     * key would collide, so it is never emitted).
+     *
+     * For a SERVER source: that server's own library-relative `path`, verbatim, when it exposes
+     * one — Navidrome does (see `SubsonicCatalogParser`). Null when the server hides `path`, and
+     * unlike the local case there is no attempt to compose one: a server path is either handed
+     * over whole or not at all. This is what lets `SubsonicSource.stableKey` key a playlist entry
+     * on the file rather than the track id, which a server upgrade has been observed to reissue
+     * for files that did not otherwise change (N2b).
+     *
+     * Either way, **still never parsed by non-owning code.** It is opaque outside the
+     * `LibrarySource` that produced it and the handful of consumers that already know its shape
+     * for that one source (`LocalSource.stableKey`, `SongLocation`, `SubsonicSource.stableKey`) —
+     * see N2b Task 1's `relativeKey` reader audit for the full account of who may touch it and why.
      */
     val relativeKey: String?,
     val title: String,

@@ -53,7 +53,14 @@ object SubsonicCatalogParser {
                 externalId = id,
                 uri = VeldtUri.track(sourceId, id),
                 filePath = null,
-                relativeKey = null,
+                // The server's own library-relative path, when it exposes one (Navidrome does).
+                // This is what lets `SubsonicSource.stableKey` key a playlist entry on the FILE
+                // rather than the track id — a Navidrome upgrade has been observed to reissue ids
+                // for unchanged files (N2b), and the path is what survives that. Blank is treated
+                // the same as absent: an empty string is not a path, and letting it through would
+                // give `SubsonicSource.stableKey` an `"sp:"` key that matches nothing and shadows
+                // the id fallback that would otherwise have worked.
+                relativeKey = songObj.stringOrNull("path")?.takeIf { it.isNotBlank() },
                 title = DisplayNames.title(songObj.stringOrNull("title")),
                 artist = DisplayNames.artist(songObj.stringOrNull("artist")),
                 album = DisplayNames.album(songObj.stringOrNull("album")),

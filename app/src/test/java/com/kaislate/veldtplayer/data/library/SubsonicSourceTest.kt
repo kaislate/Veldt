@@ -39,9 +39,14 @@ class SubsonicSourceTest {
         const val LOCAL = "local"
     }
 
-    private fun entity(sourceId: String, externalId: String, title: String = "t") = SongEntity(
+    private fun entity(
+        sourceId: String,
+        externalId: String,
+        title: String = "t",
+        relativeKey: String? = null,
+    ) = SongEntity(
         id = 0L, sourceId = sourceId, externalId = externalId, uri = "remote://$sourceId/$externalId",
-        filePath = null, relativeKey = null, title = title, artist = "A", album = "Al",
+        filePath = null, relativeKey = relativeKey, title = title, artist = "A", album = "Al",
         albumArtist = null, trackNumber = null, discNumber = null, year = null,
         durationMs = 1_000L, dateModifiedSec = 100L, hasEmbeddedArt = false,
     )
@@ -55,9 +60,27 @@ class SubsonicSourceTest {
 
     @After fun tearDown() = db.close()
 
-    @Test fun `stableKey is exactly sid colon externalId`() {
+    @Test fun `stableKey falls back to sid colon externalId when there is no path`() {
         val song = entity(THIS_SOURCE, "ext-42").toDomain()
         assertEquals("sid:ext-42", source.stableKey(song))
+        assertEquals("no path to prefer, so there is no second key to offer", emptyList<String>(), source.alternateKeys(song))
+    }
+
+    /** N2b Task 1: the path rung, and the id kept reachable as an alternate once it wins. */
+    @Test fun `stableKey prefers sp colon path when the server exposes one, with sid as an alternate`() {
+        val song = entity(THIS_SOURCE, "ext-42", relativeKey = "Poppy/Am I a Girl?/track.flac").toDomain()
+        assertEquals("sp:Poppy/Am I a Girl?/track.flac", source.stableKey(song))
+        assertEquals(listOf("sid:ext-42"), source.alternateKeys(song))
+    }
+
+    @Test fun `SubsonicSource relinks by tags`() {
+        assertEquals(true, source.relinksByTags)
+    }
+
+    @Test fun `LocalSource does not relink by tags and offers no alternate keys`() {
+        val local = LocalSource(ApplicationProvider.getApplicationContext())
+        assertEquals(false, local.relinksByTags)
+        assertEquals(emptyList<String>(), local.alternateKeys(entity(LOCAL, "1").toDomain()))
     }
 
     @Test fun `resolvePlayableUri is VeldtUri track of this source's id and the song's externalId`() {

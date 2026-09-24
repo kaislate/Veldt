@@ -8,6 +8,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.LibrarySource
 import com.kaislate.veldtplayer.data.library.RemoteSources
 import com.kaislate.veldtplayer.data.library.SourceRegistry
+import com.kaislate.veldtplayer.data.library.SubsonicSource
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.db.toEntity
@@ -1136,5 +1137,311 @@ class PlaylistRepositoryTest {
             listOf("alpha" to "Alpha", "beta" to "Beta"),
             songDao.getAllSongs().map { it.sourceId to it.title }.sortedBy { it.first },
         )
+    }
+
+    // ---------------------------------------------------------- N2b Task 1: path key, id
+    // ---------------------------------------------------------- alternate, tag relink rung
+    //
+    // These run over the REAL `SubsonicSource`, not `FakeRemoteSource` — the ladder rungs under
+    // test here (the path key, the sid alternate, relinksByTags) are that class's own logic, not
+    // `resolve`'s, so a fake would only be testing itself.
+
+    @Test fun `an id-keyed remote entry resolves through the sid alternate key`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        val path = "Poppy/Am I a Girl?/01-06 - Time Is Up.flac"
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(42, "s1", "acct-1", "Remote Track").copy(relativeKey = path).toEntity())
+        )
+        // Cached from before this account ever synced a path: the id-only key from Task 2.
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:s1", songId = null,
+                    sourceTitle = "Remote Track", sourceArtist = "Artist", sourceAlbum = "Album",
+                ),
+            ),
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals(42L, track.song?.id)
+        assertEquals("the key is upgraded to the path rung", 1, counting.keyWrites)
+        assertEquals("sp:$path", dao.getEntries(pl).single().sourceKey)
+
+        counting.reset()
+        remoteRepo.resolve(pl)
+        assertEquals("a second resolve on unchanged input writes nothing", 0, counting.keyWrites + counting.idWrites)
+    }
+
+    @Test fun `a path-keyed entry survives an id change`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        val path = "Poppy/Am I a Girl?/01-06 - Time Is Up.flac"
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(1, "old-id", "acct-1", "Time Is Up").copy(relativeKey = path).toEntity())
+        )
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sp:$path", songId = 1L,
+                    sourceTitle = "Time Is Up", sourceArtist = "Artist", sourceAlbum = "Album",
+                ),
+            ),
+        )
+
+        // The Navidrome upgrade this task exists for: the id churns, the path does not.
+        songDao.clear()
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(2, "new-id", "acct-1", "Time Is Up").copy(relativeKey = path).toEntity())
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals(2L, track.song?.id)
+        assertEquals("sp:$path", dao.getEntries(pl).single().sourceKey)
+        assertEquals("rung 1 hit directly on the path; only the id needed correcting", 0, counting.keyWrites)
+        assertEquals(1, counting.idWrites)
+    }
+
+    @Test fun `tag relink finds a unique match after both id and path changed`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "T", sourceArtist = "A", sourceAlbum = "Al",
+                ),
+            ),
+        )
+        // Same tags, brand new id AND a new path — neither key rung has anything to match.
+        songDao.upsertBySourceKey(
+            listOf(
+                remoteSong(9, "new-id", "acct-1", "T")
+                    .copy(artist = "A", album = "Al", relativeKey = "New/Location/track.flac")
+                    .toEntity()
+            )
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals(9L, track.song?.id)
+        val entry = dao.getEntries(pl).single()
+        assertEquals("sp:New/Location/track.flac", entry.sourceKey)
+        assertEquals(9L, entry.songId)
+
+        // Review Focus 2: quiescence after a rung-3 relink, not just after a rung-2 repair.
+        counting.reset()
+        remoteRepo.resolve(pl)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    /**
+     * Review Focus 1. The owner's own library has two "Am I a Girl?" albums by Poppy; a track
+     * shared between the two editions must NOT be guessed at.
+     */
+    @Test fun `tag relink refuses an ambiguous match`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "Time Is Up", sourceArtist = "Poppy", sourceAlbum = "Am I a Girl?",
+                ),
+            ),
+        )
+        songDao.upsertBySourceKey(
+            listOf(
+                remoteSong(1, "a1", "acct-1", "Time Is Up")
+                    .copy(artist = "Poppy", album = "Am I a Girl?", relativeKey = "2020 Edition/track.flac")
+                    .toEntity(),
+                remoteSong(2, "b1", "acct-1", "Time Is Up")
+                    .copy(artist = "Poppy", album = "Am I a Girl?", relativeKey = "Deluxe Edition/track.flac")
+                    .toEntity(),
+            )
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertNull("two editions share this track's tags; resolve must not guess", track.song)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    @Test fun `tag relink never crosses sources`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val otherSrc = SubsonicSource("acct-2", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc, "acct-2" to otherSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "T", sourceArtist = "A", sourceAlbum = "Al",
+                ),
+            ),
+        )
+        // The only matching tags belong to a DIFFERENT account.
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(9, "e1", "acct-2", "T").copy(artist = "A", album = "Al").toEntity())
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertNull("a tag match in another source's catalogue must not resolve this entry", track.song)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    /**
+     * Tag relink must not match on tags too thin to mean anything. `LibraryKeys.normalize` folds
+     * a missing tag to `""`, so without a guard an unknown artist and album would let this entry
+     * "relink" on title alone — not a real identity check, since any other track sharing only a
+     * title would collide into the same bucket.
+     */
+    @Test fun `tag relink does not match on an empty artist and album`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "T", sourceArtist = "", sourceAlbum = "",
+                ),
+            ),
+        )
+        // Exactly one song shares the title, with the same empty artist and album.
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(9, "new", "acct-1", "T").copy(artist = "", album = "").toEntity())
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertNull("title alone, with no artist or album, is not a real tag match", track.song)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    /**
+     * Review Focus 3: a server that hides `path` entirely. Every rung above tag relink has
+     * nothing to work with — [Song.relativeKey] is null, so [SubsonicSource.stableKey] falls back
+     * to `sid:<id>` for every row on that server — but rung 3 still finds the reissued id by tags.
+     */
+    @Test fun `tag relink works when the server hides path, keying the repair on sid`() = runTest {
+        val counting = CountingDao(dao)
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(counting, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "T", sourceArtist = "A", sourceAlbum = "Al",
+                ),
+            ),
+        )
+        // No relativeKey at all — this server never sends `path` — but the id has changed.
+        songDao.upsertBySourceKey(
+            listOf(remoteSong(9, "new", "acct-1", "T").copy(artist = "A", album = "Al").toEntity())
+        )
+
+        counting.reset()
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals(9L, track.song?.id)
+        assertEquals("sid:new", dao.getEntries(pl).single().sourceKey)
+
+        counting.reset()
+        remoteRepo.resolve(pl)
+        assertEquals("a second resolve on unchanged input writes nothing", 0, counting.keyWrites + counting.idWrites)
+    }
+
+    /** Review Focus 5: tag relink is off for the local source. */
+    @Test fun `tag relink is off for the local source`() = runTest {
+        val counting = CountingDao(dao)
+        val real = com.kaislate.veldtplayer.data.library.LocalSource(
+            ApplicationProvider.getApplicationContext()
+        )
+        val quietRepo = PlaylistRepository(counting, songDao, SourceRegistry(setOf(real))) { ++clock }
+        val pl = quietRepo.create("Mix")
+        quietRepo.addEntries(
+            pl,
+            listOf(
+                NewPlaylistEntry(
+                    sourceId = "local", sourceKey = "rel:no-such-key", songId = null,
+                    title = "T", artist = "A", album = "Al",
+                ),
+            ),
+        )
+        // A local file with matching tags IS present, under a different key — must be ignored.
+        songDao.clear()
+        songDao.upsertBySourceKey(
+            listOf(
+                songWithoutDataPath(7, "external_primary:Music/elsewhere.mp3", "T", "local")
+                    .copy(artist = "A", album = "Al").toEntity()
+            )
+        )
+
+        counting.reset()
+        val track = quietRepo.resolve(pl).single()
+        assertNull(track.song)
+        assertEquals(0, counting.keyWrites + counting.idWrites)
+    }
+
+    @Test fun `tag matching is normalized`() = runTest {
+        val remoteSrc = SubsonicSource("acct-1", songDao)
+        val remote = FakeRemoteSources(mapOf("acct-1" to remoteSrc))
+        val remoteRepo =
+            PlaylistRepository(dao, songDao, SourceRegistry(setOf(source), remote)) { ++clock }
+        val pl = remoteRepo.create("Mix")
+        dao.insertEntries(
+            listOf(
+                PlaylistEntryEntity(
+                    id = 0, playlistId = pl, position = 0,
+                    sourceId = "acct-1", sourceKey = "sid:old", songId = null,
+                    sourceTitle = "  Time Is Up ", sourceArtist = "POPPY", sourceAlbum = "am i a girl?",
+                ),
+            ),
+        )
+        songDao.upsertBySourceKey(
+            listOf(
+                remoteSong(9, "new-id", "acct-1", "Time is up")
+                    .copy(artist = "Poppy", album = "Am I A Girl?", relativeKey = "Poppy/track.flac")
+                    .toEntity()
+            )
+        )
+
+        val track = remoteRepo.resolve(pl).single()
+        assertEquals("case/whitespace differences must still match", 9L, track.song?.id)
     }
 }

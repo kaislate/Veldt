@@ -9,6 +9,7 @@ import com.kaislate.veldtplayer.playback.VeldtUri
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -34,19 +35,43 @@ class SubsonicCatalogParserTest {
         val body = obj(
             """{"album":{"id":"al1","name":"Alb","artist":"The Album Artist","song":[
             {"id":"s1","title":"T","album":"Alb","artist":"Trk Artist","track":3,"discNumber":2,
-             "year":2011,"duration":245,"coverArt":"mf-s1"}]}}""",
+             "year":2011,"duration":245,"coverArt":"mf-s1",
+             "path":"Poppy/Am I a Girl?/01-06 - Time Is Up.flac"}]}}""",
         )
         val song = SubsonicCatalogParser.songs(body, "acct-1").single()
         assertEquals(
             Song(
                 id = Song.UNSAVED, sourceId = "acct-1", externalId = "s1",
-                uri = VeldtUri.track("acct-1", "s1"), filePath = null, relativeKey = null,
+                uri = VeldtUri.track("acct-1", "s1"), filePath = null,
+                relativeKey = "Poppy/Am I a Girl?/01-06 - Time Is Up.flac",
                 title = "T", artist = "Trk Artist", album = "Alb", albumArtist = "The Album Artist",
                 trackNumber = 3, discNumber = 2, year = 2011, durationMs = 245_000L,
                 dateModifiedSec = 0L, hasEmbeddedArt = true,
             ),
             song,
         )
+    }
+
+    /** The exact `path` value from the brief, mapped verbatim — no normalisation, no re-encoding. */
+    @Test fun `a song's server path maps verbatim to relativeKey and filePath stays null`() {
+        val body = obj(
+            """{"album":{"id":"al1","song":[
+            {"id":"s1","title":"T","path":"Poppy/Am I a Girl?/01-06 - Time Is Up.flac"}]}}""",
+        )
+        val song = SubsonicCatalogParser.songs(body, "acct-1").single()
+        assertEquals("Poppy/Am I a Girl?/01-06 - Time Is Up.flac", song.relativeKey)
+        assertNull(song.filePath)
+    }
+
+    @Test fun `an absent or blank path maps to a null relativeKey, not an empty string`() {
+        val body = obj(
+            """{"album":{"id":"al1","song":[
+            {"id":"s1","title":"NoPath"},
+            {"id":"s2","title":"BlankPath","path":""}]}}""",
+        )
+        val songs = SubsonicCatalogParser.songs(body, "acct-1")
+        assertEquals(listOf(null, null), songs.map { it.relativeKey })
+        assertEquals(listOf(null, null), songs.map { it.filePath })
     }
 
     @Test fun `missing tags fall back to the same display names local files use`() {
