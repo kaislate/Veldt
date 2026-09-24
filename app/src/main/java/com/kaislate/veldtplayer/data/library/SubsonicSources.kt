@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -71,8 +72,24 @@ class SubsonicSources internal constructor(
     @Volatile private var rows: Map<String, AccountEntity> =
         runBlocking(Dispatchers.IO) { accountDao.getAll() }.filterValidIds()
 
-    /** [credentials]'s decrypt cache, keyed on sourceId. Eviction happens in [init] below. */
-    private val credentialCache = ConcurrentHashMap<String, SubsonicCredentials>()
+    /**
+     * One [credentials] cache entry: the decrypted [creds] it produced, plus the sealed bytes and
+     * the row they were built from — everything [credentials] needs to tell "still current"
+     * from "must re-decrypt" without touching the Keystore. See [credentials] for how.
+     */
+    private class CacheEntry(val row: AccountEntity, val sealed: ByteArray, val creds: SubsonicCredentials)
+
+    /**
+     * [credentials]'s decrypt cache, keyed on sourceId.
+     *
+     * Eviction happens in two places: the row-change collector in [init] below (a baseUrl or
+     * username edit), and synchronously inside [credentials] itself whenever the sealed secret
+     * FILE has vanished — the row-only eviction below cannot see that, since
+     * `AccountRepository.updateCredentials` with only a new password rewrites the sealed file
+     * while upserting an identical row (Task 7a; the credential cache must follow the stored
+     * secret, not just the account row).
+     */
+    private val credentialCache = ConcurrentHashMap<String, CacheEntry>()
 
     @Volatile private var sources: Map<String, SubsonicSource> =
         rows.mapValues { (id, _) -> SubsonicSource(id, songDao) }
@@ -104,21 +121,53 @@ class SubsonicSources internal constructor(
      * The credentials [sourceId]'s server calls need, or null when the account or its secret is
      * gone.
      *
-     * A cache hit returns without touching disk or the Keystore. A miss reads
-     * `accountDao.get(sourceId)` and `accounts.password(sourceId)` FRESH — never [rows], the
-     * snapshot [observeAll]'s collector maintains. That distinction is the entire point of this
-     * method: Task 3's sync worker is enqueued the instant `AccountRepository.add` writes the
-     * row, and it can run before the collector above has had a turn to update [rows] — the two
-     * are independent coroutines with no ordering between them. Reading the snapshot here would
-     * fail the very first sync of every new account as "no credentials". See
-     * `SubsonicSourcesTest`'s `credentials resolve for a row the collector has not seen yet`.
+     * A cache hit returns without touching disk or the Keystore, but ONLY once the sealed secret
+     * on disk has been checked: [accounts]' `sealedSecret(sourceId)` is re-read on every call, hit
+     * or miss, because a password change alone (`AccountRepository.updateCredentials` with a new
+     * password but the same URL/username) rewrites the sealed FILE while upserting an identical
+     * row — the row-change eviction in [init] cannot see that at all (Task 7a). A row read,
+     * though, happens only on a genuine cache miss, and reads `accountDao.get(sourceId)` FRESH —
+     * never [rows], the snapshot [observeAll]'s collector maintains. That distinction is the
+     * entire point of the miss path: Task 3's sync worker is enqueued the instant
+     * `AccountRepository.add` writes the row, and it can run before the collector above has had a
+     * turn to update [rows] — the two are independent coroutines with no ordering between them.
+     * Reading the snapshot here would fail the very first sync of every new account as "no
+     * credentials". See `SubsonicSourcesTest`'s `credentials resolve for a row the collector has
+     * not seen yet`.
+     *
+     * On a hit, the cached row is trusted rather than re-read: the collector already evicts any
+     * entry whose row has changed value, so if an entry is still present its row is, by that
+     * invariant, still current. `cached.row == row` below is therefore trivially true on a hit —
+     * it is checked anyway so the two failure paths (row changed, secret changed) read as one
+     * rule rather than two.
      */
     suspend fun credentials(sourceId: String): SubsonicCredentials? {
-        credentialCache[sourceId]?.let { return it }
-        val row = accountDao.get(sourceId) ?: return null
-        val password = accounts.password(sourceId) ?: return null
-        return SubsonicCredentials(row.baseUrl, row.username, password)
-            .also { credentialCache[sourceId] = it }
+        val cached = credentialCache[sourceId]
+        val row = cached?.row ?: accountDao.get(sourceId)
+        if (row == null) {
+            credentialCache.remove(sourceId)
+            return null
+        }
+        val sealed = accounts.sealedSecret(sourceId)
+        if (sealed == null) {
+            // The sealed file is gone (deleted, or never written) — never serve a stale password.
+            credentialCache.remove(sourceId)
+            return null
+        }
+        if (cached != null && cached.row == row && sealed.contentEquals(cached.sealed)) {
+            return cached.creds
+        }
+        // Off the caller's thread: same guarantee `accounts.password` used to give this call
+        // before Task 7a split it into `sealedSecret` (already IO-dispatched) + `openSecret`
+        // (a plain, non-suspend `box.open`, dispatched here).
+        val password = withContext(Dispatchers.IO) { accounts.openSecret(sealed) }
+        if (password == null) {
+            credentialCache.remove(sourceId)
+            return null
+        }
+        val creds = SubsonicCredentials(row.baseUrl, row.username, password)
+        credentialCache[sourceId] = CacheEntry(row, sealed, creds)
+        return creds
     }
 
     /**

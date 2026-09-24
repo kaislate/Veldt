@@ -186,6 +186,28 @@ class AccountRepository(
      * directly, and on the caller's thread that is a StrictMode disk read on main.
      */
     suspend fun password(sourceId: String): String? = withContext(Dispatchers.IO) {
-        files.read(sourceId)?.let { box.open(it) }
+        sealedSecret(sourceId)?.let(::openSecret)
     }
+
+    /**
+     * The still-sealed (encrypted) bytes backing [sourceId]'s secret, or null if there is none.
+     *
+     * The raw `files.read(sourceId)`, on [Dispatchers.IO] — a plain file read, no Keystore.
+     * Exists so a caller that needs to detect "the secret changed" (`SubsonicSources`' credential
+     * cache — Task 7a) can compare sealed bytes cheaply, without paying a Keystore round trip
+     * just to find out nothing changed. See [openSecret] for the decrypt half.
+     */
+    suspend fun sealedSecret(sourceId: String): ByteArray? = withContext(Dispatchers.IO) {
+        files.read(sourceId)
+    }
+
+    /**
+     * Decrypts sealed bytes previously obtained from [sealedSecret]. `box.open`, nothing more.
+     *
+     * Deliberately NOT `suspend`: the Keystore round trip is [sealedSecret]'s caller's to
+     * dispatch, same as it always was for [password] (which composes the two above). Kept
+     * separate from [sealedSecret] so a caller can skip the Keystore call entirely when the
+     * sealed bytes it already has are unchanged.
+     */
+    fun openSecret(sealed: ByteArray): String? = box.open(sealed)
 }

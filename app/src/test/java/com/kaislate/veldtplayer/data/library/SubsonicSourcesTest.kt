@@ -244,6 +244,80 @@ class SubsonicSourcesTest {
         assertEquals("the changed row must decrypt again rather than reuse the stale cache", 1, decryptCount)
     }
 
+    @Test fun `a password changed without any row change is picked up on the very next call`() = runTest {
+        // The exact device bug (Task 7a): AccountRepository.updateCredentials with only a new
+        // password rewrites the sealed FILE while upserting an identical row, so the collector's
+        // row-equality eviction (above) never fires. The cache must still notice.
+        var decryptCount = 0
+        val countingAccounts = AccountRepository(
+            dao = accountDao,
+            box = box(onKeyAccess = { decryptCount++ }),
+            files = files,
+            newId = { "acct-1" },
+        )
+        countingAccounts.add("Home", "http://h1", "kyle", "old")
+        // inertScope(): no row ever changes in this test, so the live collector is not needed —
+        // see the class KDoc on tests that don't need it not starting one against Room.
+        val sources = SubsonicSources(accountDao, db.songDao(), countingAccounts, inertScope())
+
+        decryptCount = 0
+        val first = sources.credentials("acct-1")
+        assertEquals("old", first?.password)
+        assertEquals("the first call must decrypt exactly once", 1, decryptCount)
+
+        countingAccounts.updateCredentials("acct-1", "http://h1", "kyle", password = "new")
+
+        decryptCount = 0
+        val second = sources.credentials("acct-1")
+        assertEquals(
+            "the new password must be picked up on the very next call, not after the process dies",
+            "new",
+            second?.password,
+        )
+        assertEquals("a changed sealed secret must decrypt again", 1, decryptCount)
+
+        decryptCount = 0
+        val third = sources.credentials("acct-1")
+        assertEquals("new", third?.password)
+        assertEquals("an unchanged secret must not be decrypted a third time", 0, decryptCount)
+    }
+
+    @Test fun `an unchanged secret is not decrypted again`() = runTest {
+        var decryptCount = 0
+        val countingAccounts = AccountRepository(
+            dao = accountDao,
+            box = box(onKeyAccess = { decryptCount++ }),
+            files = files,
+            newId = { "acct-1" },
+        )
+        countingAccounts.add("Home", "http://h1", "kyle", "hunter2")
+        val sources = SubsonicSources(accountDao, db.songDao(), countingAccounts, inertScope())
+
+        decryptCount = 0
+        val first = sources.credentials("acct-1")
+        val second = sources.credentials("acct-1")
+        assertEquals("hunter2", first?.password)
+        assertEquals("a cache hit must not read back a different value", first, second)
+        assertEquals("two credentials() calls must decrypt exactly once", 1, decryptCount)
+    }
+
+    @Test fun `a deleted secret file evicts the cache`() = runTest {
+        accounts.add("Home", "http://h1", "kyle", "hunter2")
+        val sources = SubsonicSources(accountDao, db.songDao(), accounts, inertScope())
+
+        val first = sources.credentials("acct-none-yet")
+        assertNull("sanity: unrelated id resolves to null", first)
+
+        val sourceId = accountDao.getAll().single().sourceId
+        assertEquals("hunter2", sources.credentials(sourceId)?.password)
+
+        files.delete(sourceId)
+        assertNull(
+            "a deleted secret file must evict the cache, not keep serving the old password",
+            sources.credentials(sourceId),
+        )
+    }
+
     @Test fun `credentials for an account whose secret cannot be read are null`() = runTest {
         // Written directly, bypassing AccountRepository.add — so no secret file exists at all.
         accountDao.upsert(entity("acct-1"))
