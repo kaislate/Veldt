@@ -5,10 +5,10 @@ package com.kaislate.veldtplayer.playback
 
 /**
  * The decision half of "resume a network-paused stream when a different network comes up"
- * (N2 task 5, carried gap 3). [PlaybackConnection] owns the [android.net.ConnectivityManager]
- * plumbing (via [NetworkReturn]) and the `MediaController` calls; this class only decides WHETHER
- * a given network callback should trigger a resume, so the decision is reachable from a plain JUnit
- * test without a `Network`, a `Context`, or Robolectric.
+ * (N2 task 5, carried gap 3). [ResumeCoordinator] owns the [android.net.ConnectivityManager]
+ * plumbing (via [NetworkReturn]) and drives this class from [PlaybackConnection]'s `MediaController`
+ * calls; this class only decides WHETHER a given network callback should trigger a resume, so the
+ * decision is reachable from a plain JUnit test without a `Network`, a `Context`, or Robolectric.
  *
  * `network` handles are opaque `Any` here on purpose. The production caller always passes a real
  * `android.net.Network` (compared with `equals`, which `Network` implements value-wise), but this
@@ -32,11 +32,28 @@ package com.kaislate.veldtplayer.playback
  * a bound, every hop would re-trigger `prepare()` + `play()` forever. The count is reset only by
  * reaching `STATE_READY`: a resume that never gets there does not refill the budget, so a genuinely
  * unrecoverable item still stops retrying after [maxAttempts].
+ *
+ * ### Why the armed item is identified by BOTH index and media id (task 4+5 review, item 5)
+ *
+ * Index alone is an accident waiting to happen: a queue replaced by [PlaybackConnection.playFrom]
+ * while paused at index 0 leaves a NEW item sitting at the SAME index the gate armed on. Comparing
+ * `currentMediaItem?.mediaId` as well means a coincidentally-matching index cannot masquerade as
+ * "the queue didn't move" — a genuinely different item, at the same position, still disarms.
+ *
+ * ### Why [onNetworkAvailable] is told `playWhenReady`, not `isPlaying` (task 4+5 review, item 4)
+ *
+ * `Player.isPlaying()` requires `STATE_READY`, which a resume this class just granted has not
+ * reached yet — it is still buffering. Checking `isPlaying` would read that legitimate buffering as
+ * "not playing yet", and a network flip arriving mid-buffer would consume ANOTHER resume from the
+ * cap for a resume that was already in flight and worked. `playWhenReady` is true the instant
+ * something — the user, or this class's own resume — asked to play, buffering or not, which is
+ * exactly "is a resume already underway".
  */
 internal class ResumeGate(private val maxAttempts: Int = 3) {
 
     private var armed = false
     private var armedItemIndex = -1
+    private var armedMediaId: String? = null
 
     /**
      * The network to compare the next callback against. Set by [arm] to whatever was current at
@@ -53,28 +70,33 @@ internal class ResumeGate(private val maxAttempts: Int = 3) {
      */
     private var resumeCount = 0
 
-    /** Call on every `PAUSE_IN_PLACE`: [itemIndex] is the paused item, [networkAtArm] is whatever
-     *  [NetworkReturn.current] reported at that moment (null if there was no network at all). */
-    fun arm(itemIndex: Int, networkAtArm: Any?) {
+    /** Call on every `PAUSE_IN_PLACE`: [itemIndex]/[mediaId] identify the paused item, [networkAtArm]
+     *  is whatever [NetworkReturn.current] reported at that moment (null if there was no network at
+     *  all). */
+    fun arm(itemIndex: Int, mediaId: String?, networkAtArm: Any?) {
         armed = true
         armedItemIndex = itemIndex
+        armedMediaId = mediaId
         referenceNetwork = networkAtArm
     }
 
     /**
      * Called from the network callback with the network that just became available, the queue's
-     * current item index, and whether it is currently playing. Returns true exactly when the caller
-     * should `prepare()` + `play()`.
+     * current item index and media id, and whether a play is currently wanted (`playWhenReady`, not
+     * `isPlaying` — see the class KDoc). Returns true exactly when the caller should `prepare()` +
+     * `play()`.
      */
-    fun onNetworkAvailable(network: Any, currentIndex: Int, isPlaying: Boolean): Boolean {
+    fun onNetworkAvailable(network: Any, currentIndex: Int, currentMediaId: String?, playWhenReady: Boolean): Boolean {
         if (!armed) return false
-        if (isPlaying) {
-            // Something else already resumed it (the user tapped play) — this pause is stale.
+        if (playWhenReady) {
+            // Something else already resumed it (the user tapped play, or a resume already in
+            // flight is buffering) — this pause is stale.
             disarm()
             return false
         }
-        if (currentIndex != armedItemIndex) {
-            // The queue moved on (skip, seek to another item) while this was armed — stale too.
+        if (currentIndex != armedItemIndex || currentMediaId != armedMediaId) {
+            // The queue moved on (skip, seek to another item, or a whole new queue replacing this
+            // one) while this was armed — stale too.
             disarm()
             return false
         }
@@ -92,15 +114,18 @@ internal class ResumeGate(private val maxAttempts: Int = 3) {
         return true
     }
 
-    /** Call when playback reaches `STATE_READY`: the resume worked, so refill the budget. */
+    /** Call when playback reaches `STATE_READY`: the resume worked, so disarm — nothing more to
+     *  watch for until the next pause re-arms — and refill the budget. */
     fun onReady() {
+        disarm()
         resumeCount = 0
     }
 
-    /** Stops watching. Idempotent. */
+    /** Stops watching. Idempotent. Deliberately leaves [resumeCount] untouched — see its KDoc. */
     fun disarm() {
         armed = false
         armedItemIndex = -1
+        armedMediaId = null
         referenceNetwork = null
     }
 }

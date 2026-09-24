@@ -93,15 +93,10 @@ class PlaybackConnection @Inject constructor(
      */
     private var consecutiveErrors = 0
 
-    /** The pure decision half of "resume after a network pause" (task 5, carried gap 3) — see its
-     *  KDoc for the immediate-callback and cap rules this class relies on without re-deriving them. */
-    private val resumeGate = ResumeGate()
-
-    /** Set the first time a [ErrorAction.PAUSE_IN_PLACE] registers a [NetworkReturn.listen]
-     *  callback, and left set for the rest of this object's life — a later pause re-arms
-     *  [resumeGate] but must not register a second callback. Invoking it unregisters; only
-     *  [release] does that. */
-    private var stopListeningForNetwork: (() -> Unit)? = null
+    /** "Resume after a network pause" (task 5, carried gap 3) — see [ResumeGate] and
+     *  [ResumeCoordinator]'s KDoc for the decision rules and the registration lifecycle this class
+     *  relies on without re-deriving them. */
+    private val resumeCoordinator = ResumeCoordinator(ResumeGate(), network)
 
     private val _queue = MutableStateFlow<List<Song>>(emptyList())
     val queue: StateFlow<List<Song>> = _queue.asStateFlow()
@@ -142,6 +137,11 @@ class PlaybackConnection @Inject constructor(
                 // remote track in the queue would be rejected the same way.
                 _errors.tryEmit(REJECTED_PASSWORD)
                 controller?.pause()
+                // Task 4+5 review item 1: without this, a resume that lands on a STILL-broken
+                // account (e.g. the rejected password again) would leave resumeCoordinator armed on
+                // this item, and the NEXT unrelated network change would auto-play straight back
+                // into the same rejection — up to its cap, entirely unasked.
+                resumeCoordinator.disarm()
                 return
             }
             val title = _nowPlaying.value.title.ifBlank { "this track" }
@@ -149,23 +149,26 @@ class PlaybackConnection @Inject constructor(
             if (action == ErrorAction.PAUSE_IN_PLACE) {
                 // Stay on this item, at this position — prepare() is deliberately NOT called here;
                 // re-preparing into a still-dead network just re-enters this listener. Instead,
-                // resumeGate arms on the item and the network current right now (see its KDoc for
-                // why the immediate callback for THIS network must not itself count as a return),
-                // and the network callback below re-prepares once a genuinely different network
-                // shows up, up to its cap. A user tap on play is still the fallback if the network
-                // never changes at all.
+                // resumeCoordinator arms on the item and the network current right now (see
+                // ResumeGate's KDoc for why the immediate callback for THIS network must not itself
+                // count as a return), and its network callback re-prepares once a genuinely
+                // different network shows up, up to its cap. A user tap on play is still the
+                // fallback if the network never changes at all.
                 controller?.pause()
                 controller?.let { c ->
-                    resumeGate.arm(c.currentMediaItemIndex, network.current())
-                    if (stopListeningForNetwork == null) {
-                        stopListeningForNetwork = network.listen { n ->
-                            val cc = controller ?: return@listen
-                            if (resumeGate.onNetworkAvailable(n, cc.currentMediaItemIndex, cc.isPlaying)) {
-                                cc.prepare()
-                                cc.play()
-                            }
-                        }
-                    }
+                    resumeCoordinator.arm(
+                        itemIndex = c.currentMediaItemIndex,
+                        mediaId = c.currentMediaItem?.mediaId,
+                        state = {
+                            val cc = controller
+                            ResumeCoordinator.QueueState(
+                                index = cc?.currentMediaItemIndex ?: -1,
+                                mediaId = cc?.currentMediaItem?.mediaId,
+                                playWhenReady = cc?.playWhenReady ?: false,
+                            )
+                        },
+                        resume = { controller?.let { cc -> cc.prepare(); cc.play() } },
+                    )
                 }
                 return
             }
@@ -175,6 +178,9 @@ class PlaybackConnection @Inject constructor(
             // undecodable (SD card unmounted, files moved out from under stale MediaStore
             // rows) would re-prepare through the extractor forever. Stop once every item
             // has failed in a row. publish() clears the counter on the first STATE_READY.
+            // Task 4+5 review item 1: a skip moves off the paused item, so nothing should still be
+            // watching for it to come back.
+            resumeCoordinator.disarm()
             controller?.let { c ->
                 if (consecutiveErrors >= c.mediaItemCount) return
                 if (c.hasNextMediaItem()) {
@@ -312,8 +318,7 @@ class PlaybackConnection @Inject constructor(
         // Unregister BEFORE dropping the controller: a leaked NetworkCallback holds the
         // ConnectivityManager singleton's registration and keeps firing for the life of the
         // process, and a callback firing after this point would find controller already null.
-        stopListeningForNetwork?.invoke()
-        stopListeningForNetwork = null
+        resumeCoordinator.disarm()
         controllerFuture?.cancel(false)
         controllerFuture = null
         pending.clear()
@@ -346,9 +351,10 @@ class PlaybackConnection @Inject constructor(
         val c = controller ?: return
         if (c.playbackState == Player.STATE_READY) {
             consecutiveErrors = 0
-            // A resume (or an ordinary play) reached READY: refill resumeGate's cap so a later,
-            // unrelated pause is not left starting from an old count.
-            resumeGate.onReady()
+            // A resume (or an ordinary play) reached READY: disarm resumeCoordinator (unregisters
+            // its network callback — item 3) and refill ResumeGate's cap, so a later, unrelated
+            // pause is not left starting from an old count.
+            resumeCoordinator.onReady()
         }
         // TODO(p1.4): the current Song is resolved by indexing _queue, which only this
         //  connection ever fills. Playback started OUTSIDE it — session restore via

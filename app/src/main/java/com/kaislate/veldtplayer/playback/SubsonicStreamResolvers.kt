@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.playback
 
+import androidx.media3.datasource.DataSourceException
 import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.net.SubsonicAuth
 import com.kaislate.veldtplayer.data.net.SubsonicCredentials
@@ -53,15 +54,28 @@ class SubsonicStreamResolvers internal constructor(
         return object : RemoteUriResolver {
             override val sourceId: String = sourceId
 
-            override fun resolve(ref: TrackRef): String? =
-                runBlocking { credentials(ref.sourceId) }?.let { creds ->
-                    SubsonicStreamUrls.stream(
-                        creds,
-                        ref.externalId,
-                        SubsonicAuth.newSalt(random),
-                        quality.currentMaxBitRate(),
-                    )?.toString()
-                }
+            override fun resolve(ref: TrackRef): String? {
+                // known(ref.sourceId) is true (resolverFor already checked it for THIS resolver's
+                // own id, and PlaybackUriResolver never asks a resolver about an id it did not
+                // register for) — so a null answer here means the account still exists but its
+                // secret could not be read: the Keystore key was invalidated, the row's ciphertext
+                // is corrupt, or similar. That is NOT "not mine, or not now" (RemoteUriResolver's
+                // null contract) — every track on this account will fail the exact same way, which
+                // is precisely the STOP case `errorAction` and PlaybackConnection's rejected-password
+                // message exist for. Passing it through as a plain null here would instead SKIP one
+                // track at a time through an entire account (controller ruling, task 4+5 review).
+                val creds = runBlocking { credentials(ref.sourceId) }
+                    ?: throw DataSourceException(
+                        "server account credentials could not be read",
+                        ERROR_CODE_REMOTE_AUTH,
+                    )
+                return SubsonicStreamUrls.stream(
+                    creds,
+                    ref.externalId,
+                    SubsonicAuth.newSalt(random),
+                    quality.currentMaxBitRate(),
+                )?.toString()
+            }
         }
     }
 }

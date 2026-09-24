@@ -205,6 +205,42 @@ class ResolvingDataSourceWiringTest {
         assertEquals(ERROR_CODE_REMOTE_AUTH, e.reason)
     }
 
+    // ---- The positioned-open case (task 4+5 review, item 2) ----
+    //
+    // A seek, or a Task 5 resume re-preparing at the saved position, opens with DataSpec.position >
+    // 0. DefaultHttpDataSource then calls skipFully(position) on the HTTP 200 body BEFORE this class
+    // ever reads Content-Type, and a ~150-byte JSON envelope runs out well short of any plausible
+    // seek position -- throwing HttpDataSourceException(POSITION_OUT_OF_RANGE = 2008) from INSIDE
+    // upstream.open. Unhandled, 2008 SKIPs (PlayerErrorPolicy), so a password rejection discovered by
+    // a seek or a resume would skip instead of stop. `server.respond` rather than `enqueue`: the
+    // guard's probe reopens the SAME request at position 0, a SECOND request the server must answer
+    // identically to the first.
+
+    private fun positionedTrack(position: Long) =
+        DataSpec.Builder().setUri(Uri.parse(VeldtUri.track("acct", "s1"))).setPosition(position).build()
+
+    @Test fun `a positioned open into a rejected-password envelope stops as REMOTE_AUTH, not a skip`() = withServer { server, source ->
+        server.respond {
+            FakeHttpServer.Canned(
+                200,
+                """{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":40,"message":"Wrong username or password"}}}"""
+                    .toByteArray(Charsets.UTF_8),
+                "application/json",
+            )
+        }
+        val e = assertThrows(DataSourceException::class.java) { source.open(positionedTrack(4096L)) }
+        assertEquals(ERROR_CODE_REMOTE_AUTH, e.reason)
+    }
+
+    @Suppress("DEPRECATION") // DataSourceException.POSITION_OUT_OF_RANGE; see SubsonicErrorGuard.
+    @Test fun `a positioned open into a genuinely short audio body still surfaces the original position-out-of-range failure`() = withServer { server, source ->
+        // No envelope at position 0 either -- the probe finds ordinary short audio both times, so
+        // the ORIGINAL 2008 must survive, not get replaced or swallowed.
+        server.respond { FakeHttpServer.Canned(200, ByteArray(16), "audio/flac") }
+        val e = assertThrows(DataSourceException::class.java) { source.open(positionedTrack(4096L)) }
+        assertEquals(DataSourceException.POSITION_OUT_OF_RANGE, e.reason)
+    }
+
     @Test fun `an already-queued veldt uri no resolver claims fails as REMOTE_REFUSED, not a network error`() = withServer { _, source ->
         // The account behind "unknown" was removed (or its credentials could not be read) between
         // enqueue and this load. Through the real factory the failure must be the typed

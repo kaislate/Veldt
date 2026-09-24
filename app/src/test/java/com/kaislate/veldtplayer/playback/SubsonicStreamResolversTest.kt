@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.playback
 
+import androidx.media3.datasource.DataSourceException
 import com.kaislate.veldtplayer.data.net.SubsonicAuth
 import com.kaislate.veldtplayer.data.net.SubsonicCredentials
 import kotlinx.coroutines.CoroutineScope
@@ -14,6 +15,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.util.Random
 
@@ -100,10 +102,18 @@ class SubsonicStreamResolversTest {
         assertEquals(listOf(expected, expected), listOf(salts, salts.distinct()))
     }
 
-    @Test fun `a known account whose credentials are gone declines`() {
-        // contains() true, credentials() null: the secret file was deleted or the Keystore key
-        // invalidated. Null is the passthrough answer; the logical uri then fails to load visibly.
+    @Test fun `a known account whose credentials are gone throws the typed AUTH error, not a plain decline`() {
+        // Controller ruling (N2 tasks 4+5 review): contains() true, credentials() null — the secret
+        // file was deleted or the Keystore key invalidated. EVERY track on this account would fail
+        // the same way, so this must STOP with the rejected-password message, not skip one track at
+        // a time. Superseded: this used to return null (a plain decline), which routed through
+        // PlaybackUriResolver as an unresolved veldt:// uri and SKIPped.
         val resolver = subject(stored = emptyMap()).resolverFor("acct1")!!
-        assertNull(resolver.resolve(TrackRef("acct1", "s1")))
+        val e = assertThrows(DataSourceException::class.java) { resolver.resolve(TrackRef("acct1", "s1")) }
+        assertEquals(ERROR_CODE_REMOTE_AUTH, e.reason)
     }
+
+    // `an unknown account has no resolver`, above, is the other half of the controller ruling
+    // (task 4+5 review item 6): the account absent case is unchanged — resolverFor still returns
+    // null before resolve() is ever reached, which routes through as REMOTE_REFUSED and SKIPs.
 }

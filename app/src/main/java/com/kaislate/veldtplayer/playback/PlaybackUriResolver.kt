@@ -22,6 +22,14 @@ import javax.inject.Singleton
  * right now — logged out, token expired, base url not configured — returns null and the caller
  * passes the logical uri through untouched. Throwing here would surface as a load exception with a
  * stack trace instead of a track that plainly failed to load.
+ *
+ * **One deliberate exception, added by controller ruling (N2 tasks 4+5 review):** a failure that
+ * would affect EVERY track on this account the same way — `SubsonicStreamResolvers` finding the
+ * account still registered but unable to read its stored credentials (Keystore key invalidated,
+ * corrupt row) — throws a typed `DataSourceException(ERROR_CODE_REMOTE_AUTH)` instead of returning
+ * null. Null there would route through [PlaybackUriResolver] as an unresolved `veldt://` uri, which
+ * throws [ERROR_CODE_REMOTE_REFUSED] and SKIPs — walking the whole account's queue one rejected
+ * track at a time instead of stopping once with the message pointing at Settings.
  */
 interface RemoteUriResolver {
 
