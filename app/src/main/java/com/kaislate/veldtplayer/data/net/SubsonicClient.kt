@@ -3,12 +3,19 @@
 
 package com.kaislate.veldtplayer.data.net
 
+import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.di.CryptoRandom
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import okhttp3.FormBody
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -110,9 +117,64 @@ class SubsonicClient @Inject constructor(
         return if (parsed.isEmpty()) ServerCapabilities.BASELINE else ServerCapabilities(parsed.toMap())
     }
 
-    private suspend fun call(url: HttpUrl): SubsonicResult = withContext(Dispatchers.IO) {
+    private suspend fun call(url: HttpUrl): SubsonicResult = execute(Request.Builder().url(url).build())
+
+    /**
+     * `endpoint` with `params` (plus a fresh token+salt) using whatever transport [caps] allow:
+     * a form-encoded POST when the server advertises `formPost`, else a GET with the credentials
+     * in the query string. Used by [fetchCatalog]; `probe`/`capabilities` predate this and are
+     * unaffected — they always GET, which is correct for them since neither takes a password
+     * the server hasn't already been asked to validate over the (shorter-lived, unauthenticated)
+     * query form.
+     *
+     * Internal rather than private: [fetchCatalog] is an extension function (so a future binary
+     * endpoint — Task 6's `coverArt` — can be added the same way, without becoming a member of
+     * this already-large class), and an extension function cannot see a `private` member.
+     */
+    internal suspend fun call(
+        creds: SubsonicCredentials,
+        endpoint: String,
+        params: List<Pair<String, String>>,
+        caps: ServerCapabilities,
+    ): SubsonicResult {
+        val request = buildRequest(creds, endpoint, params, caps)
+            ?: return SubsonicResult.Malformed("that does not look like a server address")
+        return execute(request)
+    }
+
+    /**
+     * The one place that decides how a Subsonic request is transported. Returns null when
+     * [SubsonicCredentials.baseUrl] cannot be parsed. Both the JSON [call] path above and a
+     * future binary path (Task 6's cover art, which needs the raw response bytes rather than a
+     * parsed envelope) build their request here, so credential placement — query vs. body — is
+     * decided in exactly one place.
+     */
+    private fun buildRequest(
+        creds: SubsonicCredentials,
+        endpoint: String,
+        params: List<Pair<String, String>>,
+        caps: ServerCapabilities,
+    ): Request? {
+        val auth = SubsonicAuth.tokenParams(creds.username, creds.password, SubsonicAuth.newSalt(random))
+        if (!caps.supports("formPost")) {
+            val url = SubsonicUrls.rest(creds.baseUrl, endpoint, auth + params) ?: return null
+            return Request.Builder().url(url).build()
+        }
+        val url = SubsonicUrls.rest(creds.baseUrl, endpoint, emptyList())
+            ?.newBuilder()?.query(null)?.build()
+            ?: return null
+        val form = FormBody.Builder().apply {
+            add("v", SubsonicAuth.API_VERSION)
+            add("c", SubsonicAuth.CLIENT_NAME)
+            add("f", "json")
+            (auth + params).forEach { (k, v) -> add(k, v) }
+        }.build()
+        return Request.Builder().url(url).post(form).build()
+    }
+
+    private suspend fun execute(request: Request): SubsonicResult = withContext(Dispatchers.IO) {
         try {
-            http.newCall(Request.Builder().url(url).build()).execute().use { response ->
+            http.newCall(request).execute().use { response ->
                 val body = response.body?.string().orEmpty()
                 // The envelope is authoritative, not the HTTP status: Subsonic servers answer
                 // 200 with status="failed". A non-2xx with an unreadable body falls through to
@@ -131,4 +193,76 @@ class SubsonicClient @Inject constructor(
 
     private fun JsonObject.stringOrNull(key: String): String? =
         (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    companion object {
+        /** `size` for `getAlbumList2`: a page shorter than this ends the catalog. */
+        const val PAGE_SIZE = 500
+
+        /** How many `getAlbum` requests [fetchCatalog] runs at once. */
+        const val ALBUM_CONCURRENCY = 4
+    }
+}
+
+/**
+ * Every song an account's server reports, across its whole `getAlbumList2` catalog.
+ *
+ * Pages `getAlbumList2` (`type=alphabeticalByName`, [SubsonicClient.PAGE_SIZE] per page) until
+ * a page comes back shorter than a full page — a server never pads a short final page out to
+ * the requested size, so a short page is unambiguously the last one. Every album id collected
+ * is then fetched with `getAlbum`, [SubsonicClient.ALBUM_CONCURRENCY] at a time.
+ *
+ * The first non-OK result — at either stage — decides the whole outcome: there is no partial
+ * catalog. A `getAlbum` that comes back credential-rejected mid-sync is exactly as fatal as one
+ * that failed on the very first page, because by then this call has already spent the only
+ * token it was given for this attempt.
+ *
+ * Songs are de-duplicated by [Song.externalId], keeping the first copy seen: Subsonic servers
+ * may legitimately list one track under two albums (a compilation and its parent, a deluxe
+ * reissue), and each such song must become one row, not two rows racing to own one unique key.
+ */
+suspend fun SubsonicClient.fetchCatalog(
+    sourceId: String,
+    creds: SubsonicCredentials,
+    caps: ServerCapabilities,
+): CatalogResult {
+    val albumIds = mutableListOf<String>()
+    var offset = 0
+    while (true) {
+        val page = call(
+            creds,
+            "getAlbumList2",
+            listOf("type" to "alphabeticalByName", "size" to SubsonicClient.PAGE_SIZE.toString(), "offset" to offset.toString()),
+            caps,
+        )
+        val ids = when (page) {
+            is SubsonicResult.Ok -> SubsonicCatalogParser.albumIds(page.body)
+            is SubsonicResult.Failed -> return CatalogResult.Rejected(page.error, page.code, page.message)
+            is SubsonicResult.Malformed -> return CatalogResult.Unreachable(page.reason)
+        }
+        albumIds += ids
+        if (ids.size < SubsonicClient.PAGE_SIZE) break
+        offset += SubsonicClient.PAGE_SIZE
+    }
+
+    val semaphore = Semaphore(SubsonicClient.ALBUM_CONCURRENCY)
+    val albumResults = coroutineScope {
+        albumIds
+            .map { id -> async { semaphore.withPermit { call(creds, "getAlbum", listOf("id" to id), caps) } } }
+            .awaitAll()
+    }
+
+    val seen = mutableSetOf<String>()
+    val songs = mutableListOf<Song>()
+    for (result in albumResults) {
+        when (result) {
+            is SubsonicResult.Ok -> {
+                for (song in SubsonicCatalogParser.songs(result.body, sourceId)) {
+                    if (seen.add(song.externalId)) songs += song
+                }
+            }
+            is SubsonicResult.Failed -> return CatalogResult.Rejected(result.error, result.code, result.message)
+            is SubsonicResult.Malformed -> return CatalogResult.Unreachable(result.reason)
+        }
+    }
+    return CatalogResult.Ok(songs)
 }
