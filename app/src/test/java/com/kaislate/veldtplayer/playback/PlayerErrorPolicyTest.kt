@@ -145,6 +145,10 @@ class PlayerErrorPolicyTest {
             Triple(3, ErrorAction.PAUSE_IN_PLACE, 3),
             Triple(0, ErrorAction.SKIP, 1),
             Triple(3, ErrorAction.SKIP, 4),
+            // A rejected password has not consumed an item either: the track is fine, the
+            // account is not. Stopping must leave the count alone, like pausing.
+            Triple(0, ErrorAction.STOP, 0),
+            Triple(3, ErrorAction.STOP, 3),
         )
         assertEquals(
             "the counter rule changed: a long outage can walk the bound and stop playback",
@@ -153,5 +157,49 @@ class PlayerErrorPolicyTest {
                 Triple(current, action, nextConsecutiveErrors(current, action))
             },
         )
+    }
+
+    /**
+     * The two codes N2's `SubsonicErrorGuard` raises (Task 4). They are custom codes
+     * (`CUSTOM_ERROR_CODE_BASE` + 401 / + 500), because the server answered HTTP 200 and Media3 has
+     * no code for "the 200 was an error envelope".
+     *
+     * AUTH stops: every item in the queue is on the same account, so skipping would walk the whole
+     * queue into the same rejection, one track at a time. REFUSED skips: the server answered and
+     * refused THIS item (code 70, not found), which is a property of the item.
+     */
+    @Test
+    fun `the remote codes stop on a rejected password and skip on a refused item`() {
+        assertEquals(
+            listOf(1_000_401 to ErrorAction.STOP, 1_000_500 to ErrorAction.SKIP),
+            listOf(ERROR_CODE_REMOTE_AUTH, ERROR_CODE_REMOTE_REFUSED).map { it to errorAction(it) },
+        )
+    }
+
+    /**
+     * TOTAL table: every code this suite names, and its action, in one assertion — so moving any
+     * one of them names that code, and adding an action without placing every named code fails
+     * here rather than in whichever sub-test happened to cover it.
+     */
+    @Test
+    fun `every named code maps to exactly its action`() {
+        val table = listOf(
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED to ErrorAction.PAUSE_IN_PLACE,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT to ErrorAction.PAUSE_IN_PLACE,
+            PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_IO_NO_PERMISSION to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE to ErrorAction.SKIP,
+            2009 to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED to ErrorAction.SKIP,
+            PlaybackException.ERROR_CODE_DECODING_FAILED to ErrorAction.SKIP,
+            PlaybackException.CUSTOM_ERROR_CODE_BASE + 7 to ErrorAction.SKIP,
+            ERROR_CODE_REMOTE_AUTH to ErrorAction.STOP,
+            ERROR_CODE_REMOTE_REFUSED to ErrorAction.SKIP,
+        )
+        assertEquals(table, table.map { (code, _) -> code to errorAction(code) })
     }
 }

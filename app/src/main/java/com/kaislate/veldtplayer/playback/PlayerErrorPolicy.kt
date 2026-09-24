@@ -5,6 +5,18 @@ package com.kaislate.veldtplayer.playback
 
 import androidx.media3.common.PlaybackException
 
+/**
+ * The server answered HTTP 200 with a Subsonic error envelope whose code means this account's
+ * credentials will not work (10, 40, 41 — see `SubsonicError.meansCredentialsWontWork`). Raised by
+ * `SubsonicErrorGuard` as a `DataSourceException.reason`, which ExoPlayer 1.8.0 copies into
+ * `PlaybackException.errorCode` (`ExoPlayerImplInternal.handleIoException(e, e.reason)`, javap) —
+ * so it crosses the session boundary as an Int, unlike the cause.
+ */
+const val ERROR_CODE_REMOTE_AUTH: Int = PlaybackException.CUSTOM_ERROR_CODE_BASE + 401
+
+/** As [ERROR_CODE_REMOTE_AUTH], for any other error envelope (70 not found, 50 not authorized…). */
+const val ERROR_CODE_REMOTE_REFUSED: Int = PlaybackException.CUSTOM_ERROR_CODE_BASE + 500
+
 /** What [PlaybackConnection]'s error listener should do about one `PlaybackException`. */
 internal enum class ErrorAction {
     /**
@@ -19,6 +31,13 @@ internal enum class ErrorAction {
      * then the radio is usually back.
      */
     PAUSE_IN_PLACE,
+
+    /**
+     * The server rejected this account's saved password. Every remote item in the queue is on the
+     * same account, so skipping would walk the queue into the same rejection one track at a time;
+     * stop instead, and tell the user where to fix it. Like [PAUSE_IN_PLACE], nothing retries.
+     */
+    STOP,
 }
 
 /**
@@ -78,6 +97,14 @@ internal enum class ErrorAction {
  * configuration fault that a retry cannot fix) and `ERROR_CODE_IO_UNSPECIFIED` (2000, which also
  * covers plain local IO).
  *
+ * ### What N2 did with the rejected-credentials case
+ *
+ * Navidrome does not answer bad credentials with a 401 at all: it answers **HTTP 200** with a JSON
+ * error envelope (measured, 0.64.0), so 2004 never carries it. `SubsonicErrorGuard`, which sits
+ * service-side exactly where the note above says such handling must, reads the envelope and raises
+ * one of two custom codes that DO survive the bundle round trip, being plain Ints:
+ * [ERROR_CODE_REMOTE_AUTH] stops, [ERROR_CODE_REMOTE_REFUSED] skips. 2004 is unchanged.
+ *
  * Written as an explicit set rather than a range: an unrecognised code — everything a future
  * Media3 adds — must fall to [ErrorAction.SKIP], the behaviour that at worst loses one track,
  * never the one that can stall playback with no recovery.
@@ -86,6 +113,12 @@ internal fun errorAction(errorCode: Int): ErrorAction = when (errorCode) {
     PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
     PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
     -> ErrorAction.PAUSE_IN_PLACE
+
+    ERROR_CODE_REMOTE_AUTH -> ErrorAction.STOP
+
+    // Named, though `else` would give the same answer: the server refused THIS item, which is a
+    // property of the item — the exact case skipping exists for.
+    ERROR_CODE_REMOTE_REFUSED -> ErrorAction.SKIP
 
     else -> ErrorAction.SKIP
 }
@@ -99,9 +132,9 @@ internal fun errorAction(errorCode: Int): ErrorAction = when (errorCode) {
  * A [ErrorAction.PAUSE_IN_PLACE] must leave the count alone. If pausing incremented it, a long
  * outage would walk the count up to `mediaItemCount` anyway and the bound would stop playback —
  * the very defect the pause branch was added to remove, wearing a different hat. Only a genuine
- * skip has consumed an item, so only a skip counts one.
+ * skip has consumed an item, so only a skip counts one; [ErrorAction.STOP] leaves it alone too.
  */
 internal fun nextConsecutiveErrors(current: Int, action: ErrorAction): Int = when (action) {
     ErrorAction.SKIP -> current + 1
-    ErrorAction.PAUSE_IN_PLACE -> current
+    ErrorAction.PAUSE_IN_PLACE, ErrorAction.STOP -> current
 }

@@ -85,9 +85,10 @@ class PlaybackConnection @Inject constructor(
      * Consecutive failed items, so the skip-on in [Player.Listener.onPlayerError] cannot spin
      * forever. Reset by [publish] the moment anything reaches `STATE_READY`.
      *
-     * Counts *skips only* — see [nextConsecutiveErrors]. An [ErrorAction.PAUSE_IN_PLACE] has not
-     * consumed an item, and if it bumped this then a long outage would walk the bound below and
-     * stop playback regardless, which is exactly what pausing exists to prevent.
+     * Counts *skips only* — see [nextConsecutiveErrors]. An [ErrorAction.PAUSE_IN_PLACE] or
+     * [ErrorAction.STOP] has not consumed an item, and if it bumped this then a long outage would
+     * walk the bound below and stop playback regardless, which is exactly what pausing exists to
+     * prevent.
      */
     private var consecutiveErrors = 0
 
@@ -116,16 +117,24 @@ class PlaybackConnection @Inject constructor(
         override fun onEvents(player: Player, events: Player.Events) = publish()
 
         override fun onPlayerError(error: PlaybackException) {
-            val title = _nowPlaying.value.title.ifBlank { "this track" }
-            _errors.tryEmit("Couldn't play “$title”")
-            // Whether this error is a property of the ITEM or of the NETWORK. Skipping is right
-            // for the former and ruinous for the latter: every subsequent item hits the same
-            // dead network, so one Wi-Fi blip walks the whole queue into the bound below. See
-            // errorAction for which codes pause and, more to the point, why bad-HTTP-status
-            // does not. The counter is assigned from the action rather than incremented up
-            // front, so a pause cannot walk the bound — the defect in a different hat.
+            // Whether this error is a property of the ITEM, the NETWORK, or the ACCOUNT. Skipping
+            // is right for the first and ruinous for the other two: every subsequent item hits
+            // the same dead network or the same rejected password, so the whole queue walks into
+            // the bound below. See errorAction for which codes do what and, more to the point,
+            // why bad-HTTP-status does not pause. The counter is assigned from the action rather
+            // than incremented up front, so a pause or a stop cannot walk the bound.
             val action = errorAction(error.errorCode)
             consecutiveErrors = nextConsecutiveErrors(consecutiveErrors, action)
+            if (action == ErrorAction.STOP) {
+                // The server rejected the saved password. "Couldn't play <title>" would blame the
+                // track; say what is actually wrong and where to fix it. Stay put — every other
+                // remote track in the queue would be rejected the same way.
+                _errors.tryEmit(REJECTED_PASSWORD)
+                controller?.pause()
+                return
+            }
+            val title = _nowPlaying.value.title.ifBlank { "this track" }
+            _errors.tryEmit("Couldn't play “$title”")
             if (action == ErrorAction.PAUSE_IN_PLACE) {
                 // Stay on this item, at this position. Nothing retries on a timer; the user's
                 // next tap on play re-prepares the same item, by which time the radio is
@@ -336,5 +345,7 @@ class PlaybackConnection @Inject constructor(
         const val TICK_PLAYING_MS = 250L
         const val TICK_IDLE_MS = 1_000L
         const val CONNECT_FAILED = "Couldn't connect to playback"
+        const val REJECTED_PASSWORD =
+            "Your server rejected the saved password. Update it in Settings → Music servers."
     }
 }

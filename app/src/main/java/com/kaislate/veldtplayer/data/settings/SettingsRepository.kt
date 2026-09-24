@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.settings
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.kaislate.veldtplayer.data.library.TrackSort
@@ -22,10 +23,9 @@ enum class ThemeMode { LIGHT, DARK, SYSTEM }
 private val Context.settingsStore by preferencesDataStore(name = "veldt-settings")
 
 /**
- * The app's preference store. One setting today; the pill's three-way toggle and the LRCLIB
- * opt-in land here later.
+ * The app's preference store. The pill's three-way toggle and the LRCLIB opt-in land here later.
  *
- * Values persist by `name`, never by ordinal: an ordinal makes the stored value depend on
+ * Enum values persist by `name`, never by ordinal: an ordinal makes the stored value depend on
  * DECLARATION ORDER, so inserting an enum constant silently rewrites every user's setting on
  * upgrade with nothing to notice it. An unreadable value degrades to the default rather than
  * throwing — a corrupt preference must not stop the app from starting.
@@ -70,6 +70,25 @@ class SettingsRepository @Inject constructor(
     }
 
     /**
+     * The `maxBitRate` cap, in kbps, for streaming on a METERED network (N2 Task 4). 0 is
+     * "original quality"; the only other values are [METERED_CAPS]. Unmetered networks always
+     * stream original — that is the owner's decision and lives in `effectiveMaxBitRate`, not here.
+     *
+     * Stored as an Int rather than by name, unlike the enums above: the value IS the number sent
+     * to the server, so there is no declaration order to drift. Anything outside the allowed set —
+     * a downgrade, a hand-edited store — reads as 0, never as a cap nobody chose.
+     */
+    val meteredMaxBitRate: Flow<Int> = context.settingsStore.data.map { prefs ->
+        prefs[METERED_MAX_BITRATE]?.takeIf { it in METERED_CAPS } ?: 0
+    }
+
+    /** @throws IllegalArgumentException for a value outside [METERED_CAPS] — a caller bug. */
+    suspend fun setMeteredMaxBitRate(kbps: Int) {
+        require(kbps in METERED_CAPS) { "unsupported metered bitrate cap: $kbps" }
+        context.settingsStore.edit { it[METERED_MAX_BITRATE] = kbps }
+    }
+
+    /**
      * Test seam: empties the store, so a test can observe DEFAULT resolution rather than whatever
      * an earlier test left behind.
      *
@@ -105,6 +124,15 @@ class SettingsRepository @Inject constructor(
     internal suspend fun readRawForTest(key: String): String? =
         context.settingsStore.data.map { it[stringPreferencesKey(key)] }.first()
 
+    /** Test seam: writes a raw Int under the metered-cap key, so the out-of-set path is reachable. */
+    internal suspend fun writeRawMeteredMaxBitRateForTest(raw: Int) {
+        context.settingsStore.edit { it[METERED_MAX_BITRATE] = raw }
+    }
+
+    /** As [readRawForTest], for an Int preference — pins the metered cap's key and wire format. */
+    internal suspend fun readRawIntForTest(key: String): Int? =
+        context.settingsStore.data.map { it[intPreferencesKey(key)] }.first()
+
     /** As [readRawForTest], for a boolean preference. */
     internal suspend fun readRawBooleanForTest(key: String): Boolean? =
         context.settingsStore.data.map { it[booleanPreferencesKey(key)] }.first()
@@ -113,5 +141,9 @@ class SettingsRepository @Inject constructor(
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val FOLDER_SORT = stringPreferencesKey("folder_sort")
         val FOLDER_SORT_DESC = booleanPreferencesKey("folder_sort_desc")
+        val METERED_MAX_BITRATE = intPreferencesKey("metered_max_bitrate")
+
+        /** Every value [meteredMaxBitRate] can hold. 0 is original quality. */
+        val METERED_CAPS: Set<Int> = setOf(0, 320, 192, 128)
     }
 }

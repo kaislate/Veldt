@@ -125,4 +125,34 @@ class SettingsRepositoryTest {
             ),
         )
     }
+
+    // ---- Metered bitrate cap (N2 Task 4). Int on the wire, not a name: the values ARE numbers. ----
+
+    @Test fun `the metered cap defaults to original quality`() = runTest {
+        assertEquals(0, repo.meteredMaxBitRate.first())
+    }
+
+    /** Every allowed value round-trips, read back through the flow AND off disk under the literal
+     *  key — the raw read is what a key rename or a String wire format would break. */
+    @Test fun `each allowed cap is stored as an Int under metered_max_bitrate`() = runTest {
+        val readBack = listOf(0, 320, 192, 128).map { kbps ->
+            repo.setMeteredMaxBitRate(kbps)
+            Triple(kbps, repo.meteredMaxBitRate.first(), repo.readRawIntForTest("metered_max_bitrate"))
+        }
+        assertEquals(
+            "the cap is not on disk as an Int under its own key, or does not read back",
+            listOf(Triple(0, 0, 0), Triple(320, 320, 320), Triple(192, 192, 192), Triple(128, 128, 128)),
+            readBack,
+        )
+    }
+
+    /** A value outside {0,320,192,128} — a downgrade, or a hand-edited store — reads as original,
+     *  never as a cap nobody chose. 999 is above every allowed value, so a clamp would not hide it. */
+    @Test fun `an unrecognised stored cap reads as original quality`() = runTest {
+        repo.writeRawMeteredMaxBitRateForTest(999)
+        assertEquals(
+            listOf<Int?>(999, 0),
+            listOf(repo.readRawIntForTest("metered_max_bitrate"), repo.meteredMaxBitRate.first()),
+        )
+    }
 }

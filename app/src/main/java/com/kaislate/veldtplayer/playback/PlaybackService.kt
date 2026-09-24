@@ -5,21 +5,20 @@ package com.kaislate.veldtplayer.playback
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.kaislate.veldtplayer.MainActivity
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
+import com.kaislate.veldtplayer.data.net.SubsonicAuth
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -34,8 +33,8 @@ class PlaybackService : MediaLibraryService() {
 
     /**
      * The service-side half of the logical playback uri (spec §4.4). Injected rather than
-     * constructed because the `Set<RemoteUriResolver>` it routes through is a Hilt multibinding —
-     * empty in this slice, and joined by `SubsonicSource` in N2 without this file changing.
+     * constructed because what it routes through — the `Set<RemoteUriResolver>` multibinding and
+     * the server accounts' `RemoteResolverLookup` — is Hilt's to assemble.
      */
     @Inject lateinit var uriResolver: PlaybackUriResolver
 
@@ -50,21 +49,12 @@ class PlaybackService : MediaLibraryService() {
         // touch below this line.
         super.onCreate()
         val exo = ExoPlayer.Builder(this)
-            // Reproduces ExoPlayer.Builder's own default media-source factory exactly, with one
-            // layer inserted. Verified by disassembly, not assumed: the builder's default is
-            // `DefaultMediaSourceFactory(context, DefaultExtractorsFactory())`, and that
-            // constructor's whole use of the context is `new DefaultDataSource.Factory(context)`.
-            // So naming that factory here and wrapping it changes nothing else about how a
-            // `content://` file is opened — which is what Global Constraint 5 requires.
-            .setMediaSourceFactory(
-                DefaultMediaSourceFactory(
-                    ResolvingDataSource.Factory(
-                        DefaultDataSource.Factory(this),
-                        VeldtDataSpecResolver(uriResolver),
-                    ),
-                    DefaultExtractorsFactory(),
-                )
-            )
+            // The builder's own default is `DefaultMediaSourceFactory(context,
+            // DefaultExtractorsFactory())`, whose whole use of the context is
+            // `DefaultDataSource.Factory(context)` (disassembly, N0). PlayerDataSources keeps that
+            // shape for local files and inserts the resolver, the error-envelope guard and the
+            // no-retry-on-envelope policy — see its KDoc for the order and why it matters.
+            .setMediaSourceFactory(PlayerDataSources.mediaSourceFactory(this, uriResolver))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -169,8 +159,7 @@ class PlaybackService : MediaLibraryService() {
  *   indirection.
  * - `Resolver.resolveReportedUri` is a **default-identity** method (`aload_1; areturn`) called from
  *   exactly one place: `ResolvingDataSource.getUri()`, applied to whatever the *upstream* reports —
- *   post-redirect, for http. It is **not** the cache key, and it is deliberately not overridden
- *   here; see below.
+ *   post-redirect, for http. It is **not** the cache key; see below.
  *
  * ### Why the cache identity is pinned with `key`, not with `resolveReportedUri`
  *
@@ -185,12 +174,15 @@ class PlaybackService : MediaLibraryService() {
  * An upstream-chosen key is never overwritten. A `CacheDataSource` enclosing this one has already
  * stamped its own, and replacing it would split one track across two cache entries.
  *
- * `resolveReportedUri` is left alone for a second reason beyond it being the wrong lever: the
- * `Resolver` is a *single* instance shared by every `DataSource` the factory creates (the factory
- * holds one field and passes it to each `createDataSource()`), so the resolved-url-to-logical-uri
- * mapping an override would need has nowhere race-free to live. What it would change today is the
- * uri in `LoadEventInfo` — `StatsDataSource` overwrites its `lastOpenedUri` with `getUri()` after
- * a successful open — which is a telemetry-leak question for N2, not a caching one.
+ * ### Why `resolveReportedUri` IS overridden — to redact, not to map back (N2)
+ *
+ * What it changes is the uri in `LoadEventInfo`: `StatsDataSource` overwrites its `lastOpenedUri`
+ * with `getUri()` after a successful open, and every analytics listener sees that. Once resolution
+ * produces a real `stream` url, that uri carries `t=` and `s=`, so it is passed through
+ * [SubsonicAuth.redact] (spec §4.4 correction). It is a pure function of its input on purpose: the
+ * `Resolver` is a *single* instance shared by every `DataSource` the factory creates, so a
+ * resolved-url-to-logical-uri mapping would have nowhere race-free to live, while a redaction
+ * needs none.
  */
 @OptIn(UnstableApi::class)
 internal class VeldtDataSpecResolver(
@@ -210,5 +202,17 @@ internal class VeldtDataSpecResolver(
             .setUri(resolved)
             .setKey(dataSpec.key ?: requested)
             .build()
+    }
+
+    /**
+     * The upstream's uri with every credential value replaced. See the class KDoc.
+     *
+     * A uri with nothing to redact — every `content://` load — comes back as the same object, not
+     * a re-parse of it, for the reason the passthrough in [resolveDataSpec] returns the same spec.
+     */
+    override fun resolveReportedUri(uri: Uri): Uri {
+        val text = uri.toString()
+        val redacted = SubsonicAuth.redact(text)
+        return if (redacted == text) uri else Uri.parse(redacted)
     }
 }

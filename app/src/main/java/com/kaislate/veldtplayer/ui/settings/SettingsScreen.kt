@@ -46,10 +46,10 @@ import com.kaislate.veldtplayer.ui.browse.SIDE_MARGIN
 import com.kaislate.veldtplayer.ui.browse.SectionLabel
 
 /**
- * The one settings surface: a three-way theme selector, the way in to server accounts, and an
- * About block with the notices it is obliged to carry. It draws its own
- * header rather than taking the shared `TopAppBar`, same as every non-tab destination — see
- * `VeldtNavHost.TAB_ROUTES`.
+ * The one settings surface: a three-way theme selector, the mobile-data streaming quality, the
+ * way in to server accounts, and an About block with the notices it is obliged to carry. It draws
+ * its own header rather than taking the shared `TopAppBar`, same as every non-tab destination —
+ * see `VeldtNavHost.TAB_ROUTES`.
  */
 @Composable
 fun SettingsScreen(
@@ -61,6 +61,7 @@ fun SettingsScreen(
     vm: SettingsViewModel = hiltViewModel(),
 ) {
     val mode by vm.themeMode.collectAsStateWithLifecycle()
+    val meteredCap by vm.meteredMaxBitRate.collectAsStateWithLifecycle()
     val direction = LocalLayoutDirection.current
 
     Column(
@@ -92,6 +93,28 @@ fun SettingsScreen(
             selected = mode == ThemeMode.SYSTEM,
             onSelect = { vm.setThemeMode(ThemeMode.SYSTEM) },
         )
+
+        SectionLabel("Streaming")
+        Text(
+            "On mobile data",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = SIDE_MARGIN, vertical = 4.dp),
+        )
+        // Metered networks only (owner decision): Wi-Fi and other unmetered networks always
+        // stream original quality, whatever is chosen here.
+        listOf(
+            0 to "Original quality",
+            320 to "320 kbps",
+            192 to "192 kbps",
+            128 to "128 kbps",
+        ).forEach { (kbps, label) ->
+            ThemeOptionRow(
+                label = label,
+                selected = meteredCap == kbps,
+                onSelect = { vm.setMeteredMaxBitRate(kbps) },
+            )
+        }
 
         SectionLabel("Servers")
         SettingsLinkRow(
@@ -140,7 +163,8 @@ private fun SettingsHeader(onBack: () -> Unit, modifier: Modifier = Modifier) {
 }
 
 /**
- * One entry of the three-way theme pill — [selected] marks the mode currently in effect.
+ * One radio option — an entry of the three-way theme pill, or of the mobile-data quality list.
+ * [selected] marks the value currently in effect.
  *
  * A SINGLE `selectable` target on the row, not `clickable` on the row plus the [RadioButton]'s
  * own `onClick`: two targets meant TalkBack announced the radio and the row as separate
