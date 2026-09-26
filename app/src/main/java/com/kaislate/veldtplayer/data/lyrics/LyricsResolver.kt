@@ -13,11 +13,19 @@ import javax.inject.Singleton
  * Chooses which [LyricsProvider]s to ask for a [Song], in which order, and remembers the answer
  * per track for the life of the process (spec §5).
  *
- * **Chain** (first non-null wins): a LOCAL track (`song.sourceId == localSourceId`) tries
- * [sidecar] → [embedded] → [lrclib]; anything else tries [server] → [lrclib]. Server-only tracks
- * skip sidecar/embedded outright — those two read [Song.filePath], which is null for them anyway
- * — and a local track never asks [server], which has nothing to answer for a file this app never
- * uploaded anywhere.
+ * **Chain** (first non-null, non-weak result wins): a LOCAL track (`song.sourceId ==
+ * localSourceId`) tries [sidecar] → [embedded] → [lrclib]; anything else tries [server] →
+ * [lrclib]. Server-only tracks skip sidecar/embedded outright — those two read [Song.filePath],
+ * which is null for them anyway — and a local track never asks [server], which has nothing to
+ * answer for a file this app never uploaded anywhere.
+ *
+ * **Weak results (spec §5, owner decision 2026-09-25):** a [Lyrics.Plain] whose text is a single
+ * non-blank line is WEAK rather than accepted outright — see [isWeak]. A weak result is kept as a
+ * fallback and the chain keeps going; the first NON-weak result still wins outright, and if the
+ * whole chain ends with nothing but weak (or null) answers, the FIRST weak one wins. This exists
+ * because all 26 of the owner's Navidrome songs with server lyrics are a single watermark line
+ * (`www.t.me/pmedia_music`) pulled from a file tag — real lyrics, under first-non-null-wins,
+ * would otherwise never be asked of LRCLIB at all.
  *
  * **Memo**: an in-process LRU of the last [MEMO_CAPACITY] `(sourceId, externalId)` pairs, keyed
  * exactly like [LrclibCache] (`sourceId + '\u0000' + externalId`) for the same reason — it is the
@@ -88,12 +96,40 @@ class LyricsResolver(
         synchronized(lock) { memo.clear() }
     }
 
+    /**
+     * Walks [providers] in order. A WEAK result (see [isWeak]) is remembered as [weakFallback]
+     * rather than accepted outright, and the chain keeps going; the first NON-weak result wins
+     * immediately, short-circuiting the rest of the chain exactly as before. If every provider
+     * that answered at all answered weak (or nothing), the FIRST weak answer is returned — never
+     * a later one, so `server weak + lrclib weak` keeps SERVER's source, not LRCLIB's (spec §5,
+     * "Weak results").
+     */
     private suspend fun chain(song: Song, vararg providers: Pair<LyricsProvider, LyricsSource>): ResolvedLyrics? {
+        var weakFallback: ResolvedLyrics? = null
         for ((provider, source) in providers) {
-            val lyrics = provider.lyricsFor(song)
-            if (lyrics != null) return ResolvedLyrics(lyrics, source)
+            val lyrics = provider.lyricsFor(song) ?: continue
+            if (lyrics.isWeak()) {
+                if (weakFallback == null) weakFallback = ResolvedLyrics(lyrics, source)
+                continue
+            }
+            return ResolvedLyrics(lyrics, source)
         }
-        return null
+        return weakFallback
+    }
+
+    /**
+     * A [Lyrics.Plain] whose text — once split into lines — has exactly ONE non-blank line is
+     * WEAK: real lyrics almost never fit on one line, while a watermark tag dropped whole into a
+     * `LYRICS`/`USLT` field always does (measured: all 26 of the owner's server-lyrics songs are
+     * exactly this). [Lyrics.Synced] is never weak, regardless of how few lines it has — a
+     * single-line but genuinely TIMED result is still real, structured data no provider would
+     * fabricate. Purely structural, per the spec: no URL or content matching, so a real one-line
+     * lyric (short chants, some hooks) is misjudged the same way a watermark is judged correctly
+     * — the trade the owner's measurement decided.
+     */
+    private fun Lyrics.isWeak(): Boolean {
+        if (this !is Lyrics.Plain) return false
+        return text.split('\n').count { it.isNotBlank() } == 1
     }
 
     private fun memoKey(song: Song): String = song.sourceId + '\u0000' + song.externalId
