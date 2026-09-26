@@ -27,6 +27,12 @@ import javax.inject.Singleton
  * touch nothing. Design spec §4 does not name this case, and it is not the same as a REJECTED
  * password — there is no server answer here at all to classify as "credentials won't work" — so
  * auth-blocking on it would block a source the server itself has said nothing bad about.
+ *
+ * **Fix round 2, finding 2 — double delivery.** Write-ahead (fix round 1, finding 4) means a
+ * `Scrobbler` live send and this flush can race over the SAME entry: [ScrobbleQueue.isInFlight]
+ * is checked per entry and a `true` entry is SKIPPED (not attempted, not counted as a stop) —
+ * the live send owns its own outcome; this flush leaves it alone rather than sending it again
+ * before that outcome is known.
  */
 @Singleton
 class ScrobbleFlusher @Inject constructor(
@@ -49,6 +55,7 @@ class ScrobbleFlusher @Inject constructor(
         val caps = sources.capabilities(sourceId)
 
         for (entry in queue.forSource(sourceId)) {
+            if (queue.isInFlight(entry)) continue // a live Scrobbler send owns this one right now
             when (val result = client.scrobble(creds, caps, entry.externalId, submission = true, timeMs = entry.timeMs)) {
                 ScrobbleResult.Ok -> queue.remove(entry)
                 ScrobbleResult.Unreachable -> return

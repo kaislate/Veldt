@@ -138,9 +138,12 @@ class PlaybackService : MediaLibraryService() {
         // Dispatchers.IO, not Main (review fix round 1, item 5): every `scope.launch` inside
         // Scrobbler is queue file I/O plus the scrobble network call — Scrobbler's own KDoc
         // documents that this scope choice is the ONE thing that decides where that launched
-        // work runs. Clock/player-state mutations never touch this scope at all — they run
-        // synchronously, on the main thread, inside the calls ScrobblerPlayerListener makes
-        // below — so nothing about that moves off main by choosing IO here.
+        // work runs, and (fix round 2, finding 3) EVERY ScrobbleQueue call Scrobbler makes now
+        // actually lives inside one of those launches, not in the synchronous body of a public
+        // method — so this really is true, not merely intended. Clock/player-state mutations
+        // never touch this scope at all — they run synchronously, on the main thread, inside
+        // the calls ScrobblerPlayerListener makes below — so nothing about that moves off main
+        // by choosing IO here.
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scrobblerScope = scope
         val instance = Scrobbler(
@@ -257,6 +260,13 @@ class PlaybackService : MediaLibraryService() {
  * a repeat-one wrap WITHOUT a following `onIsPlayingChanged`, because the playing state never
  * actually changes across either kind of transition. Without this, every track after the first
  * in a continuously-playing queue would get no scrobble at all until the user next paused.
+ *
+ * **Every [Scrobbler.onDurationKnown] call also passes `currentTrackRef()`** (review fix round 2,
+ * finding 1): Media3 delivers `onTimelineChanged` for a queue replacement BEFORE
+ * `onMediaItemTransition`, and by then `player.currentMediaItem` already reports the NEW item —
+ * so a duration read at that moment describes the NEW item, not whatever [Scrobbler] still
+ * considers current. Passing the identity alongside the value is what lets [Scrobbler] itself
+ * refuse to apply it to the wrong play-through, rather than this facade trying to guess.
  */
 private class ScrobblerPlayerListener(
     private val player: Player,
@@ -264,8 +274,7 @@ private class ScrobblerPlayerListener(
 ) : Player.Listener {
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-        val track = mediaItem?.localConfiguration?.uri?.toString()?.let(VeldtUri::parse)
-        scrobbler.onMediaItemTransition(track, durationOf(mediaItem), player.isPlaying)
+        scrobbler.onMediaItemTransition(trackRefOf(mediaItem), durationOf(mediaItem), player.isPlaying)
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -277,15 +286,24 @@ private class ScrobblerPlayerListener(
      *  alone would miss that correction until the next `STATE_READY`, which may be seconds and
      *  several accumulated playing-seconds later. */
     override fun onTimelineChanged(timeline: Timeline, reason: Int) {
-        scrobbler.onDurationKnown(durationOf(player.currentMediaItem))
+        val current = player.currentMediaItem
+        scrobbler.onDurationKnown(trackRefOf(current), durationOf(current))
     }
 
     /** `player.duration` is commonly `C.TIME_UNSET` at [onMediaItemTransition] time (before the
      *  item is prepared) and becomes known once the player reaches [Player.STATE_READY] — see
      *  [Scrobbler.onDurationKnown]'s KDoc for what this corrects. */
     override fun onPlaybackStateChanged(playbackState: Int) {
-        if (playbackState == Player.STATE_READY) scrobbler.onDurationKnown(durationOf(player.currentMediaItem))
+        if (playbackState != Player.STATE_READY) return
+        val current = player.currentMediaItem
+        scrobbler.onDurationKnown(trackRefOf(current), durationOf(current))
     }
+
+    /** [VeldtUri.parse] of [MediaItem.localConfiguration]'s uri — see the class KDoc — factored
+     *  out because [onTimelineChanged]/[onPlaybackStateChanged] now need it alongside a duration
+     *  read, not just [onMediaItemTransition]. */
+    private fun trackRefOf(mediaItem: MediaItem?): TrackRef? =
+        mediaItem?.localConfiguration?.uri?.toString()?.let(VeldtUri::parse)
 
     /**
      * `player.duration` when the player actually knows it; otherwise the `MediaItem`'s own

@@ -128,6 +128,44 @@ class ScrobbleFlusherTest {
     private fun failedEnvelope(code: Int, message: String) =
         """{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":$code,"message":"$message"}}}"""
 
+    // ---------------------------------------------------------- in-flight skip (fix round 2, finding 2)
+
+    /**
+     * Write-ahead (fix round 1, finding 4) means an entry can be queued while a `Scrobbler` live
+     * send for it is still outstanding. Without a skip, a concurrent flush (a piggyback from some
+     * other request, the retry worker, a sync) would deliver the SAME scrobble a second time
+     * before the live send's own outcome is known. [ScrobbleQueue.markInFlight]/[isInFlight] is
+     * the mechanism; this proves the CONSUMER side — [ScrobbleFlusher.flush] must skip it — and
+     * that it is not permanently stuck: once the mark clears (the live send resolved), the next
+     * flush delivers it normally, so across the two attempts it is sent exactly once overall.
+     */
+    @Test fun `flush skips an entry marked in-flight, then delivers it once the mark clears`() = runTest {
+        val sourceId = addAccount()
+        val entry = QueuedScrobble(sourceId, "song-1", 1_000L)
+        queue.add(entry)
+        queue.markInFlight(entry) // simulates a Scrobbler live send for this exact entry, still outstanding
+        server.enqueue(okEnvelope()) // would answer a request IF one were (wrongly) made
+
+        flusher().flush(sourceId)
+
+        assertEquals(
+            "the in-flight entry must not be sent by a concurrent flush",
+            emptyList<FakeHttpServer.Recorded>(),
+            server.requests,
+        )
+        assertEquals(
+            "the live send — not this flush — owns the entry's outcome; it must still be queued",
+            listOf(entry),
+            queue.forSource(sourceId),
+        )
+
+        queue.clearInFlight(entry) // the live send resolved (however it resolved)
+        flusher().flush(sourceId)
+
+        assertEquals("sent exactly once, on this second flush", 1, server.requests.size)
+        assertEquals(emptyList<QueuedScrobble>(), queue.forSource(sourceId))
+    }
+
     // ------------------------------------------------------------------------------- order / stop
 
     @Test fun `flush delivers oldest first and stops at the first unreachable result`() = runTest {

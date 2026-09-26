@@ -356,7 +356,7 @@ class ScrobblerTest {
             h.scrobbler.onIsPlayingChanged(true)
             assertEquals("unknown duration defaults to the 240s cap", 240_000L, h.scheduler.latestPendingDelay())
 
-            h.scrobbler.onDurationKnown(90_000L) // a 90s track: real threshold 45_000
+            h.scrobbler.onDurationKnown(track, 90_000L) // a 90s track: real threshold 45_000
             assertEquals(45_000L, h.scheduler.latestPendingDelay())
 
             h.now = 45_000L
@@ -374,7 +374,7 @@ class ScrobblerTest {
             h.scrobbler.onMediaItemTransition(track, 0L, isPlaying = false) // unknown -> 240s cap
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 50_000L // 50s already listened while buffering
-            h.scrobbler.onDurationKnown(60_000L) // a 60s track: real threshold 30_000, already passed
+            h.scrobbler.onDurationKnown(track, 60_000L) // a 60s track: real threshold 30_000, already passed
 
             assertEquals("must send immediately, not wait for a timer", 2, h.senderCalls.size)
         } finally {
@@ -386,7 +386,7 @@ class ScrobblerTest {
         val h = Harness()
         try {
             h.scrobbler.onMediaItemTransition(null, 0L, isPlaying = true) // local/ineligible
-            h.scrobbler.onDurationKnown(90_000L) // must not throw or schedule anything
+            h.scrobbler.onDurationKnown(null, 90_000L) // must not throw or schedule anything
             assertEquals(null, h.scheduler.latestPendingDelay())
         } finally {
             h.close()
@@ -511,6 +511,95 @@ class ScrobblerTest {
             )
         } finally {
             queueDir.deleteRecursively()
+        }
+    }
+
+    /**
+     * Fix round 2, finding 2 (double delivery) — the PRODUCER side: [Scrobbler] itself must mark
+     * the write-ahead entry in-flight for exactly the span its live send is outstanding, so a
+     * concurrent [com.kaislate.veldtplayer.data.scrobble.ScrobbleFlusher.flush] (tested on the
+     * CONSUMER side in `ScrobbleFlusherTest`) has something to skip. Reuses the same
+     * suspend-on-a-gate shape as the write-ahead test above.
+     */
+    @Test fun `the write-ahead entry is marked in-flight for exactly the span the live send is outstanding`() {
+        val queueDir = Files.createTempDirectory("scrobbler-in-flight-test").toFile()
+        try {
+            val queue = ScrobbleQueue(queueDir)
+            val scheduler = FakeScheduler()
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+            val gate = CompletableDeferred<ScrobbleResult>()
+            var now = 0L
+            val entry = QueuedScrobble("acct-1", "song-1", 0L)
+            val scrobbler = Scrobbler(
+                scope = scope,
+                clock = ListenClock(now = { now }, wallClock = { 0L }),
+                sourceExists = { true },
+                sender = { _, _, _ -> gate.await() },
+                queue = queue,
+                flush = {},
+                enqueueFlush = {},
+                scheduler = scheduler,
+            )
+
+            scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true)
+            now = 120_000L
+            scheduler.fireAll() // queues the entry, marks it in-flight, then suspends on the gate
+
+            assertTrue("must be marked in-flight while the live send is outstanding", queue.isInFlight(entry))
+
+            gate.complete(ScrobbleResult.Ok) // the send resolves
+
+            assertFalse("must be cleared once the live send has resolved", queue.isInFlight(entry))
+        } finally {
+            queueDir.deleteRecursively()
+        }
+    }
+
+    // ------------------------------------------------------------- duration identity (fix round 2, item 1)
+
+    /**
+     * Fix round 2, finding 1 (IMPORTANT — new). Media3 delivers `onTimelineChanged` for a queue
+     * replacement BEFORE `onMediaItemTransition`, and by then `player.currentMediaItem` already
+     * reports the NEXT item — so a duration correction for track B can arrive while [Scrobbler]
+     * still considers track A current. The exact scenario from the review: A is 300s with 100s
+     * already listened (A's own threshold, 150_000, not yet crossed); B is an album's first track
+     * at 180s (B's threshold would be 90_000). Applying B's duration to A's clock would make A's
+     * 100_000 ms listened look like it had crossed a 90_000 ms threshold — a false "played" for a
+     * track the user never actually finished.
+     *
+     * **This file's control** (see the task report): removing the `track != current` identity
+     * check in `Scrobbler.onDurationKnown` reddens this test — A gets falsely scrobbled as played.
+     */
+    @Test fun `a duration correction for a different item (queue replaced) is ignored, not applied to the current play-through`() {
+        val h = Harness()
+        try {
+            h.senderResult = ScrobbleResult.Ok
+            h.scrobbler.onMediaItemTransition(track, 300_000L, isPlaying = true) // A: threshold 150_000
+            h.now = 100_000L // 100s of A listened; A's own threshold not yet crossed
+            assertEquals("just A's now-playing so far", 1, h.senderCalls.size)
+
+            val trackB = TrackRef("acct-1", "song-2")
+            // Simulates onTimelineChanged firing for B BEFORE onMediaItemTransition — B's duration
+            // arrives while `currentTrack` (Scrobbler's own state) is still A.
+            h.scrobbler.onDurationKnown(trackB, 180_000L) // B's threshold would be 90_000 if wrongly applied to A
+
+            assertEquals(
+                "A must not have been falsely scrobbled as played by B's duration",
+                1,
+                h.senderCalls.size,
+            )
+            h.scheduler.fireAll() // if a played timer had been (wrongly) rescheduled to fire now, this would send it
+            assertEquals("still just A's now-playing — nothing falsely sent for A", 1, h.senderCalls.size)
+
+            // The REAL transition to B, when it follows, starts B's own play-through correctly.
+            h.scrobbler.onMediaItemTransition(trackB, 180_000L, isPlaying = true)
+            assertEquals("B's own now-playing", 2, h.senderCalls.size)
+            h.now = 190_000L // 90s into B — B's own threshold
+            h.scheduler.fireAll()
+            assertEquals("B's own played, at B's own threshold", 3, h.senderCalls.size)
+            assertEquals(listOf(false, false, true), h.senderCalls.map { it.second })
+        } finally {
+            h.close()
         }
     }
 

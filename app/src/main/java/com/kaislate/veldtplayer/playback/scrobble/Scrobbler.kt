@@ -48,6 +48,15 @@ interface Scheduler {
  * `Dispatchers.IO`-backed scope so the queue's file I/O and the network call never touch the
  * player's own thread; a test supplies whatever it needs for determinism.
  *
+ * **Fix round 2, finding 3 — [queue] is FILE I/O, never called synchronously.** Every
+ * [ScrobbleQueue] call ([queue].add, `isAuthBlocked`, `markInFlight`, `remove`,
+ * `setAuthBlocked`, `clearInFlight`) happens INSIDE a `scope.launch { ... }` below, never in the
+ * synchronous body of a public method — the write-ahead guarantee (finding 4, fix round 1) is
+ * about ORDERING relative to [sender] (queued before the network attempt), not about which
+ * thread does the write; on [scope]'s `Dispatchers.IO`, none of it touches the calling
+ * (player/main) thread. Only cheap, in-memory decisions — [clock] reads, [generation], the
+ * [QueuedScrobble] value itself — happen synchronously.
+ *
  * ## Now playing
  * The first "started playing" moment of a play-through — either [onIsPlayingChanged]`(true)`, OR
  * [onMediaItemTransition] itself when the player was ALREADY playing (see below) — sends
@@ -75,6 +84,12 @@ interface Scheduler {
  * already auth-blocked, the send is never attempted at all — the write-ahead entry alone IS the
  * outcome (review fix round 1, item 6).
  *
+ * **In-flight marking** (fix round 2, finding 2 — double delivery): between write-ahead adding
+ * the entry and the live send resolving, a [ScrobbleQueue.markInFlight]/[ScrobbleQueue
+ * .clearInFlight] pair tells a CONCURRENT [com.kaislate.veldtplayer.data.scrobble.ScrobbleFlusher]
+ * (a piggyback from some other successful request, the retry worker, a sync) to skip this entry
+ * rather than sending it a second time before this live send's own outcome is known.
+ *
  * ## Auto-advance and repeat-one make no `onIsPlayingChanged` call (review fix round 1, item 1 —
  * CRITICAL fix)
  * Media3 fires `onIsPlayingChanged` only when the PLAYING STATE actually changes. Gapless
@@ -88,7 +103,7 @@ interface Scheduler {
  * [TrackRef]?, a fresh [ListenClock.start], `nowPlayingSent` reset, and — if already playing — an
  * immediate now-playing send and timer schedule for THIS item, with no separate event required.
  *
- * ## Duration arriving late
+ * ## Duration arriving late — and for WHICH item (fix round 2, finding 1 — IMPORTANT fix)
  * `onMediaItemTransition` commonly fires before Media3 knows the item's duration
  * (`C.TIME_UNSET`). [onDurationKnown] — called once the player reaches `STATE_READY`, and again on
  * `onTimelineChanged` (the facade calls both) — corrects [ListenClock] via
@@ -96,6 +111,16 @@ interface Scheduler {
  * currently playing, reschedules the pending timer against the now-real threshold; a track that
  * turns out to be well under the 240s default cap must not wait out the default before its
  * "played" scrobble fires.
+ *
+ * **[onDurationKnown] takes the [TrackRef]? the duration is FOR, and ignores it unless it equals
+ * [currentTrack].** Media3 delivers `onTimelineChanged` for a queue replacement BEFORE
+ * `onMediaItemTransition`, and by then `player.currentMediaItem` already reports the NEW item —
+ * so a naive "just apply whatever duration arrives" would apply the NEXT item's (possibly much
+ * shorter) duration to the item STILL playing, corrupting its threshold and potentially firing a
+ * false "played" for a track the user never actually finished (e.g. a 300s track at 100s listened,
+ * replaced by an album whose first track is 180s: a wrongly-applied 90s threshold would cross
+ * immediately). The real transition, when it follows, starts the new item's OWN play-through with
+ * its own duration regardless — this check only prevents the stale-item corruption in between.
  *
  * ## Process death (plan Review Focus 5)
  * A play-through that never reaches its threshold before the process dies is simply lost — there
@@ -177,16 +202,23 @@ class Scrobbler(
     }
 
     /**
-     * The player learned (or re-confirmed) the current item's real duration — call on
+     * The player learned (or re-confirmed) a duration for [track] — call on
      * `Player.Listener.onPlaybackStateChanged(Player.STATE_READY)` AND on `onTimelineChanged`
-     * (the facade calls both — review fix round 1, item 3). A no-op with no eligible
-     * [currentTrack]. See the class KDoc, "Duration arriving late".
+     * (the facade calls both — review fix round 1, item 3), passing whichever [TrackRef]? the
+     * CURRENT `player.currentMediaItem` resolves to at that moment.
+     *
+     * A no-op with no eligible [currentTrack], AND a no-op when [track] does not equal
+     * [currentTrack] (fix round 2, finding 1) — seeing this called for a different item means
+     * Media3 has already moved `player.currentMediaItem` on to the NEXT item while THIS class's
+     * play-through is still the old one; applying that duration here would corrupt the old
+     * item's threshold. See the class KDoc, "Duration arriving late — and for WHICH item".
      */
-    fun onDurationKnown(durationMs: Long) {
+    fun onDurationKnown(track: TrackRef?, durationMs: Long) {
         if (released) return
-        val track = currentTrack ?: return
+        val current = currentTrack ?: return
+        if (track != current) return
         clock.updateDuration(durationMs)
-        if (isPlaying) scheduleOrFirePlayed(track)
+        if (isPlaying) scheduleOrFirePlayed(current)
     }
 
     /** Cancels any pending "played" timer. Does not cancel [scope] — that belongs to whoever
@@ -199,10 +231,12 @@ class Scrobbler(
 
     private fun sendNowPlaying(track: TrackRef) {
         nowPlayingSent = true // set synchronously: a rapid duplicate "started playing" must not double-send
-        // Review fix round 1, item 6 (controller ruling): an auth-blocked source gets no live
-        // attempt at all — the account's own queue already knows this call would just fail.
-        if (queue.isAuthBlocked(track.sourceId)) return
         scope.launch {
+            // Review fix round 1, item 6 (controller ruling): an auth-blocked source gets no live
+            // attempt at all — the account's own queue already knows this call would just fail.
+            // Fix round 2, finding 3: the check itself is FILE I/O, so it runs here, not
+            // synchronously in the caller — see the class KDoc.
+            if (queue.isAuthBlocked(track.sourceId)) return@launch
             if (sender(track, false, null) is ScrobbleResult.Ok) flush(track.sourceId)
         }
     }
@@ -230,35 +264,47 @@ class Scrobbler(
 
     /**
      * Write-ahead (review fix round 1, item 4): [queue] gets the entry BEFORE [sender] is ever
-     * called — synchronously, on the caller's thread, so it is durable the instant this method
-     * returns, regardless of what happens to the launched send afterward (a teardown cancellation,
-     * a process death mid-request). [ScrobbleResult.Ok] and a dropped (non-credential) rejection
-     * both remove it again; [ScrobbleResult.Unreachable] and a credential rejection leave it.
+     * called — durable (once the write lands) regardless of what happens to the launched send
+     * afterward (a teardown cancellation, a process death mid-request). [ScrobbleResult.Ok] and a
+     * dropped (non-credential) rejection both remove it again; [ScrobbleResult.Unreachable] and a
+     * credential rejection leave it. [ScrobbleQueue.markInFlight]/[ScrobbleQueue.clearInFlight]
+     * bracket the send (fix round 2, finding 2) so a concurrent flush does not deliver the same
+     * entry a second time while this one is still outstanding.
      *
      * Review fix round 1, item 6 (controller ruling): while the source is already auth-blocked,
      * [sender] is never called at all — the write-ahead entry alone is the correct outcome, with
      * zero network attempts.
+     *
+     * Fix round 2, finding 3: [clock.markSent][ListenClock.markSent], [generation], and building
+     * the plain [QueuedScrobble] VALUE are the only things that happen synchronously, on the
+     * caller's thread — every [queue] call (the write-ahead add itself included) is FILE I/O and
+     * runs inside [scope]'s launch. See the class KDoc.
      */
     private fun trySendPlayed(track: TrackRef, expectedGeneration: Int) {
         if (released || expectedGeneration != generation || clock.sent || !clock.crossed()) return
         clock.markSent() // synchronous: the one guard against ever sending "played" twice
         val timeMs = clock.startedAtWallMs
         val entry = QueuedScrobble(track.sourceId, track.externalId, timeMs)
-        queue.add(entry) // write-ahead — see this method's KDoc
-        if (queue.isAuthBlocked(track.sourceId)) return // routed straight to the queue; no request
         scope.launch {
-            when (val result = sender(track, true, timeMs)) {
-                ScrobbleResult.Ok -> {
-                    queue.remove(entry)
-                    flush(track.sourceId)
-                }
-                ScrobbleResult.Unreachable -> enqueueFlush() // stays queued
-                is ScrobbleResult.Rejected ->
-                    if (result.error.meansCredentialsWontWork) {
-                        queue.setAuthBlocked(track.sourceId, true) // stays queued
-                    } else {
-                        queue.remove(entry) // dropped: resending cannot change it
+            queue.add(entry) // write-ahead — see this method's KDoc
+            if (queue.isAuthBlocked(track.sourceId)) return@launch // routed straight to the queue; no request
+            queue.markInFlight(entry)
+            try {
+                when (val result = sender(track, true, timeMs)) {
+                    ScrobbleResult.Ok -> {
+                        queue.remove(entry)
+                        flush(track.sourceId)
                     }
+                    ScrobbleResult.Unreachable -> enqueueFlush() // stays queued
+                    is ScrobbleResult.Rejected ->
+                        if (result.error.meansCredentialsWontWork) {
+                            queue.setAuthBlocked(track.sourceId, true) // stays queued
+                        } else {
+                            queue.remove(entry) // dropped: resending cannot change it
+                        }
+                }
+            } finally {
+                queue.clearInFlight(entry)
             }
         }
     }

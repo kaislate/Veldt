@@ -44,12 +44,33 @@ private data class QueueState(val entries: List<QueuedScrobble>, val authBlocked
  * [purge]/[setAuthBlocked] are each a read-modify-write of the whole file and two callers racing
  * unsynchronized could each read the same pre-write snapshot and one's write would silently undo
  * the other's.
+ *
+ * **Fix round 2 (finding 2 — double delivery):** [inFlight] is a purely in-memory, NOT-persisted
+ * set of entries a live send (`Scrobbler.trySendPlayed`) currently has outstanding. Write-ahead
+ * (fix round 1, finding 4) means a queued entry and an in-flight live send for the SAME scrobble
+ * can coexist: a piggyback flush triggered by some OTHER successful request, the retry worker, or
+ * a sync can all run concurrently with that live send and would otherwise deliver the same
+ * scrobble a second time before the live send's own result (remove-or-leave) has landed.
+ * [ScrobbleFlusher.flush] skips any entry [isInFlight] reports true for. Not persisted on purpose
+ * — a live send cannot possibly still be "in flight" across a process restart, so there is
+ * nothing to survive for.
  */
 class ScrobbleQueue(private val dir: File) {
 
     private val lock = Any()
+    private val inFlight = mutableSetOf<QueuedScrobble>()
 
     private val file: File get() = File(dir, "queue.json")
+
+    /** Marks [entry] as having a live send outstanding — call right before attempting it.
+     *  See the class KDoc, "Fix round 2 (finding 2 — double delivery)". */
+    fun markInFlight(entry: QueuedScrobble) = synchronized(lock) { inFlight.add(entry) }
+
+    /** Clears [entry]'s in-flight mark — call once the live send has resolved, in a `finally` so
+     *  a cancelled or failed send still clears it. */
+    fun clearInFlight(entry: QueuedScrobble) = synchronized(lock) { inFlight.remove(entry) }
+
+    fun isInFlight(entry: QueuedScrobble): Boolean = synchronized(lock) { entry in inFlight }
 
     /** Appends [entry], oldest-first order preserved. Beyond [CAP] entries, the OLDEST are
      *  dropped, not the newest — a queue that has been offline a long time should not lose the

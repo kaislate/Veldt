@@ -299,8 +299,16 @@ class OfflineByDefaultAuditTest {
         val ghostId = "no-such-account"
         val ghostTrack = TrackRef(ghostId, "song-1")
 
-        // sync — both the enqueue call site (review fix round 1, item 7: not just a worker run
-        // with a fake id) and the worker it would run.
+        // sync. `SubsonicSyncCoordinator.request` itself enqueues a WorkManager job
+        // UNCONDITIONALLY — it does not, and (fix round 2, finding 4) deliberately does NOT,
+        // check whether the id names a current account first: `SubsonicSources.contains`/`byId`
+        // read a snapshot that lags a just-added account (see `SubsonicSources.credentials`'s own
+        // KDoc), and gating `request` on that check would silently drop a BRAND NEW account's
+        // very first sync — a correctness regression far worse than this one test's precision.
+        // Calling it here proves only that enqueueing itself touches no network (trivially true —
+        // WorkManager scheduling is not a request) — the real "zero requests for a nonexistent
+        // account" claim is what running the WORKER any such job would actually execute proves,
+        // immediately below.
         SubsonicSyncCoordinator(context, songDao, status, queue).request(ghostId)
         assertEquals(
             ListenableWorker.Result.failure(workDataOf(SubsonicSyncWorker.KEY_FAILURE to "gone")),
