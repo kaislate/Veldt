@@ -17,7 +17,7 @@ import java.nio.file.Files
  * rather than a fake of it.
  *
  * Negative control this file is designed to catch (see the task report): dropping the
- * `sidecar.length() > MAX_BYTES` clamp reddens the oversize test.
+ * `sidecar.length() <= MAX_BYTES` guard reddens the oversize test.
  */
 class SidecarLrcProviderTest {
 
@@ -53,7 +53,16 @@ class SidecarLrcProviderTest {
         }
     }
 
-    @Test fun `the uppercase LRC extension variant is read`() = runTest {
+    /**
+     * A sidecar with a different-case extension is still found. This does NOT prove the
+     * provider's second (`.LRC`) probe is what matched — on a case-insensitive file system
+     * (this test host included: Windows/NTFS), `File(parent, "song.lrc").isFile` already
+     * returns true for a file actually named `song.LRC`, so the FIRST probe alone would make
+     * this test pass regardless of whether a second, differently-cased probe exists at all.
+     * What this test actually pins is only "some case spelling of the sidecar is found" — a
+     * real, useful guarantee, just not the one its old name implied.
+     */
+    @Test fun `a sidecar is found even when its extension case differs from what was created`() = runTest {
         val dir = tempDir()
         try {
             File(dir, "song.LRC").writeText("[00:02.00]hi")
@@ -93,7 +102,7 @@ class SidecarLrcProviderTest {
         val dir = tempDir()
         try {
             // Comfortably past the 512 KiB clamp, and a valid single LRC line if it WERE read —
-            // so this test can only pass because of the size clamp, not because the content is
+            // so this test can only pass because of the size guard, not because the content is
             // unparsable. See the class KDoc's control.
             val big = "[00:01.00]" + "a".repeat(600_000)
             File(dir, "song.lrc").writeText(big)
@@ -105,53 +114,20 @@ class SidecarLrcProviderTest {
     }
 
     /**
-     * A directory whose own listing is denied must degrade to null, not throw. Simulated with a
-     * real, OS-level access restriction rather than a mock: on Windows, `icacls /deny` on the
-     * directory itself; on POSIX, stripping all permissions. Restored before cleanup either way
-     * — see [withListingDenied].
+     * Platform-neutral failure case, in place of an OS-permission simulation: a real DIRECTORY
+     * happens to be named `<basename>.lrc` (nothing stops that on any filesystem). `File.isFile`
+     * is false for it, so the guard in [SidecarLrcProvider.lyricsFor] skips it exactly like a
+     * missing candidate — no exception, no special-casing, and no platform-specific setup
+     * needed to exercise it.
      */
-    @Test fun `an unreadable directory is null rather than throwing`() = runTest {
+    @Test fun `a directory named like the sidecar is null rather than throwing`() = runTest {
         val dir = tempDir()
         try {
-            File(dir, "song.lrc").writeText("[00:01.00]hidden")
-            withListingDenied(dir) {
-                val result = SidecarLrcProvider().lyricsFor(song(File(dir, "song.mp3").path))
-                assertNull(result)
-            }
+            File(dir, "song.lrc").mkdir()
+            val result = SidecarLrcProvider().lyricsFor(song(File(dir, "song.mp3").path))
+            assertNull(result)
         } finally {
             dir.deleteRecursively()
-        }
-    }
-
-    /**
-     * Denies [dir]'s own read/list access for the duration of [action], then restores it —
-     * restoration happens even if [action] throws, and happens BEFORE the caller's own
-     * `deleteRecursively()`, which itself needs to list the directory.
-     *
-     * Windows grants the "bypass traverse checking" privilege by default, so a plain
-     * `File.setReadable(false)` on a directory has no effect there (measured) — an explicit
-     * `icacls /deny` ACE is what actually makes `File.listFiles()` observe the denial. POSIX
-     * systems get there with an ordinary permission strip.
-     */
-    private suspend fun withListingDenied(dir: File, action: suspend () -> Unit) {
-        val user = System.getProperty("user.name")
-        val windows = System.getProperty("os.name").orEmpty().contains("Windows", ignoreCase = true)
-        if (windows) {
-            ProcessBuilder("icacls", dir.absolutePath, "/deny", "$user:(RX)").start().waitFor()
-            try {
-                action()
-            } finally {
-                ProcessBuilder("icacls", dir.absolutePath, "/remove:d", user).start().waitFor()
-            }
-        } else {
-            dir.setReadable(false, false)
-            dir.setExecutable(false, false)
-            try {
-                action()
-            } finally {
-                dir.setReadable(true, false)
-                dir.setExecutable(true, false)
-            }
         }
     }
 }

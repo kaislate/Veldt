@@ -14,19 +14,16 @@ import javax.inject.Inject
  * [Song.filePath] is null for a remote track, and null is exactly the "no lyrics" answer this
  * returns for it.
  *
- * The sidecar is found through [File.listFiles] of the track's directory rather than by
- * probing two directly-constructed [File] paths, on purpose: Windows grants "bypass traverse
- * checking" by default, so a directly-constructed `File(parent, name)` can still be opened even
- * when the directory itself has had its own read/list access denied — [File.listFiles] is the
- * operation that actually observes that denial (returning null) instead of silently succeeding
- * around it, which is what lets a genuinely unreadable directory degrade to "no lyrics" rather
- * than throw. The match against the two exact spellings happens against the names
- * [File.listFiles] actually reports, so it is unaffected by whichever of the two names is the
- * one that exists.
- *
- * A sidecar over [MAX_BYTES] is treated as absent rather than read and truncated: 512 KiB is
- * already three orders of magnitude past any real lyrics file, so this is a sanity clamp
- * against a mis-named large file, not a limit anyone should ever actually hit.
+ * Two candidate paths are probed directly, in order — `<basename>.lrc` then `<basename>.LRC` —
+ * rather than listing the directory: production behaviour is chosen for Android (where
+ * `.lrc`/`.LRC` are the two spellings actually seen in the wild, spec §3), not for whatever a
+ * development host's file-system semantics happen to make convenient to test. Each candidate
+ * must be an existing FILE (`isFile`, so a same-named directory is skipped, not an error),
+ * readable, and no larger than [MAX_BYTES] — 512 KiB is already three orders of magnitude past
+ * any real lyrics file, so this is a sanity clamp against a mis-named large file, not a limit
+ * anyone should ever actually hit. The read itself runs inside a blanket `catch (Throwable)`:
+ * any I/O failure not already excluded by the guards above degrades to "no lyrics" rather than
+ * propagating.
  */
 class SidecarLrcProvider @Inject constructor() : LyricsProvider {
 
@@ -37,13 +34,11 @@ class SidecarLrcProvider @Inject constructor() : LyricsProvider {
                 val audioFile = File(filePath)
                 val parent = audioFile.parentFile ?: return@withContext null
                 val base = audioFile.nameWithoutExtension
-                val candidateNames = setOf("$base.lrc", "$base.LRC")
-                val sidecar = parent.listFiles()
-                    ?.firstOrNull { it.isFile && it.name in candidateNames }
+                val sidecar = listOf(File(parent, "$base.lrc"), File(parent, "$base.LRC"))
+                    .firstOrNull { it.isFile && it.canRead() && it.length() <= MAX_BYTES }
                     ?: return@withContext null
-                if (sidecar.length() > MAX_BYTES) return@withContext null
                 LrcParser.parse(sidecar.readText(Charsets.UTF_8))
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
                 null
             }
         }

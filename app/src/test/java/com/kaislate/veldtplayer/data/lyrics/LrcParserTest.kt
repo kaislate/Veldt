@@ -104,6 +104,36 @@ class LrcParserTest {
         )
     }
 
+    // --- the metadata set is the spec's enumerated tags, not any [letters:...] line -----------
+
+    // Controller ruling: the SPEC's enumerated metadata set (§4) wins over a generic
+    // [letters:...] pattern. "Chorus" is not ar/ti/al/by/length/re/ve/offset, so this is an
+    // ordinary lyric annotation, not a tag, and must survive verbatim.
+    //
+    // Control (see the task report): reverting METADATA_LINE to the generic
+    // `^\[[a-zA-Z]+:.*]$` pattern makes this test go red, because "Chorus" would then match
+    // and the line would be dropped instead of kept.
+    @Test fun `a non-enumerated bracket annotation survives as plain text`() {
+        assertEquals(
+            Lyrics.Plain("[Chorus: Poppy]"),
+            LrcParser.parse("[Chorus: Poppy]"),
+        )
+    }
+
+    @Test fun `an enumerated tag is dropped case-insensitively`() {
+        assertEquals(
+            Lyrics.Plain("some text"),
+            LrcParser.parse("[AR:X]\nsome text"),
+        )
+    }
+
+    @Test fun `a non-enumerated bracket annotation after a leading timestamp is that line's text`() {
+        assertEquals(
+            Lyrics.Synced(listOf(LyricLine(10000, "[Chorus: Poppy]"))),
+            LrcParser.parse("[00:10.00][Chorus: Poppy]"),
+        )
+    }
+
     // --- enhanced (word-timed) tags stripped from text ------------------------------------------
 
     @Test fun `word-timing tags are stripped from the text`() {

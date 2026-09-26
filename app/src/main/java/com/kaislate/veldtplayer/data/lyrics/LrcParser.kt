@@ -29,12 +29,21 @@ package com.kaislate.veldtplayer.data.lyrics
  *     nothing remains, the result is `null`.
  *
  * Along the way: a leading BOM is stripped, `\r\n` and bare `\r` line endings are normalised to
- * `\n`, every line is trimmed, metadata tags (`[ar:]`, `[ti:]`, `[al:]`, `[by:]`, `[length:]`,
- * `[re:]`, `[ve:]` and any other `[letters:...]` line) and `#` comment lines are dropped, and
- * enhanced word-timing tags (`<mm:ss.xx>`) are stripped out of a timed line's text. A line whose
- * leading bracket looks like a timestamp but isn't (`[aa:bb.cc]x` — the "minutes" aren't
- * digits) is not a timestamp at all: it is ordinary text, subject to the same synced/plain
- * split as everything else.
+ * `\n`, every line is trimmed, metadata tags — exactly spec §4's enumerated set, `ar`, `ti`,
+ * `al`, `by`, `length`, `re`, `ve`, `offset`, case-insensitive, and nothing else — and `#`
+ * comment lines are dropped, and enhanced word-timing tags (`<mm:ss.xx>`) are stripped out of a
+ * timed line's text.
+ *
+ * **The metadata set is deliberately closed, not `[anything:anything]`.** A line like
+ * `[Chorus: Poppy]` — a human annotation some taggers write, not an ID3-style metadata tag — is
+ * NOT in the enumerated set, so it survives as ordinary text: kept verbatim in a [Lyrics.Plain]
+ * file, and ignored (per the untimed-line rule above) in a file that also has timed lines —
+ * unless it follows a leading timestamp on the SAME line (`[00:10.00][Chorus: Poppy]`), in which
+ * case it is that line's TEXT, not a separate line, and is kept.
+ *
+ * A line whose leading bracket looks like a timestamp but isn't (`[aa:bb.cc]x` — the "minutes"
+ * aren't digits) is not a timestamp at all: it is ordinary text, subject to the same
+ * synced/plain split as everything else.
  */
 object LrcParser {
 
@@ -44,8 +53,13 @@ object LrcParser {
     /** A whole line consisting of exactly one `[offset:±N]` tag. */
     private val OFFSET_TAG = Regex("""^\[offset:\s*([+-]?\d+)\s*]$""", RegexOption.IGNORE_CASE)
 
-    /** A whole line consisting of exactly one `[letters:...]` metadata tag. */
-    private val METADATA_LINE = Regex("""^\[[a-zA-Z]+:.*]$""")
+    /**
+     * A whole line consisting of exactly one metadata tag from spec §4's enumerated set. Deliberately
+     * NOT `[a-zA-Z]+` — see the class KDoc's `[Chorus: Poppy]` example for why a generic
+     * `[anything:anything]` pattern is wrong here: it would swallow an ordinary lyric annotation
+     * that merely looks like a tag.
+     */
+    private val METADATA_LINE = Regex("""^\[(ar|ti|al|by|length|re|ve|offset):.*]$""", RegexOption.IGNORE_CASE)
 
     /** An enhanced word-timing tag, stripped from a timed line's text wherever it appears. */
     private val WORD_TAG = Regex("""<\d+:\d{1,2}(?:[.:]\d{1,3})?>""")
