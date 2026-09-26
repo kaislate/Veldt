@@ -23,6 +23,7 @@ import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.SongEntity
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.db.toDomain
+import com.kaislate.veldtplayer.data.library.sync.SubsonicSyncCoordinator
 import com.kaislate.veldtplayer.data.library.sync.SubsonicSyncWorker
 import com.kaislate.veldtplayer.data.library.sync.SyncStatusStore
 import com.kaislate.veldtplayer.data.lyrics.LrclibCache
@@ -116,6 +117,11 @@ class OfflineByDefaultAuditTest {
 
     private fun hostOf(url: String): String = url.toHttpUrl().host
 
+    /** The last path segment before any query string — the Subsonic endpoint name — from either
+     *  a [RecordingInterceptor.Recorded] url or a resolved stream url (review fix round 1, item
+     *  7: "assert per-endpoint expected requests, not just at least one"). */
+    private fun endpointOf(url: String): String = url.substringAfterLast('/').substringBefore('?')
+
     /** Real-time polling for [recorder]'s request count to reach [min] — needed only after a
      *  [Scrobbler] send, which is fire-and-forget by design; see [scrobbler]'s own KDoc. Every
      *  OTHER entry point in this file is a plain suspend call the test coroutine directly awaits,
@@ -147,6 +153,10 @@ class OfflineByDefaultAuditTest {
     private lateinit var queue: ScrobbleQueue
     private lateinit var lrclibCacheDir: File
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+
+    /** How many times [scrobbler]'s built `enqueueFlush` callback ran, across a whole test —
+     *  review fix round 1, item 7: invariant 1 must also assert the scheduler enqueues nothing. */
+    private var enqueueFlushCount = 0
 
     /** [SubsonicSources]' `accountDao.observeAll()` collector never runs — see `ScrobbleFlusherTest`'s
      *  KDoc for why this dispatcher, and why [sources] below is built AFTER any account exists. */
@@ -241,7 +251,7 @@ class OfflineByDefaultAuditTest {
             },
             queue = queue,
             flush = flusher::flush,
-            enqueueFlush = {},
+            enqueueFlush = { enqueueFlushCount++ },
             scheduler = immediate,
         )
     }
@@ -289,7 +299,9 @@ class OfflineByDefaultAuditTest {
         val ghostId = "no-such-account"
         val ghostTrack = TrackRef(ghostId, "song-1")
 
-        // sync
+        // sync — both the enqueue call site (review fix round 1, item 7: not just a worker run
+        // with a fake id) and the worker it would run.
+        SubsonicSyncCoordinator(context, songDao, status, queue).request(ghostId)
         assertEquals(
             ListenableWorker.Result.failure(workDataOf(SubsonicSyncWorker.KEY_FAILURE to "gone")),
             syncWorker(ghostId, ScrobbleFlusher(queue, client, sources), sources).doWork(),
@@ -318,7 +330,7 @@ class OfflineByDefaultAuditTest {
         // scrobbler: an eligible-looking track whose source does not exist
         val flusher = ScrobbleFlusher(queue, client, sources)
         val bot = scrobbler(sources, flusher)
-        bot.onMediaItemTransition(ghostTrack, 240_000L)
+        bot.onMediaItemTransition(ghostTrack, 240_000L, isPlaying = false)
         bot.onIsPlayingChanged(true)
 
         // flusher, standalone (an empty queue, and a flush() call naming an unknown source)
@@ -329,6 +341,11 @@ class OfflineByDefaultAuditTest {
             "expected zero requests with zero accounts; got ${recorder.requests}",
             emptyList<RecordingInterceptor.Recorded>(),
             recorder.requests,
+        )
+        assertEquals(
+            "the flush scheduler must never be enqueued with zero accounts",
+            0,
+            enqueueFlushCount,
         )
     }
 
@@ -351,18 +368,29 @@ class OfflineByDefaultAuditTest {
 
     // ------------------------------------------------------------------------------ invariant 2
 
-    /** Network spec §10.4: every request targets a host the user typed. One account at `h.example`,
-     *  LRCLIB off ⇒ every recorded host is exactly that account's host. */
+    /**
+     * Network spec §10.4: every request targets a host the user typed. One account at
+     * `h.example`, LRCLIB off ⇒ every recorded host is exactly that account's host — asserted
+     * per-endpoint (review fix round 1, item 7), not merely "at least one", and INCLUDING the
+     * resolved stream url (review fix round 1, item 2): a stream never goes through the recorded
+     * `OkHttpClient` at all (Media3 opens it via `DefaultHttpDataSource`), so without this the
+     * stream url's host was never checked by this file.
+     */
     @Test fun `one account, LRCLIB off, every recorded host is that account's host`() = runTest {
         val sourceId = addAccount("h.example:4533")
-        val sources = sources() // built AFTER the account exists — see sources()'s KDoc
+        // BEFORE sources() — SubsonicSources.capabilities reads a snapshot frozen at
+        // construction (see sources()'s KDoc); caching this after would leave
+        // ServerLyricsProvider seeing BASELINE forever and silently contributing no request.
+        accounts.cacheCapabilities(sourceId, setOf("songLyrics"))
+        val sources = sources() // built AFTER the account (and its capabilities) exist
         val track = TrackRef(sourceId, "song-1")
         val veldtUri = VeldtUri.track(sourceId, "song-1")
         val flusher = ScrobbleFlusher(queue, client, sources)
 
         syncWorker(sourceId, flusher, sources).doWork()
+        val resolvedStreamUrl = PlaybackUriResolver(emptySet(), streamResolvers(sources)).resolve(veldtUri)
+        assertTrue("expected the stream uri to actually resolve, not pass through unchanged", resolvedStreamUrl != veldtUri)
         RemoteArtLoader(client, sources).load(track, 300)
-        accounts.cacheCapabilities(sourceId, setOf("songLyrics"))
         val song = SongEntity(
             id = 0L, sourceId = sourceId, externalId = "song-1", uri = veldtUri,
             filePath = null, relativeKey = null, title = "remote title", artist = "a", album = "al",
@@ -371,43 +399,58 @@ class OfflineByDefaultAuditTest {
         ).toDomain()
         ServerLyricsProvider(client, sources).lyricsFor(song)
         scrobbler(sources, flusher).also {
-            it.onMediaItemTransition(track, 240_000L)
+            it.onMediaItemTransition(track, 240_000L, isPlaying = false)
             it.onIsPlayingChanged(true)
         }
         awaitRequests(1) // the scrobble send above is fire-and-forget — see scrobbler()'s KDoc
         queue.add(QueuedScrobble(sourceId, "song-2", 1_000L))
         flusher.flushAll()
 
-        assertTrue("expected at least one recorded request", recorder.requests.isNotEmpty())
         assertEquals(
-            "expected every host to be h.example; got ${recorder.requests.map { it.url }}",
+            "expected exactly these Subsonic endpoints, got ${recorder.requests.map { it.url }}",
+            setOf("getOpenSubsonicExtensions", "getAlbumList2", "getCoverArt", "getLyricsBySongId", "scrobble"),
+            recorder.requests.map { endpointOf(it.url) }.toSet(),
+        )
+        assertEquals(
+            "expected every host (including the resolved stream url) to be h.example",
             setOf("h.example"),
-            recorder.requests.map { hostOf(it.url) }.toSet(),
+            (recorder.requests.map { hostOf(it.url) } + hostOf(resolvedStreamUrl)).toSet(),
         )
     }
 
-    /** With LRCLIB also on, the host set widens to include `lrclib.net` and nothing else. */
-    @Test fun `one account, LRCLIB on, recorded hosts are a subset of the account host and lrclib_net`() = runTest {
+    /** With LRCLIB also on, the host set widens to include `lrclib.net` and nothing else —
+     *  including the resolved stream url (review fix round 1, item 2), and per-endpoint for the
+     *  account host (review fix round 1, item 7). */
+    @Test fun `one account, LRCLIB on, recorded hosts are the account host and lrclib_net, nothing else`() = runTest {
         val sourceId = addAccount("h.example:4533")
         val sources = sources()
         val flusher = ScrobbleFlusher(queue, client, sources)
+        val veldtUri = VeldtUri.track(sourceId, "song-1")
+        val resolvedStreamUrl = PlaybackUriResolver(emptySet(), streamResolvers(sources)).resolve(veldtUri)
+        assertTrue("expected the stream uri to actually resolve, not pass through unchanged", resolvedStreamUrl != veldtUri)
         scrobbler(sources, flusher).also {
-            it.onMediaItemTransition(TrackRef(sourceId, "song-1"), 240_000L)
+            it.onMediaItemTransition(TrackRef(sourceId, "song-1"), 240_000L, isPlaying = false)
             it.onIsPlayingChanged(true)
         }
         awaitRequests(1) // the scrobble send above is fire-and-forget — see scrobbler()'s KDoc
         val remoteSong = SongEntity(
-            id = 0L, sourceId = sourceId, externalId = "song-1", uri = VeldtUri.track(sourceId, "song-1"),
+            id = 0L, sourceId = sourceId, externalId = "song-1", uri = veldtUri,
             filePath = null, relativeKey = null, title = "remote title", artist = "a", album = "al",
             albumArtist = null, trackNumber = null, discNumber = null, year = null,
             durationMs = 200_000L, dateModifiedSec = 0L, hasEmbeddedArt = false,
         ).toDomain()
         lrclibProvider(enabled = true).lyricsFor(remoteSong)
 
-        assertTrue("expected at least one recorded request", recorder.requests.isNotEmpty())
-        val hosts = recorder.requests.map { hostOf(it.url) }.toSet()
-        assertTrue("expected hosts to be a subset of {h.example, lrclib.net}, got $hosts", hosts.all { it == "h.example" || it == "lrclib.net" })
-        assertTrue("expected lrclib.net among the hosts", "lrclib.net" in hosts)
+        assertEquals(
+            "expected exactly the scrobble endpoint on the account host",
+            setOf("scrobble"),
+            recorder.requests.filter { hostOf(it.url) == "h.example" }.map { endpointOf(it.url) }.toSet(),
+        )
+        assertEquals(
+            "expected exactly {h.example, lrclib.net} (including the resolved stream url), nothing else",
+            setOf("h.example", "lrclib.net"),
+            (recorder.requests.map { hostOf(it.url) } + hostOf(resolvedStreamUrl)).toSet(),
+        )
     }
 
     // ------------------------------------------------------------------------------ invariant 3
@@ -418,7 +461,10 @@ class OfflineByDefaultAuditTest {
      * SEPARATE remote account/song (never the planted one), and NONE of the recorded urls or
      * bodies may contain the planted strings. LRCLIB is exercised for a REMOTE song only — asking
      * LRCLIB about the planted LOCAL song would legitimately send its title/artist/album (that is
-     * the whole point of an LRCLIB lookup), which would be a false alarm, not a real leak.
+     * the whole point of an LRCLIB lookup), which would be a false alarm, not a real leak. The
+     * RESOLVED STREAM URL (review fix round 1, item 2) is checked too — it never goes through the
+     * recorded `OkHttpClient` (Media3 opens it via `DefaultHttpDataSource`), so without this a
+     * leak into the stream url's query string would go unnoticed.
      */
     @Test fun `a planted local song's path, title and album never appear in any recorded request`() = runTest {
         val planted = localSongEntity(
@@ -430,15 +476,17 @@ class OfflineByDefaultAuditTest {
         songDao.upsertBySourceKey(listOf(planted))
 
         val sourceId = addAccount("h.example:4533")
+        // BEFORE sources() — see the "LRCLIB off" test's KDoc note for why the order matters.
+        accounts.cacheCapabilities(sourceId, setOf("songLyrics"))
         val sources = sources()
         val flusher = ScrobbleFlusher(queue, client, sources)
         val remoteTrack = TrackRef(sourceId, "remote-song-1")
         val remoteVeldtUri = VeldtUri.track(sourceId, "remote-song-1")
 
         syncWorker(sourceId, flusher, sources).doWork()
-        PlaybackUriResolver(emptySet(), streamResolvers(sources)).resolve(remoteVeldtUri)
+        val resolvedStreamUrl = PlaybackUriResolver(emptySet(), streamResolvers(sources)).resolve(remoteVeldtUri)
+        assertTrue("expected the stream uri to actually resolve, not pass through unchanged", resolvedStreamUrl != remoteVeldtUri)
         RemoteArtLoader(client, sources).load(remoteTrack, 300)
-        accounts.cacheCapabilities(sourceId, setOf("songLyrics"))
         val remoteSong = SongEntity(
             id = 0L, sourceId = sourceId, externalId = "remote-song-1", uri = remoteVeldtUri,
             filePath = null, relativeKey = null, title = "clean remote title", artist = "clean artist", album = "clean album",
@@ -448,7 +496,7 @@ class OfflineByDefaultAuditTest {
         ServerLyricsProvider(client, sources).lyricsFor(remoteSong)
         lrclibProvider(enabled = true).lyricsFor(remoteSong) // LRCLIB on a REMOTE song only — see the KDoc
         scrobbler(sources, flusher).also {
-            it.onMediaItemTransition(remoteTrack, 240_000L)
+            it.onMediaItemTransition(remoteTrack, 240_000L, isPlaying = false)
             it.onIsPlayingChanged(true)
         }
         awaitRequests(1) // the scrobble send above is fire-and-forget — see scrobbler()'s KDoc
@@ -456,16 +504,23 @@ class OfflineByDefaultAuditTest {
         flusher.flushAll()
 
         assertTrue("expected at least one recorded request", recorder.requests.isNotEmpty())
+        assertEquals("the resolved stream url must still target the account host", "h.example", hostOf(resolvedStreamUrl))
         val planted3 = listOf(
             "ZZ-PLANT-7f3a.mp3",
             "ZZ-PLANT-7f3a title",
             "ZZ-PLANT-7f3a album",
         )
+        val checkedUrls = recorder.requests.map { it.url } + resolvedStreamUrl
+        checkedUrls.forEach { url ->
+            planted3.forEach { needle ->
+                assertFalse("planted string \"$needle\" leaked into url $url", url.contains(needle))
+            }
+        }
         recorder.requests.forEach { req ->
             planted3.forEach { needle ->
                 assertFalse(
                     "planted string \"$needle\" leaked into ${req.method} ${req.url} body=${req.body}",
-                    req.url.contains(needle) || req.body.contains(needle),
+                    req.body.contains(needle),
                 )
             }
         }
@@ -482,13 +537,13 @@ class OfflineByDefaultAuditTest {
         val flusher = ScrobbleFlusher(queue, client, sources)
         val bot = scrobbler(sources, flusher)
 
-        bot.onMediaItemTransition(null, 240_000L) // a local item: no TrackRef at all
+        bot.onMediaItemTransition(null, 240_000L, isPlaying = false) // a local item: no TrackRef at all
         bot.onIsPlayingChanged(true)
 
         assertEquals(emptyList<RecordingInterceptor.Recorded>(), recorder.requests)
         // Sanity: this same account WOULD generate a request for a real track — otherwise the
         // assertion above would be trivially true for the wrong reason (nothing here even wired).
-        bot.onMediaItemTransition(TrackRef(sourceId, "song-1"), 240_000L)
+        bot.onMediaItemTransition(TrackRef(sourceId, "song-1"), 240_000L, isPlaying = false)
         bot.onIsPlayingChanged(true)
         awaitRequests(1) // the scrobble send above is fire-and-forget — see scrobbler()'s KDoc
         assertTrue("expected the eligible track to have generated a request", recorder.requests.isNotEmpty())

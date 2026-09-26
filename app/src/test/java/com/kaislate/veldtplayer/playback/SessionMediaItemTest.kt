@@ -127,6 +127,14 @@ class SessionMediaItemTest {
         )
     }
 
+    /** N3 review fix round 1, item 3: `Scrobbler`'s duration fallback (`ScrobblerPlayerListener
+     *  .durationOf`) reads this back when `player.duration` is still `C.TIME_UNSET` — the catalog
+     *  duration must actually be here, not merely assumed to be. */
+    @Test fun `the catalog duration is carried in the metadata`() {
+        val item = itemFor(song())
+        assertEquals(240_000L, item.mediaMetadata.durationMs)
+    }
+
     // ------------------------------------------------- source-qualified mediaId (N0 Task 6)
 
     /**

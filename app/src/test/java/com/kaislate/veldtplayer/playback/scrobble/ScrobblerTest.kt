@@ -8,6 +8,7 @@ import com.kaislate.veldtplayer.data.net.SubsonicError
 import com.kaislate.veldtplayer.data.scrobble.QueuedScrobble
 import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import com.kaislate.veldtplayer.playback.TrackRef
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,17 +19,30 @@ import org.junit.Test
 import java.nio.file.Files
 
 /**
- * [Scrobbler] (design spec §3, §5; plan Review Focus 1, 2, 5). Plain JUnit — [Scrobbler] itself
- * touches no Android/Media3 type (see its class KDoc): [sender], [flush] and [enqueueFlush] are
- * plain fakes, [ScrobbleQueue] is the real, temp-dir-backed class (it is Android-free too — see
- * `ScrobbleQueueTest`), and [Scheduler] is [FakeScheduler] below, which lets a test fire a
- * "played" timer on command instead of sleeping.
+ * [Scrobbler] (design spec §3, §5; plan Review Focus 1, 2, 5; N3 review fix round 1). Plain JUnit
+ * — [Scrobbler] itself touches no Android/Media3 type (see its class KDoc): [sender], [flush] and
+ * [enqueueFlush] are plain fakes, [ScrobbleQueue] is the real, temp-dir-backed class (it is
+ * Android-free too — see `ScrobbleQueueTest`), and [Scheduler] is [FakeScheduler] below, which
+ * lets a test fire a "played" timer on command instead of sleeping.
  *
  * [Dispatchers.Unconfined] backs every [Harness]'s scope rather than a `TestScope`/
  * `runTest`: nothing [Scrobbler] launches ever genuinely suspends (every fake here returns
  * synchronously), so `Unconfined` runs each launched coroutine to completion inline, and a plain
  * `@Test fun` can assert on [Harness.senderCalls] etc. immediately after calling into [Scrobbler]
- * with no `advanceUntilIdle()` needed.
+ * with no `advanceUntilIdle()` needed. (Production uses `Dispatchers.IO` instead — see
+ * `PlaybackService`'s wiring — which changes nothing about [Scrobbler]'s own contract, only where
+ * the launched work happens to run.)
+ *
+ * **Review fix round 1, item 1 (CRITICAL) — what changed:** every call to
+ * [Scrobbler.onMediaItemTransition] here now passes an explicit `isPlaying`. Tests that model a
+ * genuinely NEW play-through starting from paused/buffering use `isPlaying = false` followed by a
+ * real [Scrobbler.onIsPlayingChanged]`(true)`; tests that model an auto-advance, a skip while
+ * playing, or a repeat-one wrap — where Media3 fires ONLY `onMediaItemTransition`, with no
+ * following play event, because the playing state never changes — use `isPlaying = true` at the
+ * transition itself and call `onIsPlayingChanged` NOT AT ALL for that step. The previous version
+ * of this file called `onIsPlayingChanged(true)` after every transition unconditionally, including
+ * ones meant to model continuous playback — an event the real player never sends there — which is
+ * exactly how the missing-scrobble bug this fix closes stayed hidden.
  */
 class ScrobblerTest {
 
@@ -96,7 +110,7 @@ class ScrobblerTest {
     @Test fun `now playing sends once per play-through, not again on a mere resume`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             assertEquals(listOf(Triple(track, false, null)), h.senderCalls)
 
@@ -112,9 +126,85 @@ class ScrobblerTest {
         val h = Harness()
         try {
             h.senderResult = ScrobbleResult.Ok
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             assertEquals(listOf("acct-1"), h.flushCalls)
+        } finally {
+            h.close()
+        }
+    }
+
+    // ---------------------------------------------------------------- auto-advance / repeat-one (item 1)
+
+    /**
+     * Review fix round 1, item 1 (CRITICAL). Gapless auto-advance into a brand new item: the
+     * player was already playing, so Media3 fires ONLY `onMediaItemTransition` — no
+     * `onIsPlayingChanged` follows, because the playing state never changed. Before the fix,
+     * nothing here would ever send now-playing/played until the user next paused.
+     *
+     * **This file's control** (see the task report): reverting the fix — making
+     * `onMediaItemTransition` ignore `isPlaying` and always wait for a later
+     * `onIsPlayingChanged(true)` — reddens this test (0 sends instead of 2).
+     */
+    @Test fun `an auto-advance transition while already playing, with no play event, sends now-playing and played`() {
+        val h = Harness()
+        try {
+            h.senderResult = ScrobbleResult.Ok
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true)
+            assertEquals("now-playing must fire immediately, with no separate play event", 1, h.senderCalls.size)
+
+            h.now = 120_000L
+            h.scheduler.fireAll()
+            assertEquals("and played fires at the threshold", 2, h.senderCalls.size)
+            assertEquals(listOf(Triple(track, false, null), Triple(track, true, 0L)), h.senderCalls)
+        } finally {
+            h.close()
+        }
+    }
+
+    /** Same fix, for a transition AWAY from an item mid-play-through: the old item's timer is
+     *  still cancelled (nothing sent for it), and the new item gets its now-playing immediately —
+     *  no `onIsPlayingChanged` call happens for either half of this transition. */
+    @Test fun `an auto-advance transition (already playing) cancels the old item's timer and starts the new one immediately`() {
+        val h = Harness()
+        try {
+            val other = TrackRef("acct-1", "song-2")
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
+            h.scrobbler.onIsPlayingChanged(true)
+            h.now = 50_000L
+            // Auto-advance / skip WHILE PLAYING: only onMediaItemTransition fires here.
+            h.scrobbler.onMediaItemTransition(other, 240_000L, isPlaying = true)
+
+            h.scheduler.fireAll() // the OLD item's cancelled timer must not run
+            assertEquals(
+                "track's now-playing, then other's now-playing immediately at transition — no played for either yet",
+                listOf(Triple(track, false, null), Triple(other, false, null)),
+                h.senderCalls,
+            )
+        } finally {
+            h.close()
+        }
+    }
+
+    /** Plan Review Focus 2, closed together with item 1's fix: repeat-one while STILL PLAYING —
+     *  Media3 reports the wrap as `onMediaItemTransition(reason = REPEAT)` with no following
+     *  `onIsPlayingChanged`, since the playing state never changes across the wrap. */
+    @Test fun `a repeat-one wrap while still playing starts a second play-through with no separate play event`() {
+        val h = Harness()
+        try {
+            h.senderResult = ScrobbleResult.Ok
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
+            h.scrobbler.onIsPlayingChanged(true)
+            h.now = 120_000L
+            h.scheduler.fireAll()
+            assertEquals(2, h.senderCalls.size) // now-playing + played, first play-through
+
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true) // the wrap; same TrackRef
+            assertEquals("now-playing must fire again immediately, with no separate play event", 3, h.senderCalls.size)
+            h.now = 240_000L
+            h.scheduler.fireAll()
+            assertEquals("and played again", 4, h.senderCalls.size)
+            assertEquals(listOf(false, true, false, true), h.senderCalls.map { it.second })
         } finally {
             h.close()
         }
@@ -127,7 +217,7 @@ class ScrobblerTest {
         try {
             h.wall = 1_700_000_000_000L
             h.senderResult = ScrobbleResult.Ok
-            h.scrobbler.onMediaItemTransition(track, 240_000L) // threshold 120_000
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false) // threshold 120_000
             h.scrobbler.onIsPlayingChanged(true)
             assertEquals(120_000L, h.scheduler.latestPendingDelay())
 
@@ -149,7 +239,7 @@ class ScrobblerTest {
         val h = Harness()
         try {
             h.senderResult = ScrobbleResult.Ok
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             h.flushCalls.clear() // drop the now-playing flush; isolate the played one
             h.now = 120_000L
@@ -163,7 +253,7 @@ class ScrobblerTest {
     @Test fun `pause before the threshold cancels the timer, so nothing is ever sent for it`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(track, 240_000L) // threshold 120_000
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false) // threshold 120_000
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 50_000L
             h.scrobbler.onIsPlayingChanged(false) // paused well short of the threshold
@@ -175,56 +265,12 @@ class ScrobblerTest {
         }
     }
 
-    @Test fun `a transition before the threshold cancels the old item's timer`() {
-        val h = Harness()
-        try {
-            val other = TrackRef("acct-1", "song-2")
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
-            h.scrobbler.onIsPlayingChanged(true)
-            h.now = 50_000L
-            h.scrobbler.onMediaItemTransition(other, 240_000L) // transition away, short of threshold
-
-            h.scheduler.fireAll() // the old item's cancelled timer must not run
-            assertEquals("only track's now-playing send", listOf(Triple(track, false, null)), h.senderCalls)
-        } finally {
-            h.close()
-        }
-    }
-
-    // ------------------------------------------------------------------------------ repeat-one
-
-    /** Plan Review Focus 2. Media3 reports repeat-one as a genuine `onMediaItemTransition` call
-     *  for the SAME item; [Scrobbler] does not special-case it — every transition is a fresh
-     *  play-through unconditionally. */
-    @Test fun `a repeated transition to the same track starts a second play-through`() {
-        val h = Harness()
-        try {
-            h.senderResult = ScrobbleResult.Ok
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
-            h.scrobbler.onIsPlayingChanged(true)
-            h.now = 120_000L
-            h.scheduler.fireAll()
-            assertEquals(2, h.senderCalls.size) // now-playing + played, first play-through
-
-            h.scrobbler.onMediaItemTransition(track, 240_000L) // "repeat" — same TrackRef again
-            h.scrobbler.onIsPlayingChanged(true)
-            assertEquals("now-playing must fire again for the new play-through", 3, h.senderCalls.size)
-            h.now = 240_000L
-            h.scheduler.fireAll()
-            assertEquals("and played again", 4, h.senderCalls.size)
-            assertEquals(listOf(false, true, false, true), h.senderCalls.map { it.second })
-        } finally {
-            h.close()
-        }
-    }
-
     // -------------------------------------------------------------------------------- eligibility
 
     @Test fun `a local item (no TrackRef) sends nothing at all`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(null, 240_000L)
-            h.scrobbler.onIsPlayingChanged(true)
+            h.scrobbler.onMediaItemTransition(null, 240_000L, isPlaying = true)
             h.now = 999_999L
             h.scheduler.fireAll()
             assertEquals(emptyList<Triple<TrackRef, Boolean, Long?>>(), h.senderCalls)
@@ -237,8 +283,7 @@ class ScrobblerTest {
         val h = Harness()
         try {
             h.sourceExistsResult = false
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
-            h.scrobbler.onIsPlayingChanged(true)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true)
             h.now = 999_999L
             h.scheduler.fireAll()
             assertEquals(emptyList<Triple<TrackRef, Boolean, Long?>>(), h.senderCalls)
@@ -254,7 +299,7 @@ class ScrobblerTest {
         try {
             h.wall = 1_234L
             h.senderResult = ScrobbleResult.Unreachable
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 120_000L
             h.scheduler.fireAll()
@@ -272,7 +317,7 @@ class ScrobblerTest {
         try {
             h.wall = 5_678L
             h.senderResult = ScrobbleResult.Rejected(SubsonicError.WRONG_CREDENTIALS, 40)
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 120_000L
             h.scheduler.fireAll()
@@ -289,7 +334,7 @@ class ScrobblerTest {
         val h = Harness()
         try {
             h.senderResult = ScrobbleResult.Rejected(SubsonicError.NOT_FOUND, 70)
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 120_000L
             h.scheduler.fireAll()
@@ -307,7 +352,7 @@ class ScrobblerTest {
     @Test fun `a duration learned after transition reschedules the timer to the real threshold`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(track, 0L) // unknown at transition time
+            h.scrobbler.onMediaItemTransition(track, 0L, isPlaying = false) // unknown at transition time
             h.scrobbler.onIsPlayingChanged(true)
             assertEquals("unknown duration defaults to the 240s cap", 240_000L, h.scheduler.latestPendingDelay())
 
@@ -326,7 +371,7 @@ class ScrobblerTest {
         val h = Harness()
         try {
             h.senderResult = ScrobbleResult.Ok
-            h.scrobbler.onMediaItemTransition(track, 0L) // unknown -> 240s cap
+            h.scrobbler.onMediaItemTransition(track, 0L, isPlaying = false) // unknown -> 240s cap
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 50_000L // 50s already listened while buffering
             h.scrobbler.onDurationKnown(60_000L) // a 60s track: real threshold 30_000, already passed
@@ -340,7 +385,7 @@ class ScrobblerTest {
     @Test fun `onDurationKnown is a no-op with nothing eligible playing`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(null, 0L) // local/ineligible
+            h.scrobbler.onMediaItemTransition(null, 0L, isPlaying = true) // local/ineligible
             h.scrobbler.onDurationKnown(90_000L) // must not throw or schedule anything
             assertEquals(null, h.scheduler.latestPendingDelay())
         } finally {
@@ -353,7 +398,7 @@ class ScrobblerTest {
     @Test fun `release cancels a pending timer so nothing fires after it`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(track, 240_000L)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false)
             h.scrobbler.onIsPlayingChanged(true)
             h.scrobbler.release()
 
@@ -371,7 +416,9 @@ class ScrobblerTest {
      * Plan Review Focus 1. There is no seek-reporting method on [Scrobbler] at all — the facade
      * never forwards `onPositionDiscontinuity` — so this proves the only way a seek COULD leak in
      * (a gap in real elapsed time between a pause and the next resume, exactly what a seek
-     * performed while paused looks like from here) still does not get counted.
+     * performed while paused looks like from here) still does not get counted. This test models a
+     * GENUINE pause→resume (a real `onIsPlayingChanged(false)` then `(true)`), unlike the
+     * auto-advance tests above.
      *
      * **This file's control** (see the task report): temporarily removing the `clock.onPaused()`
      * call from `Scrobbler.onIsPlayingChanged`'s paused branch reddens this test — without it, the
@@ -382,7 +429,7 @@ class ScrobblerTest {
     @Test fun `a large gap while paused, as a seek performed then would look, is never counted as listened`() {
         val h = Harness()
         try {
-            h.scrobbler.onMediaItemTransition(track, 240_000L) // threshold 120_000
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = false) // threshold 120_000
             h.scrobbler.onIsPlayingChanged(true)
             h.now = 10_000L // 10s of real listening
             h.scrobbler.onIsPlayingChanged(false) // paused; the user seeks to 90% here — no event at all
@@ -396,6 +443,112 @@ class ScrobblerTest {
                 1,
                 h.senderCalls.size,
             )
+        } finally {
+            h.close()
+        }
+    }
+
+    // -------------------------------------------------------------------- write-ahead (item 4)
+
+    @Test fun `write-ahead - an ok result removes the played entry that was queued before the send`() {
+        val h = Harness()
+        try {
+            h.senderResult = ScrobbleResult.Ok
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true)
+            h.now = 120_000L
+            h.scheduler.fireAll()
+            assertEquals(emptyList<QueuedScrobble>(), h.queue.forSource("acct-1"))
+        } finally {
+            h.close()
+        }
+    }
+
+    /**
+     * Review fix round 1, item 4 (controller ruling). Models "the process died mid-request" as
+     * closely as a plain-JUnit test can: a `sender` that genuinely suspends on a
+     * [CompletableDeferred] the test controls, fired via [FakeScheduler], then the SCOPE's job is
+     * cancelled out from under it — standing in for a teardown cancellation. The entry must
+     * already be queued the instant the timer fires (write-ahead, synchronous, before [sender] is
+     * even called), and must still be there after the cancellation, since neither the `Ok` nor the
+     * `Rejected` removal branch ever got to run.
+     */
+    @Test fun `write-ahead - the entry is queued before the send, and a mid-request cancellation leaves it queued`() {
+        val queueDir = Files.createTempDirectory("scrobbler-write-ahead-test").toFile()
+        try {
+            val queue = ScrobbleQueue(queueDir)
+            val scheduler = FakeScheduler()
+            val job = SupervisorJob()
+            val scope = CoroutineScope(job + Dispatchers.Unconfined)
+            val gate = CompletableDeferred<ScrobbleResult>()
+            var now = 0L
+            val scrobbler = Scrobbler(
+                scope = scope,
+                clock = ListenClock(now = { now }, wallClock = { 0L }),
+                sourceExists = { true },
+                sender = { _, _, _ -> gate.await() }, // suspends "mid-request" until told otherwise
+                queue = queue,
+                flush = {},
+                enqueueFlush = {},
+                scheduler = scheduler,
+            )
+
+            scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true)
+            now = 120_000L
+            scheduler.fireAll() // fires trySendPlayed: queues the entry, THEN suspends on the gate
+
+            assertEquals(
+                "the entry must already be queued before the send resolves (write-ahead)",
+                listOf(QueuedScrobble("acct-1", "song-1", 0L)),
+                queue.forSource("acct-1"),
+            )
+
+            job.cancel() // simulate teardown / process death mid-request
+
+            assertEquals(
+                "a cancelled mid-request send must leave the entry queued",
+                listOf(QueuedScrobble("acct-1", "song-1", 0L)),
+                queue.forSource("acct-1"),
+            )
+        } finally {
+            queueDir.deleteRecursively()
+        }
+    }
+
+    // --------------------------------------------------------------- auth-blocked source (item 6)
+
+    /** Review fix round 1, item 6 (controller ruling). */
+    @Test fun `an auth-blocked source skips the live now-playing send entirely`() {
+        val h = Harness()
+        try {
+            h.queue.setAuthBlocked("acct-1", true)
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true)
+            assertEquals(
+                "no now-playing request while auth-blocked",
+                emptyList<Triple<TrackRef, Boolean, Long?>>(),
+                h.senderCalls,
+            )
+        } finally {
+            h.close()
+        }
+    }
+
+    /** Review fix round 1, item 6 (controller ruling): the write-ahead entry alone is the
+     *  outcome — no request is ever attempted while the source is auth-blocked. */
+    @Test fun `an auth-blocked source routes a played scrobble straight to the queue, with no request`() {
+        val h = Harness()
+        try {
+            h.queue.setAuthBlocked("acct-1", true)
+            h.wall = 42L
+            h.scrobbler.onMediaItemTransition(track, 240_000L, isPlaying = true) // now-playing skipped too
+            h.now = 120_000L
+            h.scheduler.fireAll()
+
+            assertEquals(
+                "no request at all while auth-blocked",
+                emptyList<Triple<TrackRef, Boolean, Long?>>(),
+                h.senderCalls,
+            )
+            assertEquals(listOf(QueuedScrobble("acct-1", "song-1", 42L)), h.queue.forSource("acct-1"))
         } finally {
             h.close()
         }

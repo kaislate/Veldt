@@ -14,6 +14,7 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
@@ -133,7 +134,14 @@ class PlaybackService : MediaLibraryService() {
 
         // N3: attached beside PlayerBusAdapter, same reasoning — this must work with the UI gone,
         // so it lives on the service's own player listener, not on anything Compose-scoped.
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        //
+        // Dispatchers.IO, not Main (review fix round 1, item 5): every `scope.launch` inside
+        // Scrobbler is queue file I/O plus the scrobble network call — Scrobbler's own KDoc
+        // documents that this scope choice is the ONE thing that decides where that launched
+        // work runs. Clock/player-state mutations never touch this scope at all — they run
+        // synchronously, on the main thread, inside the calls ScrobblerPlayerListener makes
+        // below — so nothing about that moves off main by choosing IO here.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scrobblerScope = scope
         val instance = Scrobbler(
             scope = scope,
@@ -243,6 +251,12 @@ class PlaybackService : MediaLibraryService() {
  * null a track whose uri failed to resolve at all would also produce, and both are indistinguishable
  * here on purpose: [Scrobbler] treats "not a server track" and "we cannot tell" identically —
  * neither one is ever scrobbled.
+ *
+ * **`player.isPlaying` is passed into every [Scrobbler.onMediaItemTransition] call** (review fix
+ * round 1, item 1 — CRITICAL): Media3 fires `onMediaItemTransition` on gapless auto-advance and on
+ * a repeat-one wrap WITHOUT a following `onIsPlayingChanged`, because the playing state never
+ * actually changes across either kind of transition. Without this, every track after the first
+ * in a continuously-playing queue would get no scrobble at all until the user next paused.
  */
 private class ScrobblerPlayerListener(
     private val player: Player,
@@ -251,18 +265,39 @@ private class ScrobblerPlayerListener(
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         val track = mediaItem?.localConfiguration?.uri?.toString()?.let(VeldtUri::parse)
-        scrobbler.onMediaItemTransition(track, player.duration)
+        scrobbler.onMediaItemTransition(track, durationOf(mediaItem), player.isPlaying)
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         scrobbler.onIsPlayingChanged(isPlaying)
     }
 
+    /** A placeholder `MediaItem`'s timeline entry can gain its real duration/metadata after
+     *  `onMediaItemTransition` already fired (review fix round 1, item 3) — `player.duration`
+     *  alone would miss that correction until the next `STATE_READY`, which may be seconds and
+     *  several accumulated playing-seconds later. */
+    override fun onTimelineChanged(timeline: Timeline, reason: Int) {
+        scrobbler.onDurationKnown(durationOf(player.currentMediaItem))
+    }
+
     /** `player.duration` is commonly `C.TIME_UNSET` at [onMediaItemTransition] time (before the
      *  item is prepared) and becomes known once the player reaches [Player.STATE_READY] — see
      *  [Scrobbler.onDurationKnown]'s KDoc for what this corrects. */
     override fun onPlaybackStateChanged(playbackState: Int) {
-        if (playbackState == Player.STATE_READY) scrobbler.onDurationKnown(player.duration)
+        if (playbackState == Player.STATE_READY) scrobbler.onDurationKnown(durationOf(player.currentMediaItem))
+    }
+
+    /**
+     * `player.duration` when the player actually knows it; otherwise the `MediaItem`'s own
+     * CATALOG duration (`SessionMediaItem` sets `mediaMetadata.durationMs` from `Song.durationMs`
+     * — review fix round 1, item 3), which is known immediately at enqueue time, long before the
+     * player prepares anything. Only when NEITHER is available does this fall through to
+     * `C.TIME_UNSET`, which [ListenClock] itself treats as the 240s-cap "unknown" case.
+     */
+    private fun durationOf(mediaItem: MediaItem?): Long {
+        val fromPlayer = player.duration
+        if (fromPlayer != C.TIME_UNSET) return fromPlayer
+        return mediaItem?.mediaMetadata?.durationMs ?: C.TIME_UNSET
     }
 }
 
