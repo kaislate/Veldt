@@ -80,7 +80,7 @@ import com.kaislate.veldtplayer.ui.lyrics.consumeVerticalDrags
 import com.kaislate.veldtplayer.ui.lyrics.lyricsBackdrop
 import com.kaislate.veldtplayer.ui.lyrics.lyricsRegion
 import com.kaislate.veldtplayer.ui.lyrics.lyricsScrimFloor
-import com.kaislate.veldtplayer.ui.lyrics.lyricsTargetScrim
+import com.kaislate.veldtplayer.ui.lyrics.lyricsBackdropText
 import com.kaislate.veldtplayer.ui.lyrics.rememberLyricsGround
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
@@ -589,13 +589,9 @@ fun NowPlayingScreen(
                         .lyricsRegion(lyricsGround),
                 ) { lyricsShown ->
                     if (lyricsShown) {
-                        // Solved at the composited alpha the floor guarantees under the pane —
-                        // lyricsTargetScrim, with headroom over the title band's; see there.
-                        val lyricsText = targetSeed.backdropText(
-                            palette.bg,
-                            lyricsTargetScrim(isLight),
-                            isLight,
-                        )
+                        // Solved at the title band's modelled ground; the pane's floor draws more
+                        // scrim than that, as margin. See lyricsBackdropText.
+                        val lyricsText = targetSeed.lyricsBackdropText(palette.bg, isLight)
                         // No sharedSongArt on this branch, on purpose: the pane is not the
                         // cover, and giving it the cover's key would morph a block of text into
                         // the mini-player thumbnail. While lyrics are up this screen therefore

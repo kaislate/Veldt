@@ -3,10 +3,15 @@
 
 package com.kaislate.veldtplayer.ui.lyrics
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.lifecycle.Lifecycle
 import com.kaislate.veldtplayer.data.lyrics.LyricsSource
 import com.kaislate.veldtplayer.ui.components.scrimAtFraction
 import com.kaislate.veldtplayer.ui.components.scrimAtText
+import com.kaislate.veldtplayer.ui.theme.ArtSeed
+import com.kaislate.veldtplayer.ui.theme.BackdropText
+import com.kaislate.veldtplayer.ui.theme.backdropText
 
 /**
  * How long auto-follow stays off after the user lets go of the lyrics list (spec §7: "a user
@@ -94,21 +99,63 @@ private const val LYRICS_MIN_SCRIM_LIGHT = 0.85f
 private const val LYRICS_MIN_SCRIM_DARK = 0.70f
 
 /**
- * The composited scrim alpha every lyric line sits under at least, and the alpha lyric tones are
- * SOLVED at: `max(scrimAtText, LYRICS_MIN_SCRIM)` for the theme. Never below the title band's, so
- * the lyrics never get less than the title's proven guarantee.
+ * The composited scrim alpha every lyric line sits under at least — what the floor DRAWS:
+ * `max(scrimAtText, LYRICS_MIN_SCRIM)` for the theme. Deliberately NOT the alpha the lyric tones
+ * are solved at; see [lyricsBackdropText] for why solving here spent the headroom.
  */
 fun lyricsTargetScrim(isLight: Boolean): Float =
     maxOf(scrimAtText(isLight), if (isLight) LYRICS_MIN_SCRIM_LIGHT else LYRICS_MIN_SCRIM_DARK)
 
 /**
  * The floor a lyrics region whose top edge is at [topFraction] of the backdrop draws, in this
- * theme: enough to lift the composite there to [lyricsTargetScrim]. Lyric tones are solved at
- * [lyricsTargetScrim]; lines lower in the region sit under a stronger backdrop scrim plus the
- * same fill, i.e. above the target.
+ * theme: enough to lift the composite there to [lyricsTargetScrim]. Lines lower in the region sit
+ * under a stronger backdrop scrim plus the same fill, i.e. above the target.
  */
 fun lyricsFloorAlpha(isLight: Boolean, topFraction: Float): Float =
     lyricsScrimFloor(scrimAtFraction(isLight, topFraction), lyricsTargetScrim(isLight))
+
+/**
+ * The two lyric tones: the headroom is in the SOLVE, not only in the drawn ground.
+ *
+ * **What went wrong solving at the drawn alpha** (Task 6a device re-measure, light, Sleep Token
+ * "Chokehold", pane): the floor did its job on the ground — a uniform ~238–240 grey, the blurred
+ * art's variance gone — but tones solved AT [lyricsTargetScrim] (0.85) picked a lighter ink
+ * (109,109,109) that met 4.5:1 against that model exactly, so the measured inactive lines sat at
+ * 4.46–4.50:1. A solve that targets the drawn ground leaves no margin for the drawn ground being
+ * a hair darker than modelled — finding 14's lesson again.
+ *
+ * **So the tones are solved against the modelled ground at [scrimAtText]** — the title band's
+ * alpha, lower than what is drawn — and the floor is pure margin. Why that is a margin and not a
+ * shortfall, per theme: the ground is `artMean` lerped toward `bg` by the alpha, per sRGB channel,
+ * so its luminance moves MONOTONICALLY from the art's toward `bg`'s as the alpha rises.
+ *
+ * - **Light** (dark ink): raising the alpha moves the ground toward a light `bg`. Whenever the
+ *   art's mean is darker than `bg` — every real cover but a near-white one — the drawn ground is
+ *   LIGHTER than the modelled one, i.e. further from the ink, and contrast only grows.
+ * - **Dark** (light ink): symmetrically, raising the alpha moves the ground toward a dark `bg`;
+ *   whenever the art's mean is lighter than `bg` — every real cover but a near-black one — the
+ *   drawn ground is DARKER, further from the ink, and contrast only grows.
+ *
+ * **The exception is a cover more extreme than `bg` itself** (near-white in light, near-black
+ * in dark): there, raising the alpha pulls the ground back TOWARD the ink, so the modelled alpha
+ * is not the worst case. The worst case over everything a lyric line can sit under — any alpha
+ * from [scrimAtText] up to 1 — is then at an END of that range, because contrast of a fixed ink
+ * is monotonic in a ground that stays on one side of it. So each tone is solved at BOTH ends,
+ * [scrimAtText] and `1` (the ground is `bg` itself), and the more extreme of the two is kept —
+ * darker in light, lighter in dark — which meets the target at both ends and so everywhere
+ * between. For every ordinary cover that is simply the [scrimAtText] tone.
+ */
+fun ArtSeed.lyricsBackdropText(bg: Color, isLight: Boolean): BackdropText {
+    val modelled = backdropText(bg, scrimAtText(isLight), isLight)
+    val atBg = backdropText(bg, 1f, isLight)
+    fun extreme(a: Color, b: Color): Color =
+        if (isLight) (if (a.luminance() <= b.luminance()) a else b)
+        else (if (a.luminance() >= b.luminance()) a else b)
+    return BackdropText(
+        primary = extreme(modelled.primary, atBg.primary),
+        secondary = extreme(modelled.secondary, atBg.secondary),
+    )
+}
 
 /**
  * The vertical content padding that lets ANY line of a synced list reach the middle of a

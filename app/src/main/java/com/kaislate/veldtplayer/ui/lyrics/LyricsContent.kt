@@ -68,7 +68,8 @@ import kotlinx.coroutines.flow.first
 /**
  * The scrim floor behind a lyrics region: `bg` at [lyricsFloorAlpha] for where the region's top
  * edge sits, as a plain SrcOver fill (no blend-mode tricks — finding 9). With it, every lyric
- * line sits under at least [lyricsTargetScrim], the alpha the lyric tones are solved at.
+ * line sits under at least [lyricsTargetScrim] — MORE than the alpha the lyric tones are solved
+ * at ([lyricsBackdropText]), so the floor is margin, not the model.
  */
 fun Modifier.lyricsScrimFloor(ground: LyricsGround, bg: Color, isLight: Boolean): Modifier =
     drawBehind { drawRect(bg.copy(alpha = lyricsFloorAlpha(isLight, ground.topFraction))) }
@@ -80,12 +81,13 @@ fun Modifier.lyricsScrimFloor(ground: LyricsGround, bg: Color, isLight: Boolean)
  * **Colour is exactly two tones and never an alpha.** Every glyph here is drawn in
  * [BackdropText.primary] (the active synced line, plain lyrics, the "no lyrics" message) or
  * [BackdropText.secondary] (every other synced line, the attribution, the loading indicator) —
- * the pair `ArtSeed.backdropText` SOLVED at [lyricsTargetScrim], the composited alpha the
- * caller's [lyricsScrimFloor] guarantees under every line. The contrast guarantee is a property
- * of those exact colours on that exact ground, so "dimming" the inactive lines with alpha would
- * void it (findings 14/16), and so would any surface behind them OTHER than that floor — which
- * is not decoration but the ground the tones were solved against: a `bg` fill composited over
- * the backdrop's own `bg` scrim, raising the same modelled ground rather than replacing it.
+ * the pair [lyricsBackdropText] solves against the title band's modelled ground, while the
+ * caller's [lyricsScrimFloor] draws MORE scrim than that under every line — margin, in the
+ * direction that only raises contrast (see [lyricsBackdropText] for the argument per theme). The
+ * guarantee is a property of those exact colours on that ground, so "dimming" the inactive lines
+ * with alpha would void it (findings 14/16), and so would any surface behind them OTHER than that
+ * floor — a `bg` fill composited over the backdrop's own `bg` scrim, which moves the same
+ * modelled ground further toward `bg` rather than replacing it.
  * Emphasis on the active line is weight, not transparency.
  *
  * [footerAction] is the trailing slot of the attribution row — the pane's expand button — so

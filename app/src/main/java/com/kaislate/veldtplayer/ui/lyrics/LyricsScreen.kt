@@ -58,15 +58,16 @@ fun LyricsScreen(
     val targetSeed by vm.seed.collectAsStateWithLifecycle()
     val isLight = LocalIsLightTheme.current
     val palette = rememberAnimatedPalette(targetSeed.colors(isLight = isLight))
-    // Every glyph on this route sits on the lyrics floor (see below), so every glyph is solved at
-    // the composited alpha that floor guarantees — lyricsTargetScrim, not the title band's.
-    val text = targetSeed.backdropText(palette.bg, lyricsTargetScrim(isLight), isLight)
+    // Every glyph on this route sits on the lyrics floor (see below), so every glyph takes the
+    // lyric tones — solved at the title band's MODELLED ground, with the floor as margin; see
+    // lyricsBackdropText.
+    val text = targetSeed.lyricsBackdropText(palette.bg, isLight)
     val reduced = rememberReducedMotion()
     // Everything on this route — header and lyrics — sits far above the title band
     // scrimAtText describes, down to the very top of the frame where the backdrop's scrim is
     // weakest. So the whole content area is one lyrics region with a scrim FLOOR behind it,
-    // lifting the weakest scrim anywhere on it to lyricsTargetScrim; [text], solved there, then
-    // holds for every glyph on the screen. See lyricsScrimFloor.
+    // lifting the weakest scrim anywhere on it to lyricsTargetScrim — above what [text] was
+    // solved at, so it holds with margin for every glyph on the screen. See lyricsScrimFloor.
     val ground = rememberLyricsGround()
 
     LyricsVisibleWhile(vm, visible = true)

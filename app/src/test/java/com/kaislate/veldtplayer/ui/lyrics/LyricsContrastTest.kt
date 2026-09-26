@@ -16,12 +16,13 @@ import org.junit.Test
  * Plain JVM. Lyric contrast over the same corpus `BackdropTextTest` uses, in both themes — spec
  * §7's "active ≥ 7:1, inactive ≥ 4.5:1".
  *
- * **With the floor** (the shipped behaviour): a lyrics region draws `bg` at [lyricsFloorAlpha]
- * over the backdrop, so the composited scrim under its TOPMOST line — the backdrop's top stop,
- * `yFraction 0`, the weakest anywhere and so a floor for either surface — is lifted to
- * `scrimAtText`, and the tones are solved at `scrimAtText` exactly like the title. The ground is
- * built from the COMPOSITED alpha ([compositeScrim] of the backdrop's own scrim and the floor),
- * so removing the floor from that alpha is what this test would catch.
+ * **The shipped behaviour** (Task 6a fix round): a lyrics region draws `bg` at
+ * [lyricsFloorAlpha] so the composited scrim under every line is at least [lyricsTargetScrim]
+ * (0.85 light / 0.70 dark), while the tones ([lyricsBackdropText]) are solved against the title
+ * band's MODELLED ground at `scrimAtText` — the floor is margin. The margin test checks the tones
+ * against EVERY ground a line can sit under, alpha `scrimAtText..1`, over the corpus plus a
+ * mid-grey cover modelled on the device case (Sleep Token "Chokehold", light), which is the entry
+ * the "solve at the drawn alpha" control reddens.
  *
  * **Without the floor** (why it exists, kept falsifiable): solving at the top stop alone, the
  * solver CANNOT reach the targets for the cases in [ceilingsWithoutFloor] — it already chose
@@ -37,20 +38,73 @@ class LyricsContrastTest {
     private fun titlePrimaryFloor(name: String, isLight: Boolean): Double =
         BackdropCorpus.primaryFloor(name, isLight)
 
-    @Test fun `with the floor - every corpus seed meets the targets at the composited lyrics alpha`() {
+    /** A mid-grey cover like the device case (Task 6a: light, "Chokehold", drawn ground ~239 at
+     *  alpha 0.85, i.e. an art mean of roughly 177 grey). Kept local: the shared corpus also feeds
+     *  the title-band and top-stop tables, which this entry has no business changing. */
+    private val deviceLike = "mid-grey cover (device case)" to BackdropCorpus.seed(30.0, 6.0, Color(0xFFB4AFAA))
+
+    private val lyricsCorpus = BackdropCorpus.entries + deviceLike
+
+    /** Every alpha a lyric line's ground can have: from the title band's model up to `bg` itself. */
+    private fun groundAlphas(light: Boolean): List<Float> {
+        val from = scrimAtText(light)
+        return (0..100).map { from + (1f - from) * it / 100f }
+    }
+
+    @Test fun `the lyric tones meet the targets against every ground a line can sit under`() {
         val failures = mutableListOf<String>()
-        for ((name, s) in BackdropCorpus.entries) for (light in listOf(true, false)) {
-            val aTop = scrimAtFraction(light, 0f)
-            val composited = compositeScrim(aTop, lyricsFloorAlpha(light, 0f))
+        for ((name, s) in lyricsCorpus) for (light in listOf(true, false)) {
             val bg = s.colors(light).bg
-            val ground = BackdropCorpus.groundOf(s, bg, composited)
-            val t = s.backdropText(bg, lyricsTargetScrim(light), light)
-            val p = ratio(t.primary, ground)
-            val q = ratio(t.secondary, ground)
-            if (p < titlePrimaryFloor(name, light)) failures += "$name/$light/primary=%.2f".format(p)
-            if (q < 4.5) failures += "$name/$light/secondary=%.2f".format(q)
+            val t = s.lyricsBackdropText(bg, light)
+            for (alpha in groundAlphas(light)) {
+                val ground = BackdropCorpus.groundOf(s, bg, alpha)
+                val p = ratio(t.primary, ground)
+                val q = ratio(t.secondary, ground)
+                if (p < titlePrimaryFloor(name, light)) failures += "$name/$light/a=%.2f/primary=%.2f".format(alpha, p)
+                if (q < 4.5) failures += "$name/$light/a=%.2f/secondary=%.2f".format(alpha, q)
+            }
         }
-        assertEquals("lyric tones failed at the composited alpha: $failures", emptyList<String>(), failures)
+        val entries = failures.map { it.substringBefore("/a=") }.distinct()
+        assertEquals("lyric tones failed for $entries, e.g. ${failures.take(4)}", emptyList<String>(), failures)
+    }
+
+    /**
+     * The per-theme argument in [lyricsBackdropText]'s KDoc, as a test: against the DRAWN ground
+     * (the floor's target), contrast is at least what it is against the MODELLED ground whenever
+     * the art's mean lies on the far side of `bg` from the ink — and the set where it does NOT is
+     * exactly the covers more extreme than `bg` (near-white in light, near-black in dark), the
+     * reason the tones are also solved at `bg` itself.
+     */
+    @Test fun `drawn contrast is at least modelled contrast, except for covers more extreme than bg`() {
+        val notMonotone = mutableSetOf<Pair<String, Boolean>>()
+        for ((name, s) in lyricsCorpus) for (light in listOf(true, false)) {
+            val bg = s.colors(light).bg
+            val t = s.lyricsBackdropText(bg, light)
+            val modelled = BackdropCorpus.groundOf(s, bg, scrimAtText(light))
+            val drawn = BackdropCorpus.groundOf(s, bg, lyricsTargetScrim(light))
+            for (tone in listOf(t.primary, t.secondary)) {
+                if (ratio(tone, drawn) < ratio(tone, modelled) - 1e-9) notMonotone += name to light
+            }
+        }
+        assertEquals(
+            setOf(
+                "white cover" to true,
+                "greyscale cover, white mean" to true,
+                "black cover" to false,
+                "greyscale cover, black mean" to false,
+            ),
+            notMonotone,
+        )
+    }
+
+    /** For an ordinary cover the tones ARE the title band's model solve — the bg-end solve only
+     *  ever steps in for the extreme covers above. */
+    @Test fun `for the device-like cover the tones are exactly the scrimAtText solve`() {
+        val (_, s) = deviceLike
+        for (light in listOf(true, false)) {
+            val bg = s.colors(light).bg
+            assertEquals(s.backdropText(bg, scrimAtText(light), light), s.lyricsBackdropText(bg, light))
+        }
     }
 
     @Test fun `the floor lifts the top stop to exactly the lyrics target, in both themes`() {
