@@ -23,7 +23,7 @@ enum class ThemeMode { LIGHT, DARK, SYSTEM }
 private val Context.settingsStore by preferencesDataStore(name = "veldt-settings")
 
 /**
- * The app's preference store. The pill's three-way toggle and the LRCLIB opt-in land here later.
+ * The app's preference store. The pill's three-way toggle lands here later.
  *
  * Enum values persist by `name`, never by ordinal: an ordinal makes the stored value depend on
  * DECLARATION ORDER, so inserting an enum constant silently rewrites every user's setting on
@@ -111,6 +111,18 @@ class SettingsRepository @Inject constructor(
     }
 
     /**
+     * The LRCLIB opt-in (spec §8): "Find lyrics online (LRCLIB)", off by default. Unlike
+     * [themeMode] or [folderSort] this is a plain Boolean, not a name — there is no enum to
+     * out-live, so [readRawBooleanForTest] alone is the wire-format seam; no separate raw-write
+     * seam is needed since [setLyricsOnline] already writes the same key.
+     */
+    val lyricsOnline: Flow<Boolean> = context.settingsStore.data.map { it[LYRICS_ONLINE] ?: false }
+
+    suspend fun setLyricsOnline(enabled: Boolean) {
+        context.settingsStore.edit { it[LYRICS_ONLINE] = enabled }
+    }
+
+    /**
      * Test seam: the stored value as stored, under a key the CALLER names.
      *
      * Two things depend on it being the caller's key string rather than the constant above. It pins
@@ -142,6 +154,7 @@ class SettingsRepository @Inject constructor(
         val FOLDER_SORT = stringPreferencesKey("folder_sort")
         val FOLDER_SORT_DESC = booleanPreferencesKey("folder_sort_desc")
         val METERED_MAX_BITRATE = intPreferencesKey("metered_max_bitrate")
+        val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
 
         /** Every value [meteredMaxBitRate] can hold. 0 is original quality. */
         val METERED_CAPS: Set<Int> = setOf(0, 320, 192, 128)

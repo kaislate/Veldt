@@ -201,6 +201,23 @@ internal fun backdropScrim(isLight: Boolean): BackdropScrim =
     if (isLight) BackdropScrim(SCRIM_TOP_LIGHT, SCRIM_BOTTOM_LIGHT)
     else BackdropScrim(SCRIM_TOP_DARK, SCRIM_BOTTOM_DARK)
 
+/**
+ * The scrim alpha [ArtBackdrop]'s gradient actually draws at [yFraction] of the backdrop's height
+ * (0 = top edge, 1 = bottom edge, clamped). The gradient is a two-stop `Brush.verticalGradient`
+ * over the full height with the SAME colour at both stops, so its alpha is exactly the linear
+ * interpolation between [backdropScrim]'s `top` and `bottom` — this reads those, never a copy.
+ *
+ * For surfaces that are NOT in the title band [scrimAtText] was calibrated for: a lyrics region
+ * reads this at its TOPMOST edge — the weakest scrim any of its lines sits under, since the
+ * gradient only strengthens downward — to size the extra `bg` fill it draws so the composite
+ * there reaches its target (`ui/lyrics` `lyricsFloorAlpha`). Lyric tones are then solved at that
+ * target, not at this value.
+ */
+internal fun scrimAtFraction(isLight: Boolean, yFraction: Float): Float {
+    val scrim = backdropScrim(isLight)
+    return scrim.top + (scrim.bottom - scrim.top) * yFraction.coerceIn(0f, 1f)
+}
+
 /** Where the drift is parked when the user has animations off — mid-sweep, not at an end. */
 private const val DRIFT_REST = 0.5f
 

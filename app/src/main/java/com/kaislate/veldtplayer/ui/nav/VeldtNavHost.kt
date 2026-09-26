@@ -44,6 +44,7 @@ import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
 import com.kaislate.veldtplayer.ui.browse.SearchScreen
 import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.components.MiniPlayer
+import com.kaislate.veldtplayer.ui.lyrics.LyricsScreen
 import com.kaislate.veldtplayer.ui.motion.LocalNavAnimatedVisibilityScope
 import com.kaislate.veldtplayer.ui.motion.LocalSharedTransitionScope
 import com.kaislate.veldtplayer.ui.motion.rememberMorphLinger
@@ -144,7 +145,13 @@ fun VeldtNavHost() {
         // Now-playing is a full-bleed surface with its own backdrop: the tab bar and the
         // mini-player would sit on top of the artwork, and the mini-player would be a second
         // copy of what fills the screen behind it.
-        val onNowPlaying = currentRoute == Destinations.NOW_PLAYING
+        //
+        // The full-screen lyrics route counts as now-playing for this: it is the same full-bleed
+        // backdrop, entered only from now-playing and left only back to it, so the tab bar and
+        // the mini-player stay down across the hop. That also keeps the mini-player's morph
+        // linger (keyed on this flag below) from firing on a hop that moves no cover.
+        val onNowPlaying = currentRoute == Destinations.NOW_PLAYING ||
+            currentRoute == Destinations.LYRICS
 
         SharedTransitionLayout {
             // Published once, for every surface below — the destinations AND the bottom
@@ -418,6 +425,32 @@ fun VeldtNavHost() {
                                         Destinations.NOW_PLAYING
                                 },
                                 onCollapse = { navController.popBackStack() },
+                                onOpenLyrics = {
+                                    navController.navigate(Destinations.LYRICS) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                onOpenSettings = {
+                                    navController.navigate(Destinations.SETTINGS) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                            )
+                        }
+                        // Shares npVm with now-playing and the mini-player — see the note where
+                        // npVm is resolved. Behind the same audio gate as now-playing: it is the
+                        // same surface, one tap further in.
+                        veldtDestination(
+                            Destinations.LYRICS, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
+                            LyricsScreen(
+                                vm = npVm,
+                                onBack = { navController.popBackStack() },
+                                onOpenSettings = {
+                                    navController.navigate(Destinations.SETTINGS) {
+                                        launchSingleTop = true
+                                    }
+                                },
                             )
                         }
                         // Plain `composable`, not `veldtDestination`: settings and the notices

@@ -155,4 +155,32 @@ class SettingsRepositoryTest {
             listOf(repo.readRawIntForTest("metered_max_bitrate"), repo.meteredMaxBitRate.first()),
         )
     }
+
+    // ---- LRCLIB opt-in (P1.5b Task 3). Plain Boolean, off by default (spec §8). ----
+
+    @Test fun `online lyrics default to off`() = runTest {
+        assertEquals(false, repo.lyricsOnline.first())
+    }
+
+    /**
+     * The raw read pins BOTH halves of the on-disk contract, the same way the folder-sort and
+     * metered-cap tests above do: the KEY string `lyrics_online` (a rename here silently resets
+     * every installed user's opt-in on upgrade, invisible to a test that reads back only through
+     * [SettingsRepository.lyricsOnline]) and the Boolean WIRE FORMAT (so a future rewrite as a
+     * String or an Int is caught here rather than by a UI symptom).
+     */
+    @Test fun `online lyrics round-trip as a Boolean under lyrics_online`() = runTest {
+        repo.setLyricsOnline(true)
+        assertEquals(
+            "online lyrics are not on disk as a Boolean under their own key, or do not read back",
+            listOf<Any?>(true, true),
+            listOf<Any?>(repo.lyricsOnline.first(), repo.readRawBooleanForTest("lyrics_online")),
+        )
+    }
+
+    @Test fun `online lyrics can be turned back off`() = runTest {
+        repo.setLyricsOnline(true)
+        repo.setLyricsOnline(false)
+        assertEquals(false, repo.lyricsOnline.first())
+    }
 }

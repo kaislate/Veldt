@@ -4,6 +4,8 @@
 package com.kaislate.veldtplayer.data.net
 
 import com.kaislate.veldtplayer.data.library.model.Song
+import com.kaislate.veldtplayer.data.lyrics.LyricLine
+import com.kaislate.veldtplayer.data.lyrics.Lyrics
 import com.kaislate.veldtplayer.di.CryptoRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -118,6 +120,63 @@ class SubsonicClient @Inject constructor(
     }
 
     private suspend fun call(url: HttpUrl): SubsonicResult = execute(Request.Builder().url(url).build())
+
+    /**
+     * `getLyricsBySongId` for [songId], mapped to [Lyrics], or null on ANY failure: a rejected
+     * or unreachable server, an empty `lyricsList` (Navidrome's answer for "no lyrics" —
+     * measured, spec §3), or an envelope this build cannot read. Never throws.
+     *
+     * A server may return several `structuredLyrics` entries (e.g. more than one language); the
+     * first SYNCED entry wins, else the first entry at all (spec §4). A synced entry's line
+     * times are `start - offset` — OpenSubsonic's own field, milliseconds, positive meaning the
+     * lyric should appear SOONER — clamped so it never goes below zero, the same clamp
+     * [com.kaislate.veldtplayer.data.lyrics.LrcParser] applies to an `.lrc` file's own
+     * `[offset:]` tag. A plain entry's lines are joined with `\n`. Either shape resolving to
+     * nothing — no lines, or blank text — is null, not an empty [Lyrics.Synced] or [Lyrics
+     * .Plain].
+     *
+     * Built on [call], the same request path [fetchCatalog] uses, so credential placement stays
+     * decided in exactly one place ([buildRequest]).
+     */
+    suspend fun lyrics(creds: SubsonicCredentials, caps: ServerCapabilities, songId: String): Lyrics? {
+        val result = call(creds, "getLyricsBySongId", listOf("id" to songId), caps)
+        val body = (result as? SubsonicResult.Ok)?.body ?: return null
+        return parseStructuredLyrics(body)
+    }
+
+    private fun parseStructuredLyrics(body: JsonObject): Lyrics? {
+        val lyricsList = body["lyricsList"] as? JsonObject ?: return null
+        val entries = (lyricsList["structuredLyrics"] as? JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        val chosen = entries.firstOrNull { it.booleanOrNull("synced") == true } ?: entries.first()
+        val lines = (chosen["line"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+
+        return if (chosen.booleanOrNull("synced") == true) {
+            val offsetMs = chosen.longOrNull("offset") ?: 0L
+            val lyricLines = lines.mapNotNull { line ->
+                val start = line.longOrNull("start") ?: return@mapNotNull null
+                LyricLine((start - offsetMs).coerceAtLeast(0), line.stringOrNull("value").orEmpty())
+            }
+            lyricLines.takeIf { it.isNotEmpty() }?.let { Lyrics.Synced(it.sortedBy { line -> line.timeMs }) }
+        } else {
+            val text = lines.mapNotNull { it.stringOrNull("value") }.joinToString("\n")
+            text.takeIf { it.isNotBlank() }?.let { Lyrics.Plain(it) }
+        }
+    }
+
+    private fun JsonObject.booleanOrNull(key: String): Boolean? =
+        (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.let {
+            when (it) {
+                "true" -> true
+                "false" -> false
+                else -> null
+            }
+        }
+
+    private fun JsonObject.longOrNull(key: String): Long? =
+        (this[key] as? JsonPrimitive)?.content?.toLongOrNull()
 
     /**
      * `getCoverArt` bytes for [id] at [sizePx], or null.

@@ -44,4 +44,15 @@ class SettingsViewModel @Inject constructor(
     fun setMeteredMaxBitRate(kbps: Int) {
         viewModelScope.launch { settingsRepository.setMeteredMaxBitRate(kbps) }
     }
+
+    /** The LRCLIB opt-in (spec §8): off by default. */
+    val lyricsOnline: StateFlow<Boolean> = settingsRepository.lyricsOnline.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        false,
+    )
+
+    fun setLyricsOnline(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setLyricsOnline(enabled) }
+    }
 }

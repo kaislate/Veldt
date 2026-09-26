@@ -39,8 +39,17 @@ class FakeHttpServer : Closeable {
      * a binary payload (Task 6's cover art) is never accidentally served as JSON. */
     class Canned(val status: Int, val bodyBytes: ByteArray, val contentType: String)
 
-    /** One request as it was actually received. [body] is empty for a request with no body. */
-    data class Recorded(val method: String, val target: String, val body: String)
+    /**
+     * One request as it was actually received. [body] is empty for a request with no body.
+     * [headers] is keyed by lowercased header name (HTTP header names are case-insensitive), so
+     * a test can assert `User-Agent` without caring how a client happened to case it.
+     */
+    data class Recorded(
+        val method: String,
+        val target: String,
+        val body: String,
+        val headers: Map<String, String> = emptyMap(),
+    )
 
     /** Request lines ("GET /rest/ping?... HTTP/1.1") in arrival order. Kept for existing tests. */
     val requestLines: MutableList<String> = Collections.synchronizedList(mutableListOf())
@@ -79,6 +88,10 @@ class FakeHttpServer : Closeable {
             ?.substringAfter('=')
     }
 
+    /** The header [name] (case-insensitive) of the [index]th request, or null. */
+    fun header(index: Int, name: String): String? =
+        requests.getOrNull(index)?.headers?.get(name.lowercase())
+
     fun start() {
         thread(isDaemon = true, name = "FakeHttpServer") {
             while (!socket.isClosed) {
@@ -95,12 +108,18 @@ class FakeHttpServer : Closeable {
             requestLines.add(requestLine)
 
             var contentLength = 0
+            val headers = mutableMapOf<String, String>()
             while (true) {
                 val header = input.readAsciiLine() ?: break
                 if (header.isEmpty()) break
                 val colon = header.indexOf(':')
-                if (colon > 0 && header.substring(0, colon).equals("Content-Length", ignoreCase = true)) {
-                    contentLength = header.substring(colon + 1).trim().toIntOrNull() ?: 0
+                if (colon > 0) {
+                    val name = header.substring(0, colon).trim()
+                    val value = header.substring(colon + 1).trim()
+                    headers[name.lowercase()] = value
+                    if (name.equals("Content-Length", ignoreCase = true)) {
+                        contentLength = value.toIntOrNull() ?: 0
+                    }
                 }
             }
 
@@ -118,6 +137,7 @@ class FakeHttpServer : Closeable {
                 method = parts.getOrElse(0) { "" },
                 target = parts.getOrElse(1) { "" },
                 body = body,
+                headers = headers,
             )
             requests.add(recorded)
 
