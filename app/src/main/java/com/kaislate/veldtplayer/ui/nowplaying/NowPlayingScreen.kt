@@ -4,7 +4,13 @@
 package com.kaislate.veldtplayer.ui.nowplaying
 
 import android.view.accessibility.AccessibilityManager
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -24,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -45,6 +53,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +74,9 @@ import com.kaislate.veldtplayer.playback.RepeatMode
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.scrimAtText
+import com.kaislate.veldtplayer.ui.lyrics.LyricsContent
+import com.kaislate.veldtplayer.ui.lyrics.LyricsVisibleWhile
+import com.kaislate.veldtplayer.ui.lyrics.consumeVerticalDrags
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
@@ -117,7 +129,10 @@ private const val AMBIENT_DELAY_MS = 8_000L
  *   stopped to look at the artwork just costs them a wake-up tap before every resume.
  * - [sheetOpen] — the queue sheet is up and taking the touches, so the idle timer would run
  *   to completion behind it and the chrome would be gone on dismiss for no reason the user
- *   could connect to anything they did.
+ *   could connect to anything they did. The lyrics pane passes through here too (the caller
+ *   ORs it in): lyrics are something being READ, like the queue, and fading the lyrics toggle
+ *   and the pane's expand button out from under a reader would strand them in a mode whose
+ *   own controls had disappeared.
  */
 internal fun ambientEligible(
     reduced: Boolean,
@@ -319,12 +334,25 @@ private fun rememberAccessibilityActive(): Boolean {
  *   however it drives the screen, every control it could reach a second ago it can still
  *   reach. The fade itself is untouched, so the aesthetic is not spent on it. See
  *   [chromeReachable].
+ *
+ * **Lyrics and the morph.** The lyrics pane takes the artwork's slot, and only the ArtImage
+ * branch carries `sharedSongArt`. That is safe in every direction for one reason: the morph's
+ * contract is that exactly one end claims `visible == true` at a time, and the pane claims
+ * nothing. Opening now-playing always lands on the artwork (a collapse pops this entry, and
+ * with it the saved `showLyrics`), so the outbound leg is unchanged. Collapsing WHILE lyrics
+ * are showing finds no now-playing end at all: the mini-player re-attaches at frame 0 with no
+ * match, draws where it lives, and the screen leaves by its route transition — a plain exit,
+ * not a snap or a contended match. Conjuring the cover back for the length of the pop to give
+ * the morph a start was rejected: a freshly composed end has no prior bounds to animate FROM,
+ * so it would buy nothing but a flash of artwork under the departing lyrics.
  */
 @Composable
 fun NowPlayingScreen(
     vm: NowPlayingViewModel,
     artVisible: () -> Boolean,
     onCollapse: () -> Unit,
+    onOpenLyrics: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // collectAsStateWithLifecycle, never bare collectAsState: positionMs is a WhileSubscribed
@@ -359,11 +387,27 @@ fun NowPlayingScreen(
     var draggedY by remember { mutableFloatStateOf(0f) }
 
     var showQueue by remember { mutableStateOf(false) }
+    // Lyrics in place of the artwork (spec §7). Saveable, so the pane is still up when the
+    // user comes back from the full-screen lyrics route or from Settings — this entry stays on
+    // the back stack under both. A collapse POPS this entry, so reopening now-playing always
+    // starts on the artwork, which is the end the mini-player morph needs (see "Lyrics and the
+    // morph" in the KDoc).
+    var showLyrics by rememberSaveable { mutableStateOf(false) }
     // The host below also guards on isActive, because this cannot run until after the frame
     // that dropped it. This is the other half: without it the flag would still read "open"
     // once the sheet had been taken away, and the sheet would spring back on its own the next
-    // time something started playing.
-    LaunchedEffect(state.isActive) { if (!state.isActive) showQueue = false }
+    // time something started playing. The lyrics pane is reset for the same reason: a new
+    // queue starts on its artwork.
+    LaunchedEffect(state.isActive) {
+        if (!state.isActive) {
+            showQueue = false
+            showLyrics = false
+        }
+    }
+    // Resolution runs only while the pane is actually on screen (spec §6). A DisposableEffect
+    // underneath, so leaving composition — a pop, or navigating to the full-screen route —
+    // releases this surface's claim; see LyricsViewers for why it is a claim and not a flag.
+    LyricsVisibleWhile(vm, visible = showLyrics && state.isActive)
     // A counter rather than a timestamp: it only ever has to differ from its previous value
     // to restart the idle timer, and a monotonic tick cannot be confused by a clock change.
     var lastTouchTick by remember { mutableIntStateOf(0) }
@@ -374,7 +418,8 @@ fun NowPlayingScreen(
         touchExploration = rememberTouchExploration(),
         isActive = state.isActive,
         isPlaying = state.isPlaying,
-        sheetOpen = showQueue,
+        // Review Focus 2: lyrics mode disarms the fade — see the sheetOpen clause.
+        sheetOpen = showQueue || showLyrics,
     )
     // Keyed on the tick AND on eligibility, so both a touch and anything that disarms ambient
     // mode (a pause, the sheet opening, TalkBack coming on) bring the chrome straight back.
@@ -490,18 +535,71 @@ fun NowPlayingScreen(
                 // this screen while it is exiting, so the departing end of the morph can
                 // stop being the live one. See the KDoc.
                 val artIsLiveEnd = artVisible()
-                ArtImage(
-                    art = state.art,
-                    palette = palette,
-                    initial = state.initial,
-                    // sharedSongArt before clip, so the rounding travels with the shared
-                    // node rather than being re-applied at the destination.
+                val lyricsState by vm.lyrics.collectAsStateWithLifecycle()
+                // One slot, two occupants: the pane is exactly the artwork's square, so
+                // swapping them moves nothing else on the screen. `using null` (no size
+                // transform) because the two are the same size, and a SizeTransform would also
+                // clip the slot to its bounds.
+                AnimatedContent(
+                    targetState = showLyrics,
+                    transitionSpec = {
+                        if (reduced) {
+                            fadeIn(snap()) togetherWith fadeOut(snap()) using null
+                        } else {
+                            fadeIn(Motion.gentle) togetherWith fadeOut(Motion.gentle) using null
+                        }
+                    },
+                    contentAlignment = Alignment.Center,
+                    label = "artOrLyrics",
                     modifier = Modifier
                         .fillMaxWidth(ART_WIDTH)
-                        .aspectRatio(1f)
-                        .sharedSongArt(state.songId, visible = artIsLiveEnd)
-                        .clip(RoundedCornerShape(ART_CORNER)),
-                )
+                        .aspectRatio(1f),
+                ) { lyricsShown ->
+                    if (lyricsShown) {
+                        // No sharedSongArt on this branch, on purpose: the pane is not the
+                        // cover, and giving it the cover's key would morph a block of text into
+                        // the mini-player thumbnail. While lyrics are up this screen therefore
+                        // holds NO end of the track-art morph, and a collapse from here is the
+                        // plain route exit with the mini-player simply reappearing — see
+                        // "Lyrics and the morph" in the KDoc.
+                        LyricsContent(
+                            state = lyricsState,
+                            positionMs = position,
+                            text = text,
+                            onSeek = vm::seekTo,
+                            onOpenSettings = onOpenSettings,
+                            footerAction = {
+                                IconButton(onClick = onOpenLyrics) {
+                                    Icon(
+                                        Icons.Filled.OpenInFull,
+                                        contentDescription = "Full-screen lyrics",
+                                        tint = text.primary,
+                                    )
+                                }
+                            },
+                            // Review Focus 1: a vertical drag that starts on the pane stays in
+                            // the pane. It scrolls the lyrics and never reaches the root's
+                            // dismiss detector; see consumeVerticalDrags for the mechanism.
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .consumeVerticalDrags(),
+                        )
+                    } else {
+                        ArtImage(
+                            art = state.art,
+                            palette = palette,
+                            initial = state.initial,
+                            // sharedSongArt before clip, so the rounding travels with the shared
+                            // node rather than being re-applied at the destination. The click
+                            // comes after both: it is not part of what morphs.
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .sharedSongArt(state.songId, visible = artIsLiveEnd)
+                                .clip(RoundedCornerShape(ART_CORNER))
+                                .clickable(onClickLabel = "Show lyrics") { showLyrics = true },
+                        )
+                    }
+                }
 
                 Column(
                     modifier = Modifier.ambientChrome(chromeAlpha, chromeUsable),
@@ -606,21 +704,41 @@ fun NowPlayingScreen(
         // big play button, and a sixth glyph on one side turns a symmetric object into a
         // lopsided one. The two corner affordances are the surface's chrome — a way out and
         // a way to what's next — and they read as a pair.
+        //
+        // The lyrics toggle joins the queue button in that corner (spec §7, "beside the queue
+        // button") rather than the transport, for the same symmetry reason. It fades with the
+        // rest of the chrome while the artwork is showing; in lyrics mode ambient mode is
+        // disarmed, so it never fades out of a mode it is the way out of.
         if (state.isActive) {
-            IconButton(
-                onClick = { showQueue = true },
-                enabled = chromeUsable,
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(end = 8.dp)
                     .ambientChrome(chromeAlpha, chromeUsable),
             ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.QueueMusic,
-                    contentDescription = "Queue",
-                    tint = text.primary,
-                )
+                IconButton(
+                    onClick = { showLyrics = !showLyrics },
+                    enabled = chromeUsable,
+                ) {
+                    Icon(
+                        Icons.Filled.Lyrics,
+                        // Announces the action, as the transport toggles announce their state:
+                        // the tint alone would be invisible to a screen reader.
+                        contentDescription = if (showLyrics) "Hide lyrics" else "Show lyrics",
+                        tint = if (showLyrics) marks.accent else text.primary,
+                    )
+                }
+                IconButton(
+                    onClick = { showQueue = true },
+                    enabled = chromeUsable,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = "Queue",
+                        tint = text.primary,
+                    )
+                }
             }
         }
 

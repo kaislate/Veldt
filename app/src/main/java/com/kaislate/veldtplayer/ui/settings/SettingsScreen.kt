@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -28,6 +29,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -47,7 +49,7 @@ import com.kaislate.veldtplayer.ui.browse.SectionLabel
 
 /**
  * The one settings surface: a three-way theme selector, the mobile-data streaming quality, the
- * way in to server accounts, and an About block with the notices it is obliged to carry. It draws
+ * online-lyrics opt-in, the way in to server accounts, and an About block with the notices it is obliged to carry. It draws
  * its own header rather than taking the shared `TopAppBar`, same as every non-tab destination —
  * see `VeldtNavHost.TAB_ROUTES`.
  */
@@ -62,6 +64,7 @@ fun SettingsScreen(
 ) {
     val mode by vm.themeMode.collectAsStateWithLifecycle()
     val meteredCap by vm.meteredMaxBitRate.collectAsStateWithLifecycle()
+    val lyricsOnline by vm.lyricsOnline.collectAsStateWithLifecycle()
     val direction = LocalLayoutDirection.current
 
     Column(
@@ -115,6 +118,15 @@ fun SettingsScreen(
                 onSelect = { vm.setMeteredMaxBitRate(kbps) },
             )
         }
+
+        SectionLabel("Lyrics")
+        SwitchRow(
+            label = "Find lyrics online (LRCLIB)",
+            explanation = "Sends the song's title, artist, album and length to lrclib.net when " +
+                "you open lyrics for a song that has none.",
+            checked = lyricsOnline,
+            onCheckedChange = vm::setLyricsOnline,
+        )
 
         SectionLabel("Servers")
         SettingsLinkRow(
@@ -191,6 +203,43 @@ private fun ThemeOptionRow(
         RadioButton(selected = selected, onClick = null)
         Spacer(Modifier.width(12.dp))
         Text(label, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/**
+ * One on/off setting with a sentence saying what turning it on does.
+ *
+ * A SINGLE `toggleable` target on the row with the [Switch]'s own `onCheckedChange = null`, for
+ * the same reason [ThemeOptionRow] is one `selectable`: two targets would be announced as two
+ * elements, and `role = Role.Switch` is what makes the row itself read as a switch with its
+ * state — label and explanation included.
+ */
+@Composable
+private fun SwitchRow(
+    label: String,
+    explanation: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .toggleable(value = checked, onValueChange = onCheckedChange, role = Role.Switch)
+            .padding(horizontal = SIDE_MARGIN, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                explanation,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(16.dp))
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 
