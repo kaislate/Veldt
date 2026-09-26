@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.kaislate.veldtplayer.data.library.db.SongDao
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -52,9 +53,9 @@ interface SubsonicSync {
      *  comes from the delete-order this class's KDoc describes, not from this call alone. */
     fun cancel(sourceId: String)
 
-    /** Drop every song [sourceId] contributed and its recorded status. Callers must call this
-     *  only AFTER the account row itself is gone (see the class KDoc) — calling it first is the
-     *  exact ordering bug fix round 1 fixed. */
+    /** Drop every song [sourceId] contributed, its recorded status, and (N3) any of its scrobbles
+     *  still waiting in the queue. Callers must call this only AFTER the account row itself is
+     *  gone (see the class KDoc) — calling it first is the exact ordering bug fix round 1 fixed. */
     suspend fun purge(sourceId: String)
 }
 
@@ -64,6 +65,7 @@ class SubsonicSyncCoordinator @Inject constructor(
     @ApplicationContext private val context: Context,
     private val songDao: SongDao,
     private val statusStore: SyncStatusStore,
+    private val scrobbleQueue: ScrobbleQueue,
 ) : SubsonicSync {
 
     override fun request(sourceId: String) {
@@ -90,6 +92,9 @@ class SubsonicSyncCoordinator @Inject constructor(
     override suspend fun purge(sourceId: String) {
         songDao.deleteBySource(sourceId)
         statusStore.clear(sourceId)
+        // N3: an account being removed must not leave scrobbles queued for an id nothing will
+        // ever flush again (design spec §4, "removing an account purges its entries").
+        scrobbleQueue.purge(sourceId)
     }
 
     private fun uniqueWorkName(sourceId: String) = "veldt-sync-$sourceId"

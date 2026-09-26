@@ -16,6 +16,7 @@ import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.net.CatalogResult
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import com.kaislate.veldtplayer.data.net.fetchCatalog
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlusher
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 
@@ -46,6 +47,9 @@ import dagger.assisted.AssistedInject
  *    (a dead socket, a 500, an unclassified rejection) retries up to [MAX_ATTEMPTS], **never**
  *    touching the stored songs — a sync that cannot reach the server must leave the library
  *    exactly as it was, not empty it.
+ * 5. (N3) A [CatalogResult.Ok] that writes successfully also calls [ScrobbleFlusher.flush] for
+ *    this [sourceId] — the piggyback half of design spec §5's delivery story, so a source's
+ *    queued scrobbles do not wait for its own next scrobble to go out before being retried.
  *
  * [now] exists only so `SubsonicSyncWorkerTest` can pin [SyncStatus.lastSuccessMs]; the
  * `@AssistedInject` constructor Hilt uses supplies the real clock, for the same reason
@@ -61,6 +65,7 @@ class SubsonicSyncWorker internal constructor(
     private val accountDao: AccountDao,
     private val songDao: SongDao,
     private val status: SyncStatusStore,
+    private val flusher: ScrobbleFlusher,
     private val now: () -> Long,
 ) : CoroutineWorker(appContext, params) {
 
@@ -73,6 +78,7 @@ class SubsonicSyncWorker internal constructor(
         accountDao: AccountDao,
         songDao: SongDao,
         status: SyncStatusStore,
+        flusher: ScrobbleFlusher,
     ) : this(
         appContext = appContext,
         params = params,
@@ -82,6 +88,7 @@ class SubsonicSyncWorker internal constructor(
         accountDao = accountDao,
         songDao = songDao,
         status = status,
+        flusher = flusher,
         now = { System.currentTimeMillis() },
     )
 
@@ -104,6 +111,10 @@ class SubsonicSyncWorker internal constructor(
                     Result.failure(failureData(FAILURE_GONE))
                 } else {
                     status.recordSuccess(sourceId, now(), result.songs.size)
+                    // N3 design spec §5: a successful sync is "any successful contact with that
+                    // server" — piggyback this source's queued scrobbles onto it rather than
+                    // waiting for the next scrobble attempt or the separate retry job.
+                    flusher.flush(sourceId)
                     Result.success()
                 }
             }

@@ -14,6 +14,9 @@ import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
 import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.data.net.SubsonicClient
+import com.kaislate.veldtplayer.data.scrobble.QueuedScrobble
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlushScheduler
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -32,6 +35,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
+import java.nio.file.Files
 import java.util.Random
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -79,9 +84,21 @@ class AccountsViewModelTest {
         }
     }
 
+    /** Records every [enqueue] call — N3 task 2's controller ruling: a new password must re-arm
+     *  the flush job only when the source actually has entries waiting. */
+    private class FakeFlushScheduler : ScrobbleFlushScheduler {
+        var enqueueCalls = 0
+        override fun enqueue() {
+            enqueueCalls++
+        }
+    }
+
     private lateinit var db: VeldtDatabase
     private lateinit var repo: AccountRepository
     private lateinit var sync: FakeSync
+    private lateinit var scrobbleQueueDir: File
+    private lateinit var scrobbleQueue: ScrobbleQueue
+    private lateinit var flushScheduler: FakeFlushScheduler
     private lateinit var vm: AccountsViewModel
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
 
@@ -95,14 +112,18 @@ class AccountsViewModelTest {
             files = SecretFiles(ctx),
         )
         sync = FakeSync()
+        scrobbleQueueDir = Files.createTempDirectory("scrobble-queue-vm-test").toFile()
+        scrobbleQueue = ScrobbleQueue(scrobbleQueueDir)
+        flushScheduler = FakeFlushScheduler()
         // A real client; no test here makes a request, and a fake would only be a way to be
         // wrong about the constructor.
-        vm = AccountsViewModel(repo, SubsonicClient(OkHttpClient(), Random(42)), sync)
+        vm = AccountsViewModel(repo, SubsonicClient(OkHttpClient(), Random(42)), sync, scrobbleQueue, flushScheduler)
     }
 
     @After fun tearDown() {
         db.close()
         Dispatchers.resetMain()
+        scrobbleQueueDir.deleteRecursively()
     }
 
     /** The first non-idle save outcome; `add` finishes on Room's executor, not on this thread. */
@@ -207,6 +228,65 @@ class AccountsViewModelTest {
         vm.update(id, "http://h1:4533", "Kyle", "")
         assertEquals(SaveState.Saved, settledSave())
         assertEquals(emptyList<String>(), sync.calls)
+    }
+
+    // --------------------------------------------------------------- N3 task 2: auth-unblock on a new password
+
+    /**
+     * The controller's ruling for N3 task 2: a saved NEW password clears the source's scrobble
+     * auth-block and, because this source has entries waiting, re-arms the flush job. Asserted as
+     * a TOTAL pair — (still auth-blocked?, enqueue call count) — so a regression that fixes only
+     * half of this (unblocks but never flushes, or flushes without ever unblocking) is caught
+     * either way.
+     */
+    @Test fun `saving a new password clears the auth-block and enqueues a flush when entries are waiting`() = runTest {
+        vm.add("Home", "http://h1:4533", "Kyle", "hunter2")
+        settledSave()
+        val id = repo.observe().first().single().sourceId
+        scrobbleQueue.setAuthBlocked(id, true)
+        scrobbleQueue.add(QueuedScrobble(id, "song-1", 1_000L))
+        vm.resetTest()
+
+        vm.update(id, "http://h1:4533", "Kyle", "newpassword")
+        assertEquals(SaveState.Saved, settledSave())
+
+        assertEquals(false, scrobbleQueue.isAuthBlocked(id))
+        assertEquals(1, flushScheduler.enqueueCalls)
+    }
+
+    /** The other half of the same ruling: unblocking must not depend on anything being queued —
+     *  an account that was blocked and then emptied by an earlier flush must still be unblocked —
+     *  but with nothing waiting there is nothing worth re-arming a job for. */
+    @Test fun `saving a new password clears the auth-block but does not enqueue with nothing queued`() = runTest {
+        vm.add("Home", "http://h1:4533", "Kyle", "hunter2")
+        settledSave()
+        val id = repo.observe().first().single().sourceId
+        scrobbleQueue.setAuthBlocked(id, true)
+        vm.resetTest()
+
+        vm.update(id, "http://h1:4533", "Kyle", "newpassword")
+        assertEquals(SaveState.Saved, settledSave())
+
+        assertEquals(false, scrobbleQueue.isAuthBlocked(id))
+        assertEquals(0, flushScheduler.enqueueCalls)
+    }
+
+    /** Saving with NO new password must touch neither the auth-block nor the flush job — this is
+     *  exactly the "credentials change" condition from design spec §5, and a url-only edit is not
+     *  one. */
+    @Test fun `saving with no new password leaves the auth-block and the flush job alone`() = runTest {
+        vm.add("Home", "http://h1:4533", "Kyle", "hunter2")
+        settledSave()
+        val id = repo.observe().first().single().sourceId
+        scrobbleQueue.setAuthBlocked(id, true)
+        scrobbleQueue.add(QueuedScrobble(id, "song-1", 1_000L))
+        vm.resetTest()
+
+        vm.update(id, "http://h2:4533", "Kyle", "")
+        assertEquals(SaveState.Saved, settledSave())
+
+        assertEquals(true, scrobbleQueue.isAuthBlocked(id))
+        assertEquals(0, flushScheduler.enqueueCalls)
     }
 
     /**

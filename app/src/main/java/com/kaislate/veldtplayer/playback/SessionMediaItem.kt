@@ -54,6 +54,12 @@ internal fun sessionMediaItem(song: Song, playableUri: String): MediaItem = Medi
             // now-playing screen use, so the notification cannot disagree with the app
             // about what this track's cover is.
             .setArtworkUri(VeldtArtUri.of(song.toSongArt()))
+            // The CATALOG duration, known at enqueue time — long before the player prepares
+            // anything and reports its own `player.duration` (which starts as `C.TIME_UNSET`).
+            // N3's `Scrobbler` reads this back (via `ScrobblerPlayerListener`) as its duration
+            // fallback, so a track's real threshold is known from the very first transition
+            // instead of only after `STATE_READY` (N3 fix round 1, item 3).
+            .setDurationMs(song.durationMs)
             .build()
     )
     .build()
