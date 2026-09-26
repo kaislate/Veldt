@@ -125,6 +125,37 @@ class ScrobbleQueueTest {
         }
     }
 
+    /** Fix round 1, fold-in (a): the auth-block must survive process death, so it has to be in the
+     *  same file as the entries, not an in-memory field a fresh process starts blank. */
+    @Test fun `an auth-block persists across a fresh instance over the same directory`() {
+        val dir = tempDir()
+        try {
+            ScrobbleQueue(dir).setAuthBlocked("acct-1", true)
+            assertTrue("a new instance over the same dir must see the block", ScrobbleQueue(dir).isAuthBlocked("acct-1"))
+
+            ScrobbleQueue(dir).setAuthBlocked("acct-1", false)
+            assertFalse("clearing the block must persist too", ScrobbleQueue(dir).isAuthBlocked("acct-1"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /** Fold-in (a): a corrupt or absent file must read as "not blocked", the same rule the
+     *  entries side already followed — a new failure mode must not get a new default. */
+    @Test fun `a corrupt or absent file reads every source as not auth-blocked`() {
+        val dir = tempDir()
+        try {
+            assertFalse("an absent file", ScrobbleQueue(dir).isAuthBlocked("acct-1"))
+
+            val queue = ScrobbleQueue(dir)
+            queue.setAuthBlocked("acct-1", true)
+            File(dir, "queue.json").writeText("{ not : valid json ]")
+            assertFalse("a corrupt file", queue.isAuthBlocked("acct-1"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     /** Design spec §4's cap: beyond 1000 entries the OLDEST are dropped, never the newest — this
      *  file's control target, see the class KDoc. */
     @Test fun `beyond the 1000 cap the oldest entries are dropped, keeping the newest 1000`() {

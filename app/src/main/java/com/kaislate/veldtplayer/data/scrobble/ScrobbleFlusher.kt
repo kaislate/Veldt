@@ -43,6 +43,8 @@ class ScrobbleFlusher @Inject constructor(
             queue.purge(sourceId)
             return
         }
+        // Unreadable secret or a row that vanished since the `contains` check above: treated like
+        // unreachable, not like a rejection — no request, no auth-block. See the class KDoc.
         val creds = sources.credentials(sourceId) ?: return
         val caps = sources.capabilities(sourceId)
 
