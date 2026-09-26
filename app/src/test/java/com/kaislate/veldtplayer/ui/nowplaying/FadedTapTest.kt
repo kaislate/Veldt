@@ -36,6 +36,29 @@ class FadedTapTest {
         assertFalse("a later non-pointer click must not read the stale latch", latch.consume(fadedNow = false))
     }
 
+    /** A real tap: the click consumes on the UP's Main pass, then the gesture ends (Final pass). */
+    @Test fun `down, click, gesture end - the click reads the down's state`() {
+        val latch = FadedTapLatch()
+        latch.down(faded = true)
+        assertTrue(latch.consume(fadedNow = false))
+        latch.gestureEnded()
+        assertFalse("nothing is left for a later non-pointer activation", latch.consume(fadedNow = false))
+    }
+
+    /** The review case: a partial drag cancels the press, so no click consumes the latch. The
+     *  gesture's end must clear it, and a later non-pointer activation then uses the LIVE state —
+     *  in both directions. */
+    @Test fun `down, drag-cancel, gesture end - a later non-pointer activation uses the live state`() {
+        val latch = FadedTapLatch()
+        latch.down(faded = true) // faded at the drag's down...
+        latch.gestureEnded() // ...drag cancelled the press; no click
+        assertFalse("stale faded=true must not swallow a live act-tap", latch.consume(fadedNow = false))
+
+        latch.down(faded = false)
+        latch.gestureEnded()
+        assertTrue("stale faded=false must not act on a faded screen", latch.consume(fadedNow = true))
+    }
+
     @Test fun `a newer down replaces an older one`() {
         val latch = FadedTapLatch()
         latch.down(faded = true)

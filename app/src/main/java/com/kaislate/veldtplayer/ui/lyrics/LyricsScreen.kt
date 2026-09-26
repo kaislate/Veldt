@@ -42,8 +42,11 @@ import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
  * which is what keeps resolution running here even though the now-playing pane below it on the
  * back stack has left composition.
  *
- * Text tones are solved exactly as now-playing solves them — against the ANIMATED `palette.bg`
- * and `scrimAtText` — because the ground is the same backdrop; see NowPlayingScreen.
+ * Every glyph here (header included) takes the LYRIC tones, [lyricsBackdropText] against the
+ * ANIMATED `palette.bg`: solved at the title band's modelled scrim (`scrimAtText`), with a
+ * fallback solve against `bg` itself for covers more extreme than `bg`. The whole content column
+ * sits on a [lyricsScrimFloor] that draws MORE scrim than that model, as margin — see
+ * [lyricsBackdropText] for why that direction only raises contrast.
  */
 @Composable
 fun LyricsScreen(

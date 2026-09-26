@@ -149,16 +149,31 @@ internal fun ambientEligible(
 
 /**
  * Latches whether the chrome is faded ([faded]) at each pointer DOWN on this element, for
- * [FadedTapLatch.consume] to read at the click. Initial pass and never consumed, like the root's
- * wake watcher: it observes the down and takes nothing from the control under it. The read is
- * synchronous in the down's own dispatch, so it precedes anything the root's wake does — that
- * only takes effect on a later frame.
+ * [FadedTapLatch.consume] to read at the click, and clears the latch when that gesture ENDS.
+ * Never consumes anything: it observes, and takes nothing from the control under it.
+ *
+ * **Ordering, per pointer event** (passes run Initial → Main → Final across the whole hit path):
+ *
+ * - The DOWN is read on the Initial pass. The read is synchronous in the down's own dispatch, so
+ *   it precedes anything the root's wake does — that only takes effect on a later frame.
+ * - The UP reaches the control's `clickable` on the Main pass, and a real tap's `onClick` — hence
+ *   [FadedTapLatch.consume] — runs synchronously right there (suspending pointer input resumes
+ *   inside the dispatch).
+ * - This then sees that same UP on the FINAL pass, strictly after Main, and calls
+ *   [FadedTapLatch.gestureEnded]. For a tap that is a no-op (already consumed). For a gesture that
+ *   never became a click — a partial drag the root's detector took over, a press dragged off the
+ *   control, a cancellation — it clears the stale down-time value, so a later non-pointer
+ *   activation (TalkBack double-tap, Enter, D-pad centre) falls back to the LIVE faded state.
  */
 private fun Modifier.latchFadeAtDown(latch: FadedTapLatch, faded: () -> Boolean): Modifier =
     pointerInput(latch) {
         awaitEachGesture {
             awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
             latch.down(faded())
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Final)
+            } while (event.changes.any { it.pressed })
+            latch.gestureEnded()
         }
     }
 
