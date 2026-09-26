@@ -5,6 +5,8 @@ package com.kaislate.veldtplayer.ui.lyrics
 
 import androidx.lifecycle.Lifecycle
 import com.kaislate.veldtplayer.data.lyrics.LyricsSource
+import com.kaislate.veldtplayer.ui.components.scrimAtFraction
+import com.kaislate.veldtplayer.ui.components.scrimAtText
 
 /**
  * How long auto-follow stays off after the user lets go of the lyrics list (spec §7: "a user
@@ -56,6 +58,32 @@ fun lyricsClaimActive(wanted: Boolean, lifecycle: Lifecycle.State): Boolean =
  */
 fun regionTopFraction(regionTopPx: Float, backdropHeightPx: Float): Float =
     if (backdropHeightPx <= 0f) 0f else (regionTopPx / backdropHeightPx).coerceIn(0f, 1f)
+
+/**
+ * Two `bg` layers stacked with plain SrcOver — the backdrop's own scrim at [below], then a
+ * second fill at [above] — composite to one `bg` layer at this alpha. Same colour in both, so
+ * the ground under them is the art lerped toward `bg` by exactly this much.
+ */
+fun compositeScrim(below: Float, above: Float): Float = 1f - (1f - below) * (1f - above)
+
+/**
+ * The alpha of the `bg` fill a lyrics region draws over the backdrop so that, at its TOP edge
+ * (where the backdrop's own scrim is weakest, [aTop]), the composite reaches [target]:
+ * `compositeScrim(aTop, lyricsScrimFloor(aTop, target)) == target`. `0` when the backdrop
+ * already supplies [target] there — the floor only ever adds, never replaces.
+ */
+fun lyricsScrimFloor(aTop: Float, target: Float): Float =
+    if (aTop >= target) 0f else maxOf(0f, 1f - (1f - target) / (1f - aTop))
+
+/**
+ * The floor a lyrics region whose top edge is at [topFraction] of the backdrop draws, in this
+ * theme: enough to lift the composite to [scrimAtText] — the title band's alpha, whose two text
+ * tones are unit-tested (`BackdropTextTest`) and device-measured (finding 14). Lyric tones are
+ * then solved at [scrimAtText] exactly like the title, and inherit its guarantee. Lines lower in
+ * the region sit under a stronger backdrop scrim plus the same fill, i.e. above the floor.
+ */
+fun lyricsFloorAlpha(isLight: Boolean, topFraction: Float): Float =
+    lyricsScrimFloor(scrimAtFraction(isLight, topFraction), scrimAtText(isLight))
 
 /** What a synced line with no text (an instrumental gap — a real line, see `LyricLine`) shows. */
 const val INSTRUMENTAL_GAP = "♪"

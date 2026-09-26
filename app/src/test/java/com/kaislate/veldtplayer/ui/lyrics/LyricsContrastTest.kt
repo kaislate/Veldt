@@ -5,6 +5,7 @@ package com.kaislate.veldtplayer.ui.lyrics
 
 import androidx.compose.ui.graphics.Color
 import com.kaislate.veldtplayer.ui.components.scrimAtFraction
+import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.theme.BackdropCorpus
 import com.kaislate.veldtplayer.ui.theme.ColorExtractor
 import com.kaislate.veldtplayer.ui.theme.backdropText
@@ -12,27 +13,56 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * Plain JVM. Lyric tones solved at the scrim of the TOPMOST lyric line, over the same corpus
- * `BackdropTextTest` uses, in both themes — spec §7's "active ≥ 7:1, inactive ≥ 4.5:1".
+ * Plain JVM. Lyric contrast over the same corpus `BackdropTextTest` uses, in both themes — spec
+ * §7's "active ≥ 7:1, inactive ≥ 4.5:1".
  *
- * Asserted at `yFraction = 0`: the gradient's top stop, the weakest scrim anywhere on the
- * backdrop, and so a floor for any lyrics region (the full-screen route's lyrics begin just
- * under its header; the pane begins at the artwork slot, further down, under more scrim).
+ * **With the floor** (the shipped behaviour): a lyrics region draws `bg` at [lyricsFloorAlpha]
+ * over the backdrop, so the composited scrim under its TOPMOST line — the backdrop's top stop,
+ * `yFraction 0`, the weakest anywhere and so a floor for either surface — is lifted to
+ * `scrimAtText`, and the tones are solved at `scrimAtText` exactly like the title. The ground is
+ * built from the COMPOSITED alpha ([compositeScrim] of the backdrop's own scrim and the floor),
+ * so removing the floor from that alpha is what this test would catch.
  *
- * **Not weakened, and not all green.** At the top stop the solver CANNOT reach the targets for
- * the (entry, theme, role) cases in [ceilings]: the composited ground there is a mid tone the
- * theme's text polarity cannot clear by any margin. For each one the test asserts the solver
- * already chose the extreme tone of its polarity (pure black in light, pure white in dark) — so
- * no tone does better, a provable ceiling rather than a solver regression — and pins the set and
- * its ratios exactly, so closing one (or opening another) must update this list. The numbers are
- * in the Task 5 fix report for the controller's ruling.
+ * **Without the floor** (why it exists, kept falsifiable): solving at the top stop alone, the
+ * solver CANNOT reach the targets for the cases in [ceilingsWithoutFloor] — it already chose
+ * the extreme tone of its polarity there (pure black in light, pure white in dark), so no tone
+ * does better. The set and ratios are pinned exactly.
  */
 class LyricsContrastTest {
 
     private fun ratio(a: Color, b: Color) = ColorExtractor.contrastRatio(a, b)
 
-    /** (entry, isLight, role) to the ratio the extreme tone reaches at the top stop. */
-    private val ceilings = mapOf(
+    /** The title band's own primary targets — `BackdropTextTest.primaryFloor`, verbatim: dark
+     *  white-mean covers are held to 4.5:1 there (a documented tone ceiling at 0.62), and the
+     *  lyrics now inherit exactly that guarantee, no more and no less. */
+    private fun titlePrimaryFloor(name: String, isLight: Boolean): Double =
+        if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
+
+    @Test fun `with the floor - every corpus seed meets the title band's targets at the composited alpha`() {
+        val failures = mutableListOf<String>()
+        for ((name, s) in BackdropCorpus.entries) for (light in listOf(true, false)) {
+            val aTop = scrimAtFraction(light, 0f)
+            val composited = compositeScrim(aTop, lyricsFloorAlpha(light, 0f))
+            val bg = s.colors(light).bg
+            val ground = BackdropCorpus.groundOf(s, bg, composited)
+            val t = s.backdropText(bg, scrimAtText(light), light)
+            val p = ratio(t.primary, ground)
+            val q = ratio(t.secondary, ground)
+            if (p < titlePrimaryFloor(name, light)) failures += "$name/$light/primary=%.2f".format(p)
+            if (q < 4.5) failures += "$name/$light/secondary=%.2f".format(q)
+        }
+        assertEquals("lyric tones failed at the composited alpha: $failures", emptyList<String>(), failures)
+    }
+
+    @Test fun `the floor lifts the top stop to exactly scrimAtText, in both themes`() {
+        for (light in listOf(true, false)) {
+            val aTop = scrimAtFraction(light, 0f)
+            assertEquals(scrimAtText(light), compositeScrim(aTop, lyricsFloorAlpha(light, 0f)), 1e-5f)
+        }
+    }
+
+    /** (entry, isLight, role) to the ratio the extreme tone reaches at the top stop, no floor. */
+    private val ceilingsWithoutFloor = mapOf(
         Triple("black cover", true, "primary") to 5.99,
         Triple("greyscale cover, black mean", true, "primary") to 6.00,
         Triple("white cover", false, "primary") to 2.17,
@@ -41,7 +71,7 @@ class LyricsContrastTest {
         Triple("greyscale cover, white mean", false, "secondary") to 2.19,
     )
 
-    @Test fun `lyric tones at the top of the backdrop - targets met, or a pinned provable ceiling`() {
+    @Test fun `without the floor - the top stop has a pinned provable shortfall`() {
         val below = mutableMapOf<Triple<String, Boolean, String>, Double>()
         val notExtreme = mutableListOf<String>()
         for ((name, s) in BackdropCorpus.entries) for (light in listOf(true, false)) {
@@ -62,8 +92,8 @@ class LyricsContrastTest {
             }
         }
         assertEquals("a shortfall where a better tone existed: $notExtreme", emptyList<String>(), notExtreme)
-        assertEquals("the set of ceilings changed: $below", ceilings.keys, below.keys)
-        ceilings.forEach { (k, v) -> assertEquals("ratio for $k", v, below.getValue(k), 0.01) }
+        assertEquals("the set of ceilings changed: $below", ceilingsWithoutFloor.keys, below.keys)
+        ceilingsWithoutFloor.forEach { (k, v) -> assertEquals("ratio for $k", v, below.getValue(k), 0.01) }
     }
 
     /** Where the lyric tones DO meet both targets for the whole corpus: the lowest fraction per

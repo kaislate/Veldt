@@ -73,13 +73,13 @@ import com.kaislate.veldtplayer.playback.NowPlayingState
 import com.kaislate.veldtplayer.playback.RepeatMode
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
 import com.kaislate.veldtplayer.ui.components.ArtImage
-import com.kaislate.veldtplayer.ui.components.scrimAtFraction
 import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.lyrics.LyricsContent
 import com.kaislate.veldtplayer.ui.lyrics.LyricsVisibleWhile
 import com.kaislate.veldtplayer.ui.lyrics.consumeVerticalDrags
 import com.kaislate.veldtplayer.ui.lyrics.lyricsBackdrop
 import com.kaislate.veldtplayer.ui.lyrics.lyricsRegion
+import com.kaislate.veldtplayer.ui.lyrics.lyricsScrimFloor
 import com.kaislate.veldtplayer.ui.lyrics.rememberLyricsGround
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
@@ -385,8 +385,9 @@ fun NowPlayingScreen(
     // draws; the wave, the scrub track and the two toggles were still solved against `bg`.
     val marks = targetSeed.backdropMarks(palette.bg, scrimAtText(isLight), isLight)
     // The lyrics pane sits in the ARTWORK slot, above the title band scrimAtText describes, so
-    // its lines are solved against the scrim at the pane's own top edge instead — see
-    // LyricsGround. Only the pane reads it, and only while it is shown.
+    // it draws a scrim floor lifting the weakest scrim under its lines to scrimAtText — and its
+    // lines then use [text], solved there, exactly like the title. See lyricsScrimFloor. Only
+    // the pane draws it, and only while it is shown: the artwork view is unchanged.
     val lyricsGround = rememberLyricsGround()
 
     // Accumulated, and acted on at RELEASE. Reacting to a single drag delta would fire
@@ -567,11 +568,6 @@ fun NowPlayingScreen(
                         .lyricsRegion(lyricsGround),
                 ) { lyricsShown ->
                     if (lyricsShown) {
-                        val lyricsText = targetSeed.backdropText(
-                            palette.bg,
-                            scrimAtFraction(isLight, lyricsGround.topFraction),
-                            isLight,
-                        )
                         // No sharedSongArt on this branch, on purpose: the pane is not the
                         // cover, and giving it the cover's key would morph a block of text into
                         // the mini-player thumbnail. While lyrics are up this screen therefore
@@ -581,7 +577,7 @@ fun NowPlayingScreen(
                         LyricsContent(
                             state = lyricsState,
                             positionMs = position,
-                            text = lyricsText,
+                            text = text,
                             onSeek = vm::seekTo,
                             onOpenSettings = onOpenSettings,
                             footerAction = {
@@ -589,7 +585,7 @@ fun NowPlayingScreen(
                                     Icon(
                                         Icons.Filled.OpenInFull,
                                         contentDescription = "Full-screen lyrics",
-                                        tint = lyricsText.primary,
+                                        tint = text.primary,
                                     )
                                 }
                             },
@@ -598,6 +594,11 @@ fun NowPlayingScreen(
                             // dismiss detector; see consumeVerticalDrags for the mechanism.
                             modifier = Modifier
                                 .fillMaxSize()
+                                // The floor takes the artwork's rounded square, so the swap
+                                // reads as the cover giving way to a tinted card of the same
+                                // shape rather than a hard-edged block.
+                                .clip(RoundedCornerShape(ART_CORNER))
+                                .lyricsScrimFloor(lyricsGround, palette.bg, isLight)
                                 .consumeVerticalDrags(),
                         )
                     } else {

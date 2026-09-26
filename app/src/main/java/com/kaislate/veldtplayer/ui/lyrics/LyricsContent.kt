@@ -38,7 +38,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -58,6 +60,14 @@ import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
 import com.kaislate.veldtplayer.ui.theme.BackdropText
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+
+/**
+ * The scrim floor behind a lyrics region: `bg` at [lyricsFloorAlpha] for where the region's top
+ * edge sits, as a plain SrcOver fill (no blend-mode tricks — finding 9). With it, every lyric
+ * line sits under at least [scrimAtText]'s alpha, so the tones solved there hold.
+ */
+fun Modifier.lyricsScrimFloor(ground: LyricsGround, bg: Color, isLight: Boolean): Modifier =
+    drawBehind { drawRect(bg.copy(alpha = lyricsFloorAlpha(isLight, ground.topFraction))) }
 
 /**
  * The one lyrics renderer behind both the in-place pane on now-playing and the full-screen
@@ -312,8 +322,8 @@ fun LyricsVisibleWhile(vm: NowPlayingViewModel, visible: Boolean) {
 }
 
 /**
- * Where a lyrics region sits on the backdrop, so its two text tones can be solved against the
- * scrim at its TOPMOST line rather than at the title band [scrimAtText] was calibrated for.
+ * Where a lyrics region sits on the backdrop, so the region can draw the scrim FLOOR that lifts
+ * the weakest scrim under any of its lines to the title band's — see [lyricsFloorAlpha].
  *
  * The backdrop's scrim is a vertical gradient that strengthens downward, so the top edge of the
  * region is the weakest scrim any lyric line sits under — lines scroll up to it and no further.

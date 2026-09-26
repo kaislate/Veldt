@@ -26,7 +26,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
-import com.kaislate.veldtplayer.ui.components.scrimAtFraction
 import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
@@ -62,16 +61,12 @@ fun LyricsScreen(
     val palette = rememberAnimatedPalette(targetSeed.colors(isLight = isLight))
     val text = targetSeed.backdropText(palette.bg, scrimAtText(isLight), isLight)
     val reduced = rememberReducedMotion()
-    // The header (back arrow, title) sits at the top of the frame, but it is the same band the
-    // title uses on now-playing and keeps [text]. The LYRICS start just below it, higher than
-    // scrimAtText's title band, so they are solved against the scrim at their own top edge —
-    // see LyricsGround.
+    // Everything on this route — header and lyrics — sits far above the title band
+    // scrimAtText describes, down to the very top of the frame where the backdrop's scrim is
+    // weakest. So the whole content area is one lyrics region with a scrim FLOOR behind it,
+    // lifting the weakest scrim anywhere on it to scrimAtText; [text], solved there, then holds
+    // for every glyph on the screen. See lyricsScrimFloor.
     val ground = rememberLyricsGround()
-    val lyricsText = targetSeed.backdropText(
-        palette.bg,
-        scrimAtFraction(isLight, ground.topFraction),
-        isLight,
-    )
 
     LyricsVisibleWhile(vm, visible = true)
 
@@ -89,6 +84,9 @@ fun LyricsScreen(
         Column(
             Modifier
                 .fillMaxSize()
+                // Before the insets, so the floor also covers the status-bar strip.
+                .lyricsRegion(ground)
+                .lyricsScrimFloor(ground, palette.bg, isLight)
                 .windowInsetsPadding(WindowInsets.systemBars),
         ) {
             Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
@@ -126,15 +124,14 @@ fun LyricsScreen(
                 LyricsContent(
                     state = lyrics,
                     positionMs = position,
-                    text = lyricsText,
+                    text = text,
                     onSeek = vm::seekTo,
                     onOpenSettings = onOpenSettings,
                     lineStyle = MaterialTheme.typography.titleLarge,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                        .lyricsRegion(ground),
+                        .padding(horizontal = 24.dp),
                 )
             }
         }
