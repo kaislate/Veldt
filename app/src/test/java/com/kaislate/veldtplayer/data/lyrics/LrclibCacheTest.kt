@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.lyrics
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -116,6 +117,21 @@ class LrclibCacheTest {
             assertEquals(2, dir.listFiles()?.size)
             assertEquals(LrclibAnswer.Found(Lyrics.Plain("one")), cache.read("k1"))
             assertEquals(LrclibAnswer.Found(Lyrics.Plain("two")), cache.read("k2"))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun `a write replaces a pre-existing entry and leaves no temp file behind`() {
+        val dir = tempDir()
+        try {
+            val cache = cache(dir)
+            cache.write("k1", LrclibAnswer.Found(Lyrics.Plain("old")))
+            cache.write("k1", LrclibAnswer.Found(Lyrics.Plain("new")))
+            assertEquals(LrclibAnswer.Found(Lyrics.Plain("new")), cache.read("k1"))
+            val names = dir.listFiles()!!.map { it.name }
+            assertEquals("exactly one entry file, got $names", 1, names.size)
+            assertTrue("no temp file may remain, got $names", names.single().endsWith(".json"))
         } finally {
             dir.deleteRecursively()
         }

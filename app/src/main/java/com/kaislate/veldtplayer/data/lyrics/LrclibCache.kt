@@ -72,11 +72,23 @@ class LrclibCache(private val dir: File, private val now: () -> Long) {
             }
             LrclibAnswer.Failed -> return
         }
+        var temp: File? = null
         try {
             dir.mkdirs()
-            fileFor(key).writeText(body.toString(), Charsets.UTF_8)
+            val target = fileFor(key)
+            // Atomic replace: a reader (or a crash mid-write) must never see a half-written
+            // entry. The temp file lives in the same directory so the rename stays on one
+            // filesystem. `renameTo` over an existing file succeeds on Android/POSIX; on a
+            // platform where it refuses (Windows), delete the old entry and rename again.
+            temp = File.createTempFile("${target.nameWithoutExtension}.", ".tmp", dir)
+            temp.writeText(body.toString(), Charsets.UTF_8)
+            if (!temp.renameTo(target)) {
+                target.delete()
+                if (!temp.renameTo(target)) temp.delete()
+            }
         } catch (t: Throwable) {
             // Best-effort cache: a write failure must not surface to the caller.
+            temp?.delete()
         }
     }
 

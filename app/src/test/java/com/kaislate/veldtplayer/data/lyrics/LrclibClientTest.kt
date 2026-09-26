@@ -111,6 +111,19 @@ class LrclibClientTest {
         assertEquals("241", param("duration"))
     }
 
+    /** Reserved query characters and non-Latin text must be percent-encoded, not split the query. */
+    @Test fun `reserved and non-Latin characters round-trip through the query exactly`() = runTest {
+        server.enqueue("""{"instrumental":false,"plainLyrics":"x","syncedLyrics":null}""")
+        val title = "Ñ & ?#日本"
+        val artist = "A&B=C ?#Ñ 日本"
+        val album = "Al#bum? & 日本 + more"
+        client.get(title = title, artist = artist, album = album, durationSec = 7L)
+        assertEquals(title, param("track_name"))
+        assertEquals(artist, param("artist_name"))
+        assertEquals(album, param("album_name"))
+        assertEquals("7", param("duration"))
+    }
+
     @Test fun `the request carries the configured User-Agent`() = runTest {
         server.enqueue("""{"instrumental":false,"plainLyrics":"x","syncedLyrics":null}""")
         client.get("t", "a", "al", 241L)
