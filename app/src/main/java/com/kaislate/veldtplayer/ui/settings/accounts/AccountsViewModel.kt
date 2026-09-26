@@ -12,6 +12,8 @@ import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
 import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.data.net.ConnectionOutcome
 import com.kaislate.veldtplayer.data.net.SubsonicClient
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlushScheduler
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -60,6 +62,8 @@ class AccountsViewModel @Inject constructor(
     private val repo: AccountRepository,
     private val client: SubsonicClient,
     private val sync: SubsonicSync,
+    private val scrobbleQueue: ScrobbleQueue,
+    private val flushScheduler: ScrobbleFlushScheduler,
 ) : ViewModel() {
 
     val accounts: StateFlow<List<Account>> = repo.observe()
@@ -140,6 +144,15 @@ class AccountsViewModel @Inject constructor(
      * `SharingStarted.WhileSubscribed`, so its cached value can still be the construction-time
      * default until something actually collects it, and this decision must not depend on whether
      * anything has.
+     *
+     * A saved NEW password also clears [sourceId]'s scrobble auth-block (N3 design spec §5:
+     * "credentials change for an account ... clears its auth-block"). This is the controller's
+     * ruling on where that belongs: this method already knows whether the password changed and
+     * already re-syncs on exactly that condition, so it is the one place that already observes a
+     * credential change without teaching [AccountRepository] anything about scrobbling. Any
+     * entries already queued for this source get one flush attempt via [flushScheduler] — a bad
+     * password blocked them, so a good one is worth re-arming the retry job for, rather than
+     * waiting for this source's next unrelated successful contact to piggyback on.
      */
     fun update(sourceId: String, url: String, username: String, password: String) {
         val base = baseUrlOf(url) ?: run {
@@ -152,6 +165,10 @@ class AccountsViewModel @Inject constructor(
             val urlChanged = previousUrl != base
             val result = repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
             _save.value = saveStateOf(result)
+            if (result is AccountWriteResult.Saved && passwordChanged) {
+                scrobbleQueue.setAuthBlocked(sourceId, false)
+                if (scrobbleQueue.forSource(sourceId).isNotEmpty()) flushScheduler.enqueue()
+            }
             if (result is AccountWriteResult.Saved && (urlChanged || passwordChanged)) {
                 sync.request(sourceId)
             }
