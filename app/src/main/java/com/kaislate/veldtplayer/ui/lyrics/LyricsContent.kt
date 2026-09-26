@@ -9,6 +9,8 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -49,7 +51,9 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import com.kaislate.veldtplayer.data.lyrics.LyricLine
@@ -64,7 +68,7 @@ import kotlinx.coroutines.flow.first
 /**
  * The scrim floor behind a lyrics region: `bg` at [lyricsFloorAlpha] for where the region's top
  * edge sits, as a plain SrcOver fill (no blend-mode tricks — finding 9). With it, every lyric
- * line sits under at least [scrimAtText]'s alpha, so the tones solved there hold.
+ * line sits under at least [lyricsTargetScrim], the alpha the lyric tones are solved at.
  */
 fun Modifier.lyricsScrimFloor(ground: LyricsGround, bg: Color, isLight: Boolean): Modifier =
     drawBehind { drawRect(bg.copy(alpha = lyricsFloorAlpha(isLight, ground.topFraction))) }
@@ -76,10 +80,13 @@ fun Modifier.lyricsScrimFloor(ground: LyricsGround, bg: Color, isLight: Boolean)
  * **Colour is exactly two tones and never an alpha.** Every glyph here is drawn in
  * [BackdropText.primary] (the active synced line, plain lyrics, the "no lyrics" message) or
  * [BackdropText.secondary] (every other synced line, the attribution, the loading indicator) —
- * the pair `ArtSeed.backdropText` SOLVED against the composited backdrop this sits on. The
- * contrast guarantee is a property of those exact colours on that exact ground, so "dimming"
- * the inactive lines with alpha, or putting a surface behind them, would each silently void it
- * (findings 14/16). Emphasis on the active line is weight, not transparency.
+ * the pair `ArtSeed.backdropText` SOLVED at [lyricsTargetScrim], the composited alpha the
+ * caller's [lyricsScrimFloor] guarantees under every line. The contrast guarantee is a property
+ * of those exact colours on that exact ground, so "dimming" the inactive lines with alpha would
+ * void it (findings 14/16), and so would any surface behind them OTHER than that floor — which
+ * is not decoration but the ground the tones were solved against: a `bg` fill composited over
+ * the backdrop's own `bg` scrim, raising the same modelled ground rather than replacing it.
+ * Emphasis on the active line is weight, not transparency.
  *
  * [footerAction] is the trailing slot of the attribution row — the pane's expand button — so
  * the pane's one extra control does not have to float over the lines it would then cover.
@@ -240,43 +247,58 @@ private fun SyncedLyrics(
         placed[0] = true
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        itemsIndexed(lines) { index, line ->
-            val isActive = index == active
-            Text(
-                text = lineLabel(line.text),
-                style = lineStyle,
-                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (isActive) text.primary else text.secondary,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { if (isActive) stateDescription = "Current line" }
-                    .clickable(onClickLabel = "Play from this line") { onSeek(line.timeMs) }
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-            )
+    // Half a viewport of padding at each end (less half a line) so the first and last lines can
+    // reach the centre too — without it a short list stacks at the top and spec §7's "active line
+    // centred" only holds mid-song.
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val linePx = with(density) {
+            val lh = lineStyle.lineHeight
+            val textPx = if (lh.isSpecified) lh.toPx() else lineStyle.fontSize.toPx() * 1.3f
+            textPx + LINE_V_PAD.toPx() * 2
+        }
+        val pad = with(density) { centringPadding(constraints.maxHeight.toFloat(), linePx).toDp() }
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(vertical = pad),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            itemsIndexed(lines) { index, line ->
+                val isActive = index == active
+                Text(
+                    text = lineLabel(line.text),
+                    style = lineStyle,
+                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (isActive) text.primary else text.secondary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { if (isActive) stateDescription = "Current line" }
+                        .clickable(onClickLabel = "Play from this line") { onSeek(line.timeMs) }
+                        .padding(horizontal = 8.dp, vertical = LINE_V_PAD),
+                )
+            }
         }
     }
 }
 
+/** Vertical padding inside each synced line — part of the tap target and of [centringPadding]'s
+ *  "typical line". */
+private val LINE_V_PAD = 6.dp
+
 /**
- * Scrolls so [index] sits in the middle of the viewport: `animateScrollToItem` with an offset
- * of half the viewport minus half the item (negative, i.e. the item lands BELOW the top edge by
- * that much). The item's own height is used when it is on screen; otherwise the mean of what is
- * on screen, which is exact enough for lines of one style and is corrected by the next change.
- * Near either end the list's own bounds clamp this, which is the right behaviour — the first
- * lines sit at the top rather than below a blank half-screen.
+ * Scrolls so [index]'s centre sits at the viewport's centre — [centreScrollOffset] against the
+ * list's own top content padding, which [centringPadding] sized so every line, first and last
+ * included, can get there. The item's own height is used when it is on screen; otherwise the
+ * mean of what is on screen, which is exact enough for lines of one style and is corrected by
+ * the next change.
  */
 private suspend fun LazyListState.centreOn(index: Int, animate: Boolean) {
     val info = layoutInfo
-    val viewport = info.viewportEndOffset - info.viewportStartOffset
     val visible = info.visibleItemsInfo
     val itemSize = visible.firstOrNull { it.index == index }?.size
         ?: if (visible.isEmpty()) 0 else visible.sumOf { it.size } / visible.size
-    val offset = -(viewport / 2 - itemSize / 2)
+    val offset = centreScrollOffset(info.viewportSize.height, info.beforeContentPadding, itemSize)
     if (animate) animateScrollToItem(index, offset) else scrollToItem(index, offset)
 }
 

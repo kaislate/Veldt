@@ -76,14 +76,55 @@ fun lyricsScrimFloor(aTop: Float, target: Float): Float =
     if (aTop >= target) 0f else maxOf(0f, 1f - (1f - target) / (1f - aTop))
 
 /**
+ * The minimum composited scrim under lyrics, per theme — HEADROOM over [scrimAtText], not a
+ * recalibration of it.
+ *
+ * Every solve here models the ground as the cover's MEAN colour lerped toward `bg`. The rendered
+ * ground is the blurred cover, which varies across the frame; the title band's 0.62 happens to
+ * hold where the title sits, but on device (Task 6, S21 FE, light theme, Sleep Token "Take Me
+ * Back To Eden") the ground behind the PANE was locally darker than the mean: inactive lines
+ * measured 4.03–4.43:1 and the active line 6.64–6.95:1, while the title on the same frame read
+ * 7.01:1 — the finding-14 class of defect, modelled ground ≠ rendered ground. The art's share of
+ * the ground is `1 - alpha`, so its spatial variance is damped in direct proportion: at 0.85 a
+ * local deviation of the blurred art moves the ground 0.15/0.38 ≈ 0.39x as far as it does at
+ * 0.62. Dark gets less (0.70: 0.30/0.38 ≈ 0.79x) because it did not fail on device (measured
+ * 8.0–14.0:1) and every extra point of scrim is artwork the user no longer sees.
+ */
+private const val LYRICS_MIN_SCRIM_LIGHT = 0.85f
+private const val LYRICS_MIN_SCRIM_DARK = 0.70f
+
+/**
+ * The composited scrim alpha every lyric line sits under at least, and the alpha lyric tones are
+ * SOLVED at: `max(scrimAtText, LYRICS_MIN_SCRIM)` for the theme. Never below the title band's, so
+ * the lyrics never get less than the title's proven guarantee.
+ */
+fun lyricsTargetScrim(isLight: Boolean): Float =
+    maxOf(scrimAtText(isLight), if (isLight) LYRICS_MIN_SCRIM_LIGHT else LYRICS_MIN_SCRIM_DARK)
+
+/**
  * The floor a lyrics region whose top edge is at [topFraction] of the backdrop draws, in this
- * theme: enough to lift the composite to [scrimAtText] — the title band's alpha, whose two text
- * tones are unit-tested (`BackdropTextTest`) and device-measured (finding 14). Lyric tones are
- * then solved at [scrimAtText] exactly like the title, and inherit its guarantee. Lines lower in
- * the region sit under a stronger backdrop scrim plus the same fill, i.e. above the floor.
+ * theme: enough to lift the composite there to [lyricsTargetScrim]. Lyric tones are solved at
+ * [lyricsTargetScrim]; lines lower in the region sit under a stronger backdrop scrim plus the
+ * same fill, i.e. above the target.
  */
 fun lyricsFloorAlpha(isLight: Boolean, topFraction: Float): Float =
-    lyricsScrimFloor(scrimAtFraction(isLight, topFraction), scrimAtText(isLight))
+    lyricsScrimFloor(scrimAtFraction(isLight, topFraction), lyricsTargetScrim(isLight))
+
+/**
+ * The vertical content padding that lets ANY line of a synced list reach the middle of a
+ * viewport [viewportPx] tall (spec §7, "the active line is centred"), including the first and
+ * last: half the viewport, less half of a typical line [linePx]. Never negative.
+ */
+fun centringPadding(viewportPx: Float, linePx: Float): Float =
+    maxOf(0f, viewportPx / 2f - linePx / 2f)
+
+/**
+ * The `scrollOffset` for `scrollToItem(index, offset)` that puts that item's centre at the
+ * viewport's centre, given the list's top content padding [paddingTopPx]. `scrollToItem` places
+ * the item's top at `paddingTopPx - offset`; wanted is `viewportPx/2 - itemPx/2`.
+ */
+fun centreScrollOffset(viewportPx: Int, paddingTopPx: Int, itemPx: Int): Int =
+    paddingTopPx - (viewportPx / 2 - itemPx / 2)
 
 /** What a synced line with no text (an instrumental gap — a real line, see `LyricLine`) shows. */
 const val INSTRUMENTAL_GAP = "♪"

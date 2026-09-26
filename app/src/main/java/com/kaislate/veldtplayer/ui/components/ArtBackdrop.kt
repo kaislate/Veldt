@@ -207,9 +207,11 @@ internal fun backdropScrim(isLight: Boolean): BackdropScrim =
  * over the full height with the SAME colour at both stops, so its alpha is exactly the linear
  * interpolation between [backdropScrim]'s `top` and `bottom` — this reads those, never a copy.
  *
- * For text that is NOT in the title band [scrimAtText] was calibrated for: lyrics solve at the
- * value this returns for the TOPMOST position a lyric line can occupy, which is the weakest scrim
- * any of them sits under (the gradient only strengthens downward).
+ * For surfaces that are NOT in the title band [scrimAtText] was calibrated for: a lyrics region
+ * reads this at its TOPMOST edge — the weakest scrim any of its lines sits under, since the
+ * gradient only strengthens downward — to size the extra `bg` fill it draws so the composite
+ * there reaches its target (`ui/lyrics` `lyricsFloorAlpha`). Lyric tones are then solved at that
+ * target, not at this value.
  */
 internal fun scrimAtFraction(isLight: Boolean, yFraction: Float): Float {
     val scrim = backdropScrim(isLight)

@@ -32,20 +32,19 @@ class LyricsContrastTest {
 
     private fun ratio(a: Color, b: Color) = ColorExtractor.contrastRatio(a, b)
 
-    /** The title band's own primary targets — `BackdropTextTest.primaryFloor`, verbatim: dark
-     *  white-mean covers are held to 4.5:1 there (a documented tone ceiling at 0.62), and the
-     *  lyrics now inherit exactly that guarantee, no more and no less. */
+    /** The title band's own primary targets — [BackdropCorpus.primaryFloor], the one shared
+     *  definition: the lyrics carry exactly the title's documented exceptions and no others. */
     private fun titlePrimaryFloor(name: String, isLight: Boolean): Double =
-        if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
+        BackdropCorpus.primaryFloor(name, isLight)
 
-    @Test fun `with the floor - every corpus seed meets the title band's targets at the composited alpha`() {
+    @Test fun `with the floor - every corpus seed meets the targets at the composited lyrics alpha`() {
         val failures = mutableListOf<String>()
         for ((name, s) in BackdropCorpus.entries) for (light in listOf(true, false)) {
             val aTop = scrimAtFraction(light, 0f)
             val composited = compositeScrim(aTop, lyricsFloorAlpha(light, 0f))
             val bg = s.colors(light).bg
             val ground = BackdropCorpus.groundOf(s, bg, composited)
-            val t = s.backdropText(bg, scrimAtText(light), light)
+            val t = s.backdropText(bg, lyricsTargetScrim(light), light)
             val p = ratio(t.primary, ground)
             val q = ratio(t.secondary, ground)
             if (p < titlePrimaryFloor(name, light)) failures += "$name/$light/primary=%.2f".format(p)
@@ -54,10 +53,29 @@ class LyricsContrastTest {
         assertEquals("lyric tones failed at the composited alpha: $failures", emptyList<String>(), failures)
     }
 
-    @Test fun `the floor lifts the top stop to exactly scrimAtText, in both themes`() {
+    @Test fun `the floor lifts the top stop to exactly the lyrics target, in both themes`() {
         for (light in listOf(true, false)) {
             val aTop = scrimAtFraction(light, 0f)
-            assertEquals(scrimAtText(light), compositeScrim(aTop, lyricsFloorAlpha(light, 0f)), 1e-5f)
+            assertEquals(lyricsTargetScrim(light), compositeScrim(aTop, lyricsFloorAlpha(light, 0f)), 1e-5f)
+        }
+    }
+
+    /** Task 6a: headroom over the title band — max(scrimAtText, LYRICS_MIN_SCRIM) per theme. */
+    @Test fun `the lyrics target is max(scrimAtText, the lyrics minimum) - light 0_85, dark 0_70`() {
+        assertEquals(0.85f, lyricsTargetScrim(true), 1e-6f)
+        assertEquals(0.70f, lyricsTargetScrim(false), 1e-6f)
+        for (light in listOf(true, false)) assert(lyricsTargetScrim(light) >= scrimAtText(light))
+    }
+
+    /** And at every region position the composite reaches the target (the floor is 0 where the
+     *  backdrop already supplies it, and never takes the composite BELOW the backdrop's own). */
+    @Test fun `the floor reaches the lyrics target at every region position`() {
+        for (light in listOf(true, false)) for (i in 0..20) {
+            val y = i / 20f
+            val aTop = scrimAtFraction(light, y)
+            val composite = compositeScrim(aTop, lyricsFloorAlpha(light, y))
+            assert(composite >= lyricsTargetScrim(light) - 1e-5f) { "$light y=$y composite=$composite" }
+            assert(composite >= aTop - 1e-6f)
         }
     }
 

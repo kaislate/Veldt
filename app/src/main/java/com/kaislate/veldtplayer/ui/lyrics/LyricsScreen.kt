@@ -26,7 +26,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
-import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
@@ -59,13 +58,15 @@ fun LyricsScreen(
     val targetSeed by vm.seed.collectAsStateWithLifecycle()
     val isLight = LocalIsLightTheme.current
     val palette = rememberAnimatedPalette(targetSeed.colors(isLight = isLight))
-    val text = targetSeed.backdropText(palette.bg, scrimAtText(isLight), isLight)
+    // Every glyph on this route sits on the lyrics floor (see below), so every glyph is solved at
+    // the composited alpha that floor guarantees — lyricsTargetScrim, not the title band's.
+    val text = targetSeed.backdropText(palette.bg, lyricsTargetScrim(isLight), isLight)
     val reduced = rememberReducedMotion()
     // Everything on this route — header and lyrics — sits far above the title band
     // scrimAtText describes, down to the very top of the frame where the backdrop's scrim is
     // weakest. So the whole content area is one lyrics region with a scrim FLOOR behind it,
-    // lifting the weakest scrim anywhere on it to scrimAtText; [text], solved there, then holds
-    // for every glyph on the screen. See lyricsScrimFloor.
+    // lifting the weakest scrim anywhere on it to lyricsTargetScrim; [text], solved there, then
+    // holds for every glyph on the screen. See lyricsScrimFloor.
     val ground = rememberLyricsGround()
 
     LyricsVisibleWhile(vm, visible = true)

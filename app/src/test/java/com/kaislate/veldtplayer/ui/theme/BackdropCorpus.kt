@@ -27,6 +27,15 @@ internal object BackdropCorpus {
         "no artwork" to seed(250.0, 40.0, null),
     )
 
+    /**
+     * The PRIMARY contrast target for one (entry, theme) pair — 7:1 everywhere except the two
+     * documented dark-theme ceilings (`white cover`, `greyscale cover, white mean`), held to
+     * 4.5:1. See [BackdropTextTest]'s KDoc for why. ONE definition, shared by the title-band test
+     * and the lyrics test, so the lyrics can never be held to a different exception list.
+     */
+    fun primaryFloor(name: String, isLight: Boolean): Double =
+        if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
+
     /** The composited ground: the art mean lerped under `bg` at [alpha], per sRGB channel. */
     fun groundOf(s: ArtSeed, bg: Color, alpha: Float): Color {
         val a = s.artMean ?: return bg

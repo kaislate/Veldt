@@ -80,6 +80,7 @@ import com.kaislate.veldtplayer.ui.lyrics.consumeVerticalDrags
 import com.kaislate.veldtplayer.ui.lyrics.lyricsBackdrop
 import com.kaislate.veldtplayer.ui.lyrics.lyricsRegion
 import com.kaislate.veldtplayer.ui.lyrics.lyricsScrimFloor
+import com.kaislate.veldtplayer.ui.lyrics.lyricsTargetScrim
 import com.kaislate.veldtplayer.ui.lyrics.rememberLyricsGround
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
@@ -145,6 +146,21 @@ internal fun ambientEligible(
     isPlaying: Boolean,
     sheetOpen: Boolean,
 ): Boolean = !reduced && !touchExploration && isActive && isPlaying && !sheetOpen
+
+/**
+ * Latches whether the chrome is faded ([faded]) at each pointer DOWN on this element, for
+ * [FadedTapLatch.consume] to read at the click. Initial pass and never consumed, like the root's
+ * wake watcher: it observes the down and takes nothing from the control under it. The read is
+ * synchronous in the down's own dispatch, so it precedes anything the root's wake does — that
+ * only takes effect on a later frame.
+ */
+private fun Modifier.latchFadeAtDown(latch: FadedTapLatch, faded: () -> Boolean): Modifier =
+    pointerInput(latch) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            latch.down(faded())
+        }
+    }
 
 /**
  * Whether the chrome is still REACHABLE — the second half of ambient mode, kept separate from
@@ -453,7 +469,12 @@ fun NowPlayingScreen(
     // the fade rather than at the start of it — a control the user can still see is a control
     // that still works. `derivedStateOf` for the same reason as above: this is a boolean that
     // flips twice per fade, and without it the >0f comparison would be a per-frame read.
-    val chromeLive by remember(chromeAlpha) { derivedStateOf { chromeAlpha.value > 0f } }
+    val chromeLiveState = remember(chromeAlpha) { derivedStateOf { chromeAlpha.value > 0f } }
+    val chromeLive by chromeLiveState
+    // One latch per control that "only wakes" while faded: the decision is taken at pointer DOWN,
+    // before the wake that same down triggers can make the chrome read as live — see FadedTap.
+    val artTapLatch = remember { FadedTapLatch() }
+    val collapseTapLatch = remember { FadedTapLatch() }
     // The fade is one thing; taking the controls out of the accessibility and focus trees is
     // another, and only the second one can strand somebody. While a service is running the
     // chrome still fades to nothing on screen but is never withdrawn. See [chromeReachable].
@@ -568,6 +589,13 @@ fun NowPlayingScreen(
                         .lyricsRegion(lyricsGround),
                 ) { lyricsShown ->
                     if (lyricsShown) {
+                        // Solved at the composited alpha the floor guarantees under the pane —
+                        // lyricsTargetScrim, with headroom over the title band's; see there.
+                        val lyricsText = targetSeed.backdropText(
+                            palette.bg,
+                            lyricsTargetScrim(isLight),
+                            isLight,
+                        )
                         // No sharedSongArt on this branch, on purpose: the pane is not the
                         // cover, and giving it the cover's key would morph a block of text into
                         // the mini-player thumbnail. While lyrics are up this screen therefore
@@ -577,7 +605,7 @@ fun NowPlayingScreen(
                         LyricsContent(
                             state = lyricsState,
                             positionMs = position,
-                            text = text,
+                            text = lyricsText,
                             onSeek = vm::seekTo,
                             onOpenSettings = onOpenSettings,
                             footerAction = {
@@ -585,7 +613,7 @@ fun NowPlayingScreen(
                                     Icon(
                                         Icons.Filled.OpenInFull,
                                         contentDescription = "Full-screen lyrics",
-                                        tint = text.primary,
+                                        tint = lyricsText.primary,
                                     )
                                 }
                             },
@@ -614,12 +642,18 @@ fun NowPlayingScreen(
                                 .sharedSongArt(state.songId, visible = artIsLiveEnd)
                                 .clip(RoundedCornerShape(ART_CORNER))
                                 // Faded chrome: the tap only wakes, exactly like the collapse
-                                // button's `collapseWakes` — a tap aimed at a screen with no
-                                // visible controls means "come back", not "switch modes".
+                                // button — a tap aimed at a screen with no visible controls
+                                // means "come back", not "switch modes". Decided at the DOWN
+                                // (the latch), not at the click: see FadedTap.
+                                .latchFadeAtDown(artTapLatch) { !chromeLiveState.value }
                                 .clickable(
                                     onClickLabel = if (chromeLive) "Show lyrics" else "Show controls",
                                 ) {
-                                    if (chromeLive) showLyrics = true else lastTouchTick++
+                                    if (artTapLatch.consume(fadedNow = !chromeLive)) {
+                                        lastTouchTick++
+                                    } else {
+                                        showLyrics = true
+                                    }
                                 },
                         )
                     }
@@ -706,8 +740,13 @@ fun NowPlayingScreen(
         // WHOLE screen, transport included, rather than only the door.
         val collapseWakes = !chromeLive
         IconButton(
-            onClick = { if (collapseWakes) lastTouchTick++ else onCollapse() },
+            // Decided at the DOWN, not here: by the click the wake from that same down has
+            // already made the chrome read as live. See FadedTap.
+            onClick = {
+                if (collapseTapLatch.consume(fadedNow = !chromeLive)) lastTouchTick++ else onCollapse()
+            },
             modifier = Modifier
+                .latchFadeAtDown(collapseTapLatch) { !chromeLiveState.value }
                 .align(Alignment.TopStart)
                 .windowInsetsPadding(WindowInsets.systemBars)
                 .padding(start = 8.dp)

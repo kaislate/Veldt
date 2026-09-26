@@ -53,8 +53,7 @@ class BackdropTextTest {
      * ceilings. See the class KDoc for why `white cover`/dark and `greyscale cover, white
      * mean`/dark are singled out.
      */
-    private fun primaryFloor(name: String, isLight: Boolean): Double =
-        if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
+    private fun primaryFloor(name: String, isLight: Boolean): Double = BackdropCorpus.primaryFloor(name, isLight)
 
     /** Shared with the lyrics contrast test — see [BackdropCorpus]. */
     private val corpus = BackdropCorpus.entries
