@@ -53,6 +53,20 @@ sealed interface ConnectionOutcome {
     data class Unreachable(val reason: String) : ConnectionOutcome
 }
 
+/** What happened when [SubsonicClient.scrobble] told a server about a play-through. */
+sealed interface ScrobbleResult {
+
+    /** The server accepted it: an empty ok envelope (design spec §2). */
+    data object Ok : ScrobbleResult
+
+    /** No usable answer: a dead socket, a timeout, an unparseable response. Queue it and retry. */
+    data object Unreachable : ScrobbleResult
+
+    /** The server answered and refused. [error] classifies [code] — see [SubsonicError
+     * .meansCredentialsWontWork] for which codes mean "this account's credentials won't work". */
+    data class Rejected(val error: SubsonicError, val code: Int) : ScrobbleResult
+}
+
 /**
  * The only class in the app that performs Subsonic HTTP.
  *
@@ -213,6 +227,38 @@ class SubsonicClient @Inject constructor(
             } catch (e: IOException) {
                 null
             }
+        }
+    }
+
+    /**
+     * `scrobble` for one server track (network spec §7.4, design spec §2): [externalId] is the
+     * song id, [submission] selects "now playing" (`false`) vs a "played" scrobble (`true`), and
+     * [timeMs] — ms since epoch, sent verbatim as `time` — is the wall-clock moment the
+     * play-through started, so a queued and later-delivered "played" scrobble still lands on
+     * Navidrome with the ORIGINAL listening time rather than whenever the retry finally ran.
+     * Omitted entirely (not sent as an empty parameter) when null, per the pinned API doc: `time`
+     * is optional and a "now playing" call never carries one.
+     *
+     * Shares [call] with [fetchCatalog] and [lyrics], so credential placement (query vs. formPost
+     * body) stays decided in the one place [buildRequest] already owns. Never throws: every
+     * failure resolves to [ScrobbleResult.Unreachable] or [ScrobbleResult.Rejected].
+     */
+    suspend fun scrobble(
+        creds: SubsonicCredentials,
+        caps: ServerCapabilities,
+        externalId: String,
+        submission: Boolean,
+        timeMs: Long?,
+    ): ScrobbleResult {
+        val params = buildList {
+            add("id" to externalId)
+            add("submission" to submission.toString())
+            if (timeMs != null) add("time" to timeMs.toString())
+        }
+        return when (val result = call(creds, "scrobble", params, caps)) {
+            is SubsonicResult.Ok -> ScrobbleResult.Ok
+            is SubsonicResult.Failed -> ScrobbleResult.Rejected(result.error, result.code)
+            is SubsonicResult.Malformed -> ScrobbleResult.Unreachable
         }
     }
 
