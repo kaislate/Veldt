@@ -35,14 +35,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 import com.kaislate.veldtplayer.data.lyrics.LyricLine
 import com.kaislate.veldtplayer.data.lyrics.Lyrics
 import com.kaislate.veldtplayer.data.lyrics.activeLineIndex
@@ -286,15 +293,55 @@ fun Modifier.consumeVerticalDrags(): Modifier = pointerInput(Unit) {
 }
 
 /**
- * Registers the calling surface as a lyrics viewer while [visible] — see
- * [NowPlayingViewModel.setLyricsVisible]. A [DisposableEffect], so leaving composition (a pop,
- * a navigation away, the pane being swapped back to the artwork) always releases the claim.
+ * Registers the calling surface as a lyrics viewer while [visible] AND its lifecycle is at least
+ * STARTED — see [NowPlayingViewModel.setLyricsVisible] and [lyricsClaimActive]. A
+ * [DisposableEffect] keyed on that combined answer, so backgrounding the app (the entry drops to
+ * CREATED while now-playing stays composed) releases the claim and returning re-takes it, and
+ * leaving composition (a pop, a navigation away, the pane swapped back to the artwork) always
+ * releases it.
  */
 @Composable
 fun LyricsVisibleWhile(vm: NowPlayingViewModel, visible: Boolean) {
     val viewer = remember { Any() }
-    DisposableEffect(vm, visible) {
-        if (visible) vm.setLyricsVisible(viewer, true)
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val active = lyricsClaimActive(visible, lifecycle)
+    DisposableEffect(vm, active) {
+        if (active) vm.setLyricsVisible(viewer, true)
         onDispose { vm.setLyricsVisible(viewer, false) }
     }
+}
+
+/**
+ * Where a lyrics region sits on the backdrop, so its two text tones can be solved against the
+ * scrim at its TOPMOST line rather than at the title band [scrimAtText] was calibrated for.
+ *
+ * The backdrop's scrim is a vertical gradient that strengthens downward, so the top edge of the
+ * region is the weakest scrim any lyric line sits under — lines scroll up to it and no further.
+ * [topFraction] starts at `0` (the top of the backdrop, the weakest value anywhere) until both
+ * ends have been laid out, so the first frame errs toward the floor, never above it.
+ *
+ * Mark the backdrop's box with [lyricsBackdrop] and the lyrics region with [lyricsRegion].
+ * Positions are read in `onGloballyPositioned`, which dispatches parents before children, so the
+ * backdrop's coordinates are always current when the region reports.
+ */
+@Stable
+class LyricsGround {
+    internal var backdrop: LayoutCoordinates? = null
+    var topFraction by mutableFloatStateOf(0f)
+        internal set
+}
+
+@Composable
+fun rememberLyricsGround(): LyricsGround = remember { LyricsGround() }
+
+fun Modifier.lyricsBackdrop(ground: LyricsGround): Modifier =
+    onGloballyPositioned { ground.backdrop = it }
+
+fun Modifier.lyricsRegion(ground: LyricsGround): Modifier = onGloballyPositioned { region ->
+    val backdrop = ground.backdrop?.takeIf { it.isAttached } ?: return@onGloballyPositioned
+    if (!region.isAttached) return@onGloballyPositioned
+    ground.topFraction = regionTopFraction(
+        regionTopPx = backdrop.localPositionOf(region, Offset.Zero).y,
+        backdropHeightPx = backdrop.size.height.toFloat(),
+    )
 }

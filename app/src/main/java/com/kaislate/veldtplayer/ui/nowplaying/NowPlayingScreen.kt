@@ -73,10 +73,14 @@ import com.kaislate.veldtplayer.playback.NowPlayingState
 import com.kaislate.veldtplayer.playback.RepeatMode
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
 import com.kaislate.veldtplayer.ui.components.ArtImage
+import com.kaislate.veldtplayer.ui.components.scrimAtFraction
 import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.lyrics.LyricsContent
 import com.kaislate.veldtplayer.ui.lyrics.LyricsVisibleWhile
 import com.kaislate.veldtplayer.ui.lyrics.consumeVerticalDrags
+import com.kaislate.veldtplayer.ui.lyrics.lyricsBackdrop
+import com.kaislate.veldtplayer.ui.lyrics.lyricsRegion
+import com.kaislate.veldtplayer.ui.lyrics.rememberLyricsGround
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.sharedSongArt
@@ -380,6 +384,10 @@ fun NowPlayingScreen(
     // Same ground, same reason — see BackdropMarks. Text was only half of what this surface
     // draws; the wave, the scrub track and the two toggles were still solved against `bg`.
     val marks = targetSeed.backdropMarks(palette.bg, scrimAtText(isLight), isLight)
+    // The lyrics pane sits in the ARTWORK slot, above the title band scrimAtText describes, so
+    // its lines are solved against the scrim at the pane's own top edge instead — see
+    // LyricsGround. Only the pane reads it, and only while it is shown.
+    val lyricsGround = rememberLyricsGround()
 
     // Accumulated, and acted on at RELEASE. Reacting to a single drag delta would fire
     // onCollapse once per pointer event past the threshold, popping several entries off the
@@ -453,6 +461,8 @@ fun NowPlayingScreen(
     Box(
         modifier
             .fillMaxSize()
+            // The backdrop fills this box, so this box's coordinates ARE the gradient's.
+            .lyricsBackdrop(lyricsGround)
             // Any touch at all wakes the chrome. Initial pass and never consumed: this must
             // not take the gesture away from the scrub bar, the transport or the drag
             // detector below, only observe that one happened. See the KDoc.
@@ -553,9 +563,15 @@ fun NowPlayingScreen(
                     label = "artOrLyrics",
                     modifier = Modifier
                         .fillMaxWidth(ART_WIDTH)
-                        .aspectRatio(1f),
+                        .aspectRatio(1f)
+                        .lyricsRegion(lyricsGround),
                 ) { lyricsShown ->
                     if (lyricsShown) {
+                        val lyricsText = targetSeed.backdropText(
+                            palette.bg,
+                            scrimAtFraction(isLight, lyricsGround.topFraction),
+                            isLight,
+                        )
                         // No sharedSongArt on this branch, on purpose: the pane is not the
                         // cover, and giving it the cover's key would morph a block of text into
                         // the mini-player thumbnail. While lyrics are up this screen therefore
@@ -565,7 +581,7 @@ fun NowPlayingScreen(
                         LyricsContent(
                             state = lyricsState,
                             positionMs = position,
-                            text = text,
+                            text = lyricsText,
                             onSeek = vm::seekTo,
                             onOpenSettings = onOpenSettings,
                             footerAction = {
@@ -573,7 +589,7 @@ fun NowPlayingScreen(
                                     Icon(
                                         Icons.Filled.OpenInFull,
                                         contentDescription = "Full-screen lyrics",
-                                        tint = text.primary,
+                                        tint = lyricsText.primary,
                                     )
                                 }
                             },
@@ -596,7 +612,14 @@ fun NowPlayingScreen(
                                 .fillMaxSize()
                                 .sharedSongArt(state.songId, visible = artIsLiveEnd)
                                 .clip(RoundedCornerShape(ART_CORNER))
-                                .clickable(onClickLabel = "Show lyrics") { showLyrics = true },
+                                // Faded chrome: the tap only wakes, exactly like the collapse
+                                // button's `collapseWakes` — a tap aimed at a screen with no
+                                // visible controls means "come back", not "switch modes".
+                                .clickable(
+                                    onClickLabel = if (chromeLive) "Show lyrics" else "Show controls",
+                                ) {
+                                    if (chromeLive) showLyrics = true else lastTouchTick++
+                                },
                         )
                     }
                 }

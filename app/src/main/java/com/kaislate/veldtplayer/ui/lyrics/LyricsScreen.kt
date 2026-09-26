@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
+import com.kaislate.veldtplayer.ui.components.scrimAtFraction
 import com.kaislate.veldtplayer.ui.components.scrimAtText
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
@@ -61,10 +62,24 @@ fun LyricsScreen(
     val palette = rememberAnimatedPalette(targetSeed.colors(isLight = isLight))
     val text = targetSeed.backdropText(palette.bg, scrimAtText(isLight), isLight)
     val reduced = rememberReducedMotion()
+    // The header (back arrow, title) sits at the top of the frame, but it is the same band the
+    // title uses on now-playing and keeps [text]. The LYRICS start just below it, higher than
+    // scrimAtText's title band, so they are solved against the scrim at their own top edge —
+    // see LyricsGround.
+    val ground = rememberLyricsGround()
+    val lyricsText = targetSeed.backdropText(
+        palette.bg,
+        scrimAtFraction(isLight, ground.topFraction),
+        isLight,
+    )
 
     LyricsVisibleWhile(vm, visible = true)
 
-    Box(modifier.fillMaxSize()) {
+    Box(
+        modifier
+            .fillMaxSize()
+            .lyricsBackdrop(ground),
+    ) {
         ArtBackdrop(
             art = state.art,
             palette = palette,
@@ -111,14 +126,15 @@ fun LyricsScreen(
                 LyricsContent(
                     state = lyrics,
                     positionMs = position,
-                    text = text,
+                    text = lyricsText,
                     onSeek = vm::seekTo,
                     onOpenSettings = onOpenSettings,
                     lineStyle = MaterialTheme.typography.titleLarge,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
+                        .padding(horizontal = 24.dp)
+                        .lyricsRegion(ground),
                 )
             }
         }

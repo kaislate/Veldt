@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.ui.lyrics
 
+import androidx.lifecycle.Lifecycle
 import com.kaislate.veldtplayer.data.lyrics.LyricsSource
 
 /**
@@ -37,6 +38,24 @@ fun attribution(source: LyricsSource): String = when (source) {
     LyricsSource.SERVER -> "Lyrics from your server"
     LyricsSource.LRCLIB -> "Lyrics from LRCLIB"
 }
+
+/**
+ * Whether a lyrics surface may hold its viewer claim (spec §6: resolution only while lyrics are
+ * SHOWN). [wanted] is the surface's own "lyrics are up" answer; [lifecycle] is its host's state.
+ * Below STARTED the surface is not on screen at all — the app is backgrounded, or its back-stack
+ * entry is covered — and now-playing stays COMPOSED in both cases, so without this every
+ * automatic track change in the background would run a server/LRCLIB lookup nobody sees.
+ */
+fun lyricsClaimActive(wanted: Boolean, lifecycle: Lifecycle.State): Boolean =
+    wanted && lifecycle.isAtLeast(Lifecycle.State.STARTED)
+
+/**
+ * Where a lyrics region's top edge falls on the backdrop, as a fraction of the backdrop's height
+ * — the input to `scrimAtFraction`. Unmeasured ([backdropHeightPx] `<= 0`) reads as `0`, the
+ * top of the gradient, i.e. the weakest scrim: the safe direction for a contrast floor.
+ */
+fun regionTopFraction(regionTopPx: Float, backdropHeightPx: Float): Float =
+    if (backdropHeightPx <= 0f) 0f else (regionTopPx / backdropHeightPx).coerceIn(0f, 1f)
 
 /** What a synced line with no text (an instrumental gap — a real line, see `LyricLine`) shows. */
 const val INSTRUMENTAL_GAP = "♪"

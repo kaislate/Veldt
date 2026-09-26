@@ -49,9 +49,9 @@ import com.kaislate.veldtplayer.ui.browse.SectionLabel
 
 /**
  * The one settings surface: a three-way theme selector, the mobile-data streaming quality, the
- * online-lyrics opt-in, the way in to server accounts, and an About block with the notices it is obliged to carry. It draws
- * its own header rather than taking the shared `TopAppBar`, same as every non-tab destination —
- * see `VeldtNavHost.TAB_ROUTES`.
+ * online-lyrics opt-in, the way in to server accounts, and an About block with the notices it is
+ * obliged to carry. It draws its own header rather than taking the shared `TopAppBar`, same as
+ * every non-tab destination — see `VeldtNavHost.TAB_ROUTES`.
  */
 @Composable
 fun SettingsScreen(

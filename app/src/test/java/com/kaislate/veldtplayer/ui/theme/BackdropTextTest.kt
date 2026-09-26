@@ -46,9 +46,6 @@ import org.junit.Test
  */
 class BackdropTextTest {
 
-    private fun seed(hue: Double, chroma: Double, art: Color?) =
-        ArtSeed(Chromaticity(hue, chroma), emptyList(), art)
-
     private fun ratio(a: Color, b: Color) = ColorExtractor.contrastRatio(a, b)
 
     /**
@@ -59,30 +56,12 @@ class BackdropTextTest {
     private fun primaryFloor(name: String, isLight: Boolean): Double =
         if (!isLight && (name == "white cover" || name == "greyscale cover, white mean")) 4.5 else 7.0
 
-    private val corpus = listOf(
-        "black cover" to seed(25.0, 84.0, Color(0xFF000000)),
-        "white cover" to seed(25.0, 84.0, Color(0xFFFFFFFF)),
-        "saturated red" to seed(25.0, 84.0, Color(0xFFD32F2F)),
-        // Achromatic seed (chroma 0) carrying a non-null mean — the shape ColorExtractor.seedOf
-        // now actually returns for a black-and-white cover (finding 14): every swatch was too
-        // close to grey to seed a hue, but the mean is still recorded so the backdrop's ground
-        // still composites correctly. The old "near-grey" entry here — a chroma-2 seed paired
-        // with a non-null mean — modeled a state the real extractor can never produce (a
-        // desaturated-but-not-zero primary always pairs with a mean; only the zero-chroma,
-        // ranked-empty branch is where the null-mean bug lived), so it proved nothing about the
-        // real path. Two entries, not one: a black mean and a white mean bind the composited
-        // ground from opposite directions (mixing toward black vs. toward white), and the
-        // device measurement that opened this finding found both directions broken.
-        "greyscale cover, black mean" to seed(0.0, 0.0, Color(0xFF000000)),
-        "greyscale cover, white mean" to seed(0.0, 0.0, Color(0xFFFFFFFF)),
-        "no artwork" to seed(250.0, 40.0, null),
-    )
+    /** Shared with the lyrics contrast test — see [BackdropCorpus]. */
+    private val corpus = BackdropCorpus.entries
 
-    private fun groundOf(s: ArtSeed, bg: Color, alpha: Float): Color {
-        val a = s.artMean ?: return bg
-        fun mix(x: Float, y: Float) = x + (y - x) * alpha
-        return Color(mix(a.red, bg.red), mix(a.green, bg.green), mix(a.blue, bg.blue))
-    }
+    private fun seed(hue: Double, chroma: Double, art: Color?) = BackdropCorpus.seed(hue, chroma, art)
+
+    private fun groundOf(s: ArtSeed, bg: Color, alpha: Float): Color = BackdropCorpus.groundOf(s, bg, alpha)
 
     @Test fun `both tones clear their ratios against the COMPOSITED ground, in both themes`() {
         val failures = corpus.flatMap { (name, s) ->

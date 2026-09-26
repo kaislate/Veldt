@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.ui.lyrics
 
+import androidx.lifecycle.Lifecycle
 import com.kaislate.veldtplayer.data.lyrics.LyricsSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -50,5 +51,21 @@ class LyricsPresentationTest {
         assertEquals("♪", lineLabel(""))
         assertEquals("♪", lineLabel("   "))
         assertEquals("hello  world", lineLabel("hello  world"))
+    }
+
+    /** TOTAL over Lifecycle.State x wanted: only STARTED/RESUMED with lyrics up may hold a claim. */
+    @Test fun `a viewer claim needs lyrics up AND a started lifecycle`() {
+        val allowed = Lifecycle.State.entries
+            .flatMap { state -> listOf(true, false).map { wanted -> state to wanted } }
+            .filter { (state, wanted) -> lyricsClaimActive(wanted, state) }
+            .toSet()
+        assertEquals(setOf(Lifecycle.State.STARTED to true, Lifecycle.State.RESUMED to true), allowed)
+    }
+
+    @Test fun `region top fraction - measured, clamped, and unmeasured reads as the top`() {
+        assertEquals(0.25f, regionTopFraction(500f, 2000f), 1e-6f)
+        assertEquals(0f, regionTopFraction(-40f, 2000f), 1e-6f)
+        assertEquals(1f, regionTopFraction(2500f, 2000f), 1e-6f)
+        assertEquals(0f, regionTopFraction(500f, 0f), 1e-6f)
     }
 }

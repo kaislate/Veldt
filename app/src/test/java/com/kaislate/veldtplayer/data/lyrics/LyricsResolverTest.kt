@@ -216,11 +216,60 @@ class LyricsResolverTest {
         assertEquals(listOf("sidecar"), calls)
     }
 
+    /** Weak-ness judged through the chain outcome: a weak sidecar answer lets a real embedded
+     *  one win (and the chain continues to embedded), a non-weak one wins at sidecar. */
+    private suspend fun isWeakViaChain(text: String): Boolean {
+        val calls = mutableListOf<String>()
+        val result = resolver(calls, sidecarResult = Lyrics.Plain(text), embeddedResult = real("embedded"))
+            .resolve(song(localSourceId, "1"))
+        return when (result?.source) {
+            LyricsSource.EMBEDDED -> true
+            LyricsSource.SIDECAR -> false
+            else -> error("unexpected outcome $result")
+        }
+    }
+
+    @Test fun `weak detection - line endings and blank lines`() = runTest {
+        val cases = listOf(
+            "one line" to true,
+            "one line\n" to true, // trailing newline
+            "\n\nx\n\n" to true, // blank lines around a single line
+            "x\n   \n\t\n" to true, // whitespace-only lines do not count
+            "one\rtwo" to false, // bare \r separates lines
+            "one\r\ntwo" to false,
+            "one\ntwo" to false,
+        )
+        val wrong = cases.filter { (text, weak) -> isWeakViaChain(text) != weak }
+        assertEquals("misjudged: $wrong", emptyList<Pair<String, Boolean>>(), wrong)
+    }
+
     // ------------------------------------------------------------------------------------- memo
+
+    @Test fun `a weak final answer is not memoised - the second resolve asks the providers again`() = runTest {
+        val calls = mutableListOf<String>()
+        val resolver = resolver(calls, serverResult = weak("server"))
+        val song = song("navidrome-1", "s1")
+
+        resolver.resolve(song)
+        resolver.resolve(song)
+
+        assertEquals(listOf("server", "lrclib", "server", "lrclib"), calls)
+    }
+
+    @Test fun `a non-weak answer reached past a weak one is memoised`() = runTest {
+        val calls = mutableListOf<String>()
+        val resolver = resolver(calls, serverResult = weak("server"), lrclibResult = real("lrclib"))
+        val song = song("navidrome-1", "s1")
+
+        resolver.resolve(song)
+        resolver.resolve(song)
+
+        assertEquals(listOf("server", "lrclib"), calls)
+    }
 
     @Test fun `a hit is memoised — the second resolve calls no provider`() = runTest {
         val calls = mutableListOf<String>()
-        val resolver = resolver(calls, sidecarResult = Lyrics.Plain("x"))
+        val resolver = resolver(calls, sidecarResult = real("x"))
         val song = song(localSourceId, "1")
 
         val first = resolver.resolve(song)
@@ -257,7 +306,7 @@ class LyricsResolverTest {
 
     @Test fun `different tracks are memoised independently, keyed on sourceId and externalId together`() = runTest {
         val calls = mutableListOf<String>()
-        val resolver = resolver(calls, sidecarResult = Lyrics.Plain("x"))
+        val resolver = resolver(calls, sidecarResult = real("x"))
 
         resolver.resolve(song(localSourceId, "1"))
         resolver.resolve(song(localSourceId, "2"))

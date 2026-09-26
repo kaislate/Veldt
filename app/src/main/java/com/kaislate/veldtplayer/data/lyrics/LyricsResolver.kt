@@ -29,8 +29,9 @@ import javax.inject.Singleton
  *
  * **Memo**: an in-process LRU of the last [MEMO_CAPACITY] `(sourceId, externalId)` pairs, keyed
  * exactly like [LrclibCache] (`sourceId + '\u0000' + externalId`) for the same reason — it is the
- * track's cross-source identity, never anything derived from a local path. Both a HIT
- * ([ResolvedLyrics]) and a MISS (null — nothing anywhere had lyrics) are memoised, so a track with
+ * track's cross-source identity, never anything derived from a local path. Both a non-weak HIT
+ * ([ResolvedLyrics]) and a MISS (null — nothing anywhere had lyrics) are memoised — a WEAK final
+ * answer is not, see [resolve] — so a track with
  * genuinely no lyrics is not re-walked on every re-open; [clear] drops the whole memo, which the
  * view model calls when the LRCLIB opt-in flips (a miss recorded while it was off must not keep
  * hiding a hit LRCLIB could now provide, and vice versa turning it off should not go on serving a
@@ -87,7 +88,14 @@ class LyricsResolver(
             chain(song, server to LyricsSource.SERVER, lrclib to LyricsSource.LRCLIB)
         }
 
-        synchronized(lock) { memo[key] = CacheEntry(resolved) }
+        // A WEAK final answer is returned but never memoised (controller ruling, Task 5 review):
+        // providers answer null for failure as well as for absence, so "weak server line, then
+        // nothing" may only mean LRCLIB was unreachable this time — memoising it would pin the
+        // watermark for the rest of the process. Re-walking costs little: LRCLIB's own on-disk
+        // negative cache already stops a genuine miss from being requested again.
+        if (resolved == null || !resolved.lyrics.isWeak()) {
+            synchronized(lock) { memo[key] = CacheEntry(resolved) }
+        }
         return resolved
     }
 
@@ -129,7 +137,9 @@ class LyricsResolver(
      */
     private fun Lyrics.isWeak(): Boolean {
         if (this !is Lyrics.Plain) return false
-        return text.split('\n').count { it.isNotBlank() } == 1
+        // `lines()`, not `split('\n')`: it also splits on a bare '\r' (old Mac line endings, which
+        // tag editors still write), where `split('\n')` would see one long line.
+        return text.lines().count { it.isNotBlank() } == 1
     }
 
     private fun memoKey(song: Song): String = song.sourceId + '\u0000' + song.externalId
