@@ -6,9 +6,14 @@ package com.kaislate.veldtplayer.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
@@ -19,10 +24,23 @@ import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import com.kaislate.veldtplayer.MainActivity
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
+import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
+import com.kaislate.veldtplayer.data.net.ScrobbleResult
 import com.kaislate.veldtplayer.data.net.SubsonicAuth
+import com.kaislate.veldtplayer.data.net.SubsonicClient
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlusher
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlushScheduler
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
+import com.kaislate.veldtplayer.playback.scrobble.ListenClock
+import com.kaislate.veldtplayer.playback.scrobble.Scheduler
+import com.kaislate.veldtplayer.playback.scrobble.Scrobbler
 import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import javax.inject.Inject
 
 /**
@@ -54,10 +72,23 @@ class PlaybackService : MediaLibraryService() {
      */
     @Inject lateinit var remoteArt: Lazy<RemoteArtLoader>
 
+    /** N3 (design spec §3, §5, §6): what [Scrobbler]'s `sender`/`sourceExists` are built from —
+     *  the account this streams from, and the client that talks to it. Neither is `Lazy`: unlike
+     *  [remoteArt], nothing here is touched from `VeldtApp`'s own eager injection, so the
+     *  Robolectric-suite-leak [remoteArt]'s KDoc describes does not apply. */
+    @Inject lateinit var subsonicSources: SubsonicSources
+    @Inject lateinit var subsonicClient: SubsonicClient
+    @Inject lateinit var scrobbleQueue: ScrobbleQueue
+    @Inject lateinit var scrobbleFlusher: ScrobbleFlusher
+    @Inject lateinit var scrobbleFlushScheduler: ScrobbleFlushScheduler
+
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
     private var bitmapLoader: VeldtBitmapLoader? = null
+    private var scrobbler: Scrobbler? = null
+    private var scrobblerListener: Player.Listener? = null
+    private var scrobblerScope: CoroutineScope? = null
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -99,6 +130,40 @@ class PlaybackService : MediaLibraryService() {
             .setBitmapLoader(sessionLoader)
             .build()
         busAdapter = PlayerBusAdapter(exo, packageName, sessionLoader).also { it.attach() }
+
+        // N3: attached beside PlayerBusAdapter, same reasoning — this must work with the UI gone,
+        // so it lives on the service's own player listener, not on anything Compose-scoped.
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        scrobblerScope = scope
+        val instance = Scrobbler(
+            scope = scope,
+            // elapsedRealtime, never currentTimeMillis — see ListenClock's own KDoc on why.
+            clock = ListenClock(now = SystemClock::elapsedRealtime),
+            sourceExists = subsonicSources::contains,
+            sender = { track, submission, timeMs ->
+                val creds = subsonicSources.credentials(track.sourceId)
+                if (creds == null) {
+                    ScrobbleResult.Unreachable
+                } else {
+                    subsonicClient.scrobble(
+                        creds,
+                        subsonicSources.capabilities(track.sourceId),
+                        track.externalId,
+                        submission,
+                        timeMs,
+                    )
+                }
+            },
+            queue = scrobbleQueue,
+            flush = scrobbleFlusher::flush,
+            enqueueFlush = scrobbleFlushScheduler::enqueue,
+            scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
+        )
+        scrobbler = instance
+        ScrobblerPlayerListener(exo, instance).also {
+            scrobblerListener = it
+            exo.addListener(it)
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
@@ -113,6 +178,12 @@ class PlaybackService : MediaLibraryService() {
         // dead service's last track — and holds its decoded full-size cover bitmap — for as
         // long as the process lives.
         MediaSessionBus.reset()
+        // Listener removed, then the Scrobbler released, before the player itself is released —
+        // release() only cancels a pending "played" timer; removeListener first is what stops any
+        // FURTHER event from reaching a Scrobbler already told to shut down.
+        scrobblerListener?.let { player?.removeListener(it) }
+        scrobbler?.release()
+        scrobblerScope?.cancel()
         session?.release()
         player?.release()
         // Cancels any art load still walking the ladder. Safe in any order relative to the
@@ -124,6 +195,9 @@ class PlaybackService : MediaLibraryService() {
         player = null
         busAdapter = null
         bitmapLoader = null
+        scrobbler = null
+        scrobblerListener = null
+        scrobblerScope = null
         super.onDestroy()
     }
 
@@ -155,6 +229,52 @@ class PlaybackService : MediaLibraryService() {
     /** Minimal callback; browse tree arrives in P1.2. Default player-command
      *  handling (play/pause/seek/next/prev) is inherited. */
     private inner class LibraryCallback : MediaLibrarySession.Callback
+}
+
+/**
+ * The real `Player.Listener` that drives [Scrobbler] (N3, design spec §3/§5/§6) from actual
+ * Media3 events — deliberately thin and NOT unit-tested: [Scrobbler]'s own KDoc explains why the
+ * interesting logic lives there instead, driven directly by [com.kaislate.veldtplayer.playback
+ * .scrobble.ScrobblerTest]'s fakes.
+ *
+ * [MediaItem.localConfiguration]`.uri` is where `SessionMediaItem.sessionMediaItem` put the
+ * logical playback uri (`veldt://track/…` for a server track, a `content://` for a local one);
+ * [VeldtUri.parse] is what turns the former into a [TrackRef] and the latter into null — the same
+ * null a track whose uri failed to resolve at all would also produce, and both are indistinguishable
+ * here on purpose: [Scrobbler] treats "not a server track" and "we cannot tell" identically —
+ * neither one is ever scrobbled.
+ */
+private class ScrobblerPlayerListener(
+    private val player: Player,
+    private val scrobbler: Scrobbler,
+) : Player.Listener {
+
+    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        val track = mediaItem?.localConfiguration?.uri?.toString()?.let(VeldtUri::parse)
+        scrobbler.onMediaItemTransition(track, player.duration)
+    }
+
+    override fun onIsPlayingChanged(isPlaying: Boolean) {
+        scrobbler.onIsPlayingChanged(isPlaying)
+    }
+
+    /** `player.duration` is commonly `C.TIME_UNSET` at [onMediaItemTransition] time (before the
+     *  item is prepared) and becomes known once the player reaches [Player.STATE_READY] — see
+     *  [Scrobbler.onDurationKnown]'s KDoc for what this corrects. */
+    override fun onPlaybackStateChanged(playbackState: Int) {
+        if (playbackState == Player.STATE_READY) scrobbler.onDurationKnown(player.duration)
+    }
+}
+
+/** [Scheduler] backed by a real main-looper [Handler] — the only Android-touching implementation
+ *  of the seam [Scrobbler] uses for its "played" timer, mirroring [NetworkReturn.listen]'s own
+ *  cancel-lambda shape (see [Scheduler]'s own KDoc). */
+private class HandlerScheduler(private val handler: Handler) : Scheduler {
+    override fun postDelayed(delayMs: Long, action: () -> Unit): () -> Unit {
+        val runnable = Runnable(action)
+        handler.postDelayed(runnable, delayMs)
+        return { handler.removeCallbacks(runnable) }
+    }
 }
 
 /**

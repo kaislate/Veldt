@@ -117,6 +117,20 @@ class ListenClock(
         sent = true
     }
 
+    /**
+     * Task 3: updates the duration for the CURRENT play-through — unlike [start], this touches
+     * NOTHING else: [listenedMs], [sent] and [startedAtWallMs] are all untouched. Exists because a
+     * Media3 `MediaItem`'s duration is commonly [UNKNOWN_DURATION] at the moment `Scrobbler` calls
+     * [start] (`onMediaItemTransition` fires before the item is prepared) and becomes known only
+     * once the player reaches `STATE_READY`, which can be seconds — and several accumulated
+     * playing-seconds — later. Calling [start] again there would silently wipe out whatever had
+     * already been listened to while buffering; this is the seam that lets `Scrobbler` correct the
+     * threshold's INPUT without resetting the threshold's PROGRESS.
+     */
+    fun updateDuration(durationMs: Long) {
+        this.durationMs = durationMs
+    }
+
     companion object {
         /** Design spec §3: tracks shorter than this never send "played". */
         const val MIN_DURATION_MS: Long = 30_000L

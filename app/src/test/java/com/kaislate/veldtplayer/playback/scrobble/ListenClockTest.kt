@@ -148,4 +148,33 @@ class ListenClockTest {
         assertEquals(0L, clock.listenedMs())
         assertFalse(clock.crossed())
     }
+
+    // ------------------------------------------------------------------- Task 3: updateDuration
+
+    /** The whole point of [ListenClock.updateDuration] over calling [ListenClock.start] again:
+     *  progress made while the real duration was still unknown must survive learning it. */
+    @Test fun `updateDuration changes the threshold without resetting listened or sent`() {
+        clock.start(timeUnset) // unknown at transition time -> 240 000 default threshold
+        now = 0L
+        clock.onPlaying()
+        now = 20_000L // 20s listened while buffering, before the real duration arrived
+        assertEquals(20_000L, clock.listenedMs())
+
+        clock.updateDuration(240_000L) // now known: a 4-min track, threshold 120 000
+        assertEquals(120_000L, clock.thresholdMs())
+        assertEquals("listened must survive the duration correction", 20_000L, clock.listenedMs())
+        assertFalse(clock.sent)
+    }
+
+    /** Same claim, without the incidental control-flow noise above: [sent] specifically must be
+     *  untouched even mid-way through an already-sent play-through (defensive; real callers never
+     *  call this after [ListenClock.markSent], but the guarantee is the method's contract). */
+    @Test fun `updateDuration never touches sent or startedAtWallMs`() {
+        wall = 555L
+        clock.start(timeUnset)
+        clock.markSent()
+        clock.updateDuration(600_000L)
+        assertTrue(clock.sent)
+        assertEquals(555L, clock.startedAtWallMs)
+    }
 }

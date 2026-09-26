@@ -24,6 +24,9 @@ import com.kaislate.veldtplayer.data.library.db.SongEntity
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.net.FakeHttpServer
 import com.kaislate.veldtplayer.data.net.SubsonicClient
+import com.kaislate.veldtplayer.data.scrobble.QueuedScrobble
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlusher
+import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -39,6 +42,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import java.io.File
+import java.nio.file.Files
 import java.util.Random
 import java.util.concurrent.TimeUnit
 import javax.crypto.KeyGenerator
@@ -75,6 +80,8 @@ class SubsonicSyncWorkerTest {
     private lateinit var server: FakeHttpServer
     private lateinit var client: SubsonicClient
     private lateinit var status: SyncStatusStore
+    private lateinit var queueDir: File
+    private lateinit var queue: ScrobbleQueue
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
 
     /** See the class KDoc for why [sources] must not be handed a live collector scope here. */
@@ -104,11 +111,14 @@ class SubsonicSyncWorkerTest {
         )
         status = SyncStatusStore(context)
         runBlocking { status.clearForTest() }
+        queueDir = Files.createTempDirectory("sync-worker-test").toFile()
+        queue = ScrobbleQueue(queueDir)
     }
 
     @After fun tearDown() {
         server.close()
         db.close()
+        queueDir.deleteRecursively()
     }
 
     // ------------------------------------------------------------------------------- fixtures
@@ -190,10 +200,18 @@ class SubsonicSyncWorkerTest {
         }
     }
 
+    /** The shared [sources] field above is frozen (via [NoOpDispatcher]) at an empty database —
+     *  fine for [SubsonicSyncWorker] itself (only ever calls the always-fresh [SubsonicSources
+     *  .credentials]) and harmless as [ScrobbleFlusher]'s default here too, PROVIDED no test using
+     *  the default has actually queued anything for that source (`flush` on an empty queue is a
+     *  no-op regardless of what [SubsonicSources.contains] answers). A test that DOES seed the
+     *  queue and cares whether delivery actually happens must pass a [ScrobbleFlusher] built from
+     *  a [SubsonicSources] constructed AFTER the account exists — see `freshFlusher()`. */
     private fun worker(
         sourceId: String,
         runAttemptCount: Int = 0,
         now: () -> Long = { 1_000L },
+        flusher: ScrobbleFlusher = ScrobbleFlusher(queue, client, sources),
     ): SubsonicSyncWorker =
         TestListenableWorkerBuilder.from(context, SubsonicSyncWorker::class.java)
             .setInputData(workDataOf(SubsonicSyncWorker.KEY_SOURCE_ID to sourceId))
@@ -204,10 +222,18 @@ class SubsonicSyncWorkerTest {
                     workerClassName: String,
                     workerParameters: WorkerParameters,
                 ): ListenableWorker = SubsonicSyncWorker(
-                    appContext, workerParameters, client, sources, accounts, accountDao, songDao, status, now,
+                    appContext, workerParameters, client, sources, accounts, accountDao, songDao, status, flusher, now,
                 )
             })
             .build()
+
+    /** See the KDoc on [worker] — a [SubsonicSources] built AFTER [sourceId]'s account row
+     *  exists, the same fix `ScrobbleFlusherTest` uses, so [ScrobbleFlusher.flush]'s
+     *  [SubsonicSources.contains] check actually finds it. */
+    private fun freshFlusher(): ScrobbleFlusher {
+        val fresh = SubsonicSources(accountDao, songDao, accounts, CoroutineScope(SupervisorJob() + NoOpDispatcher))
+        return ScrobbleFlusher(queue, client, fresh)
+    }
 
     // ---------------------------------------------------------------------------------- success
 
@@ -233,6 +259,31 @@ class SubsonicSyncWorkerTest {
         assertEquals(ListenableWorker.Result.success(), result)
         val cached = accountDao.get(sourceId)?.capabilities.orEmpty().split(",")
         assertTrue("expected formPost among $cached", "formPost" in cached)
+    }
+
+    /** N3 design spec §5, "piggyback": a successful sync is successful contact with the server,
+     *  so it must flush this source's queued scrobbles too — not wait for the source's own next
+     *  scrobble, and not wait for the separate retry job. [freshFlusher] (not the default) because
+     *  this test needs [ScrobbleFlusher.flush]'s `SubsonicSources.contains` check to actually see
+     *  the account — see [worker]'s KDoc. */
+    @Test fun `success piggybacks a flush of the source's queued scrobbles`() = runTest {
+        val sourceId = addAccount()
+        serveCatalog(mapOf("al1" to listOf("s1")))
+        queue.add(QueuedScrobble(sourceId, "song-x", 1_234L))
+        server.enqueue("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""") // answers the piggybacked scrobble
+
+        val result = worker(sourceId, flusher = freshFlusher()).doWork()
+
+        assertEquals(ListenableWorker.Result.success(), result)
+        assertEquals(
+            "the sync's success must have triggered a flush that delivered the queued scrobble",
+            emptyList<QueuedScrobble>(),
+            queue.forSource(sourceId),
+        )
+        assertTrue(
+            "expected a scrobble request among ${server.requests.map { it.target }}",
+            server.requests.any { "scrobble" in it.target },
+        )
     }
 
     // ---------------------------------------------------------------------------------- rejection
