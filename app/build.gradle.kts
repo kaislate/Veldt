@@ -15,6 +15,15 @@ android {
     namespace = "com.kaislate.veldtplayer"
     compileSdk = 36
 
+    // No "dependency metadata" block in the APK signing block. AGP writes it encrypted to a key
+    // only Google can read. F-Droid's scanner rejects an APK carrying it, and it is not needed
+    // for anything outside Google Play. Leaving it out also keeps release builds reproducible,
+    // so F-Droid can publish the developer-signed APK.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
