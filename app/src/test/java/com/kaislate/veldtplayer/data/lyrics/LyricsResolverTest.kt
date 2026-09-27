@@ -243,6 +243,60 @@ class LyricsResolverTest {
         assertEquals("misjudged: $wrong", emptyList<Pair<String, Boolean>>(), wrong)
     }
 
+    // ------------------------------------------------------------ link-only results (finding 20)
+
+    private val watermark = Lyrics.Plain("www.t.me/pmedia_music")
+
+    @Test fun `a link-only server result is no lyrics - lrclib's real result wins`() = runTest {
+        val calls = mutableListOf<String>()
+        val resolver = resolver(calls, serverResult = watermark, lrclibResult = real("lrclib"))
+        val result = resolver.resolve(song("navidrome-1", "s1"))
+        assertEquals(ResolvedLyrics(real("lrclib"), LyricsSource.LRCLIB), result)
+        assertEquals(listOf("server", "lrclib"), calls)
+    }
+
+    @Test fun `a link-only server result with nothing else is null, not a weak fallback`() = runTest {
+        val calls = mutableListOf<String>()
+        val resolver = resolver(calls, serverResult = watermark)
+        assertNull(resolver.resolve(song("navidrome-1", "s1")))
+        assertEquals(listOf("server", "lrclib"), calls)
+    }
+
+    @Test fun `link-only results from every provider are all skipped`() = runTest {
+        val timedWatermark = Lyrics.Synced(listOf(LyricLine(0, "www.example.com")))
+        val calls = mutableListOf<String>()
+        val local = resolver(
+            calls,
+            sidecarResult = timedWatermark,
+            embeddedResult = Lyrics.Plain("[00:00.00]www.example.com"),
+            lrclibResult = Lyrics.Plain("https://t.me/x\nwww.example.com"),
+        )
+        assertNull(local.resolve(song(localSourceId, "1")))
+        assertEquals(listOf("sidecar", "embedded", "lrclib"), calls)
+
+        val remoteCalls = mutableListOf<String>()
+        val remote = resolver(remoteCalls, serverResult = watermark, lrclibResult = watermark)
+        assertNull(remote.resolve(song("navidrome-1", "s1")))
+        assertEquals(listOf("server", "lrclib"), remoteCalls)
+    }
+
+    @Test fun `a link-only sidecar result lets a weak embedded one be the fallback`() = runTest {
+        val calls = mutableListOf<String>()
+        val resolver = resolver(calls, sidecarResult = watermark, embeddedResult = weak("embedded"))
+        val result = resolver.resolve(song(localSourceId, "1"))
+        assertEquals(ResolvedLyrics(weak("embedded"), LyricsSource.EMBEDDED), result)
+        assertEquals(listOf("sidecar", "embedded", "lrclib"), calls)
+    }
+
+    @Test fun `real lines plus a URL line are kept as is`() = runTest {
+        val calls = mutableListOf<String>()
+        val withLink = Lyrics.Plain("first real line\nsecond real line\nwww.t.me/pmedia_music")
+        val resolver = resolver(calls, serverResult = withLink, lrclibResult = real("lrclib"))
+        val result = resolver.resolve(song("navidrome-1", "s1"))
+        assertEquals(ResolvedLyrics(withLink, LyricsSource.SERVER), result)
+        assertEquals(listOf("server"), calls)
+    }
+
     // ------------------------------------------------------------------------------------- memo
 
     @Test fun `a weak final answer is not memoised - the second resolve asks the providers again`() = runTest {

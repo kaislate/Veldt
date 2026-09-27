@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- The art slot with nothing to show (the empty state, or a track without a cover): the app
+     icon's own two layers, so the widget reads as Veldt before anything has played. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@drawable/ic_launcher_background" />
+    <item android:drawable="@drawable/ic_launcher_foreground" />
+</layer-list>

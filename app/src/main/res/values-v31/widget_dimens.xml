@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<resources>
+    <!-- The launcher's own widget corner radius, so the card's corners match every other widget. -->
+    <dimen name="widget_corner_radius">@android:dimen/system_app_widget_background_radius</dimen>
+</resources>
