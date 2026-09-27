@@ -4,8 +4,10 @@
 package com.kaislate.veldtplayer.di
 
 import com.kaislate.veldtplayer.pill.AppForeground
+import com.kaislate.veldtplayer.pill.ConnectionPillCommands
 import com.kaislate.veldtplayer.pill.OverlayPermission
 import com.kaislate.veldtplayer.pill.PackageManagerWispPresence
+import com.kaislate.veldtplayer.pill.PillCommands
 import com.kaislate.veldtplayer.pill.ProcessLifecycleAppForeground
 import com.kaislate.veldtplayer.pill.SystemOverlayPermission
 import com.kaislate.veldtplayer.pill.WispPresence
@@ -24,4 +26,6 @@ abstract class PillModule {
     @Binds abstract fun bindOverlayPermission(impl: SystemOverlayPermission): OverlayPermission
 
     @Binds abstract fun bindAppForeground(impl: ProcessLifecycleAppForeground): AppForeground
+
+    @Binds abstract fun bindPillCommands(impl: ConnectionPillCommands): PillCommands
 }
