@@ -44,8 +44,8 @@ class ScrobbleFlushWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         val outcome = flusher.flushAll()
         if (outcome != FlushOutcome.UNREACHABLE) return Result.success()
-        // runAttemptCount is 0 on the first attempt; the 6th attempt (index 5) is the last one
-        // allowed to retry — on it, give up and report success instead.
+        // runAttemptCount is 0 on the first attempt; the 6th attempt (index 5) is the last
+        // attempt — it does NOT retry: give up and report success instead.
         return if (runAttemptCount >= MAX_ATTEMPTS - 1) Result.success() else Result.retry()
     }
 
