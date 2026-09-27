@@ -83,7 +83,7 @@ class ScrobbleFlushWorker @AssistedInject constructor(
  * [ScrobbleFlushWorker.enqueue], behind an interface — the same reason [com.kaislate.veldtplayer
  * .data.library.sync.SubsonicSync] wraps `WorkManager` for [SubsonicSyncCoordinator]'s callers:
  * so a caller that just wants to say "something is queued now, go arrange a retry" (Task 3's
- * `Scrobbler`, and `AccountsViewModel` on a new password — controller ruling, task 2) can be
+ * `Scrobbler`, and `AccountsViewModel` on a credentials change — controller ruling, task 2) can be
  * tested with a fake instead of driving real `WorkManager` state.
  */
 interface ScrobbleFlushScheduler {

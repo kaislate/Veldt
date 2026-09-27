@@ -38,8 +38,9 @@ enum class FlushOutcome {
  * [flush] delivers [sourceId]'s entries oldest first, one request per entry, and stops at the
  * FIRST [ScrobbleResult.Unreachable] — a queue of ten entries against a server that just went
  * offline must not spend ten timeouts finding that out; the rest wait for the next flush attempt.
- * A credential rejection also stops the loop (the account needs a new password before ANY of its
- * remaining entries can possibly succeed) and marks the source auth-blocked; any OTHER rejection
+ * A credential rejection also stops the loop (none of the account's remaining entries can succeed
+ * until its credentials work again) and marks the source auth-blocked — lifted by a credentials
+ * change or by [afterAuthenticatedSuccess] (finding 21); any OTHER rejection
  * (e.g. 70 — the track no longer exists on the server) is dropped, since resending an unwanted
  * answer can never change.
  *
@@ -93,6 +94,22 @@ class ScrobbleFlusher @Inject constructor(
             }
         }
         return FlushOutcome.DELIVERED
+    }
+
+    /**
+     * An authenticated request to [sourceId] just SUCCEEDED — a sync, a scrobble — so its
+     * credentials work: clear its auth-block, then [flush] it (finding 21).
+     *
+     * The block exists because a server said "these credentials won't work"; a server accepting
+     * those same credentials is the one answer that proves it no longer applies, whatever fixed it
+     * (a restored username, a password changed back on the server, an account re-enabled there).
+     * Before this, only a new password saved in Veldt cleared it, and a queued play could be
+     * stranded behind a block that a perfectly good sync had already disproved. [flush] alone skips
+     * a blocked source, which is exactly why the piggyback could not help.
+     */
+    suspend fun afterAuthenticatedSuccess(sourceId: String): FlushOutcome {
+        queue.setAuthBlocked(sourceId, false)
+        return flush(sourceId)
     }
 
     /** Every source with at least one queued entry, each flushed in turn. Order across sources

@@ -286,6 +286,56 @@ class SubsonicSyncWorkerTest {
         )
     }
 
+    /**
+     * Finding 21: a sync is a successful AUTHENTICATED request — the catalog was fetched with this
+     * account's credentials — so a scrobble auth-block left from an earlier rejection is stale.
+     * It is lifted, and the play it stranded is delivered by the same piggybacked flush. On the
+     * S21 this was a real queued play ("synced 0 minutes ago", still blocked).
+     */
+    @Test fun `a successful sync clears the auth-block and delivers the play it held`() = runTest {
+        val sourceId = addAccount()
+        serveCatalog(mapOf("al1" to listOf("s1")))
+        queue.setAuthBlocked(sourceId, true)
+        queue.add(QueuedScrobble(sourceId, "numb", 1_790_538_661_152L))
+        server.enqueue("""{"subsonic-response":{"status":"ok","version":"1.16.1"}}""") // the scrobble
+
+        val result = worker(sourceId, flusher = freshFlusher()).doWork()
+
+        assertEquals(
+            listOf<Any?>(ListenableWorker.Result.success(), false, emptyList<QueuedScrobble>()),
+            listOf<Any?>(result, queue.isAuthBlocked(sourceId), queue.forSource(sourceId)),
+        )
+        assertTrue(
+            "expected the stranded play to be scrobbled, among ${server.requests.map { it.target }}",
+            server.requests.any { "scrobble" in it.target },
+        )
+    }
+
+    /** The other side: a sync the server REJECTS proves nothing good about the credentials. */
+    @Test fun `a sync rejected for its credentials leaves the auth-block and the queued play`() = runTest {
+        val sourceId = addAccount()
+        serveAlbumListError(40, "Wrong username or password")
+        queue.setAuthBlocked(sourceId, true)
+        queue.add(QueuedScrobble(sourceId, "numb", 1L))
+
+        worker(sourceId, flusher = freshFlusher()).doWork()
+
+        assertEquals(
+            listOf<Any?>(true, listOf("numb")),
+            listOf<Any?>(queue.isAuthBlocked(sourceId), queue.forSource(sourceId).map { it.externalId }),
+        )
+    }
+
+    /** Nor does a sync that never reached the server. */
+    @Test fun `an unreachable sync leaves the auth-block`() = runTest {
+        val sourceId = addAccount(baseUrl = "http://127.0.0.1:1")
+        queue.setAuthBlocked(sourceId, true)
+
+        worker(sourceId, flusher = freshFlusher()).doWork()
+
+        assertEquals(true, queue.isAuthBlocked(sourceId))
+    }
+
     // ---------------------------------------------------------------------------------- rejection
 
     @Test fun `a code 40 rejection fails as auth and deletes nothing`() = runTest {

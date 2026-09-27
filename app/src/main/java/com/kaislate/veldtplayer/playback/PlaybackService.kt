@@ -290,7 +290,9 @@ class PlaybackService : MediaLibraryService() {
                 }
             },
             queue = scrobbleQueue,
-            flush = scrobbleFlusher::flush,
+            // Scrobbler calls this only after a send the server ACCEPTED: authenticated success,
+            // so it also lifts a stale auth-block before flushing (finding 21).
+            flush = scrobbleFlusher::afterAuthenticatedSuccess,
             enqueueFlush = scrobbleFlushScheduler::enqueue,
             scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
         )

@@ -240,6 +240,23 @@ class ScrobbleFlusherTest {
         assertEquals(FlushOutcome.DELIVERED, outcome)
     }
 
+    /** Finding 21: an authenticated request that SUCCEEDED lifts the block, then flushes — the
+     *  one entry point the sync worker and the scrobbler's success path both use. */
+    @Test fun `after an authenticated success the block is lifted and the queue delivered`() = runTest {
+        val sourceId = addAccount()
+        val e1 = QueuedScrobble(sourceId, "song-1", 1_000L)
+        queue.add(e1)
+        queue.setAuthBlocked(sourceId, true)
+        server.enqueue(okEnvelope())
+
+        val outcome = flusher().afterAuthenticatedSuccess(sourceId)
+
+        assertEquals(
+            listOf<Any?>(FlushOutcome.DELIVERED, false, emptyList<QueuedScrobble>(), 1),
+            listOf<Any?>(outcome, queue.isAuthBlocked(sourceId), queue.forSource(sourceId), server.requests.size),
+        )
+    }
+
     // -------------------------------------------------------------------------- non-credential rejection
 
     @Test fun `a non-credential rejection (70) drops only that entry and continues to the next`() = runTest {

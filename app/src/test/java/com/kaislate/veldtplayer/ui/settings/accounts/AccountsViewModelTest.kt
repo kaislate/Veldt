@@ -13,6 +13,7 @@ import com.kaislate.veldtplayer.data.account.SecretFiles
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
 import com.kaislate.veldtplayer.data.library.sync.SyncStatus
+import com.kaislate.veldtplayer.data.net.FakeHttpServer
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import com.kaislate.veldtplayer.data.scrobble.QueuedScrobble
 import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlushScheduler
@@ -271,22 +272,90 @@ class AccountsViewModelTest {
         assertEquals(0, flushScheduler.enqueueCalls)
     }
 
-    /** Saving with NO new password must touch neither the auth-block nor the flush job — this is
-     *  exactly the "credentials change" condition from design spec §5, and a url-only edit is not
-     *  one. */
-    @Test fun `saving with no new password leaves the auth-block and the flush job alone`() = runTest {
-        vm.add("Home", "http://h1:4533", "Kyle", "hunter2")
+    // ------------------------------------ finding 21: ANY credentials change, and a proven login
+
+    /** An account blocked with one play queued, the way the S21 device check left it. */
+    private suspend fun blockedAccount(url: String = "http://h1:4533"): String {
+        vm.add("Home", url, "Kyle", "hunter2")
         settledSave()
         val id = repo.observe().first().single().sourceId
         scrobbleQueue.setAuthBlocked(id, true)
         scrobbleQueue.add(QueuedScrobble(id, "song-1", 1_000L))
+        sync.calls.clear()
         vm.resetTest()
+        return id
+    }
+
+    /** Finding 21 exactly: the username was wrong, the user put it back, and nothing else. Asserted
+     *  as the whole outcome — (blocked?, flush enqueues, sync calls) — so half a fix is caught. */
+    @Test fun `a username-only change clears the auth-block, flushes and re-syncs`() = runTest {
+        val id = blockedAccount()
+
+        vm.update(id, "http://h1:4533", "kyle-restored", "")
+        assertEquals(SaveState.Saved, settledSave())
+
+        assertEquals(
+            listOf<Any?>(false, 1, listOf("request:$id")),
+            listOf<Any?>(scrobbleQueue.isAuthBlocked(id), flushScheduler.enqueueCalls, sync.calls),
+        )
+    }
+
+    @Test fun `a url-only change clears the auth-block too`() = runTest {
+        val id = blockedAccount()
 
         vm.update(id, "http://h2:4533", "Kyle", "")
         assertEquals(SaveState.Saved, settledSave())
 
-        assertEquals(true, scrobbleQueue.isAuthBlocked(id))
-        assertEquals(0, flushScheduler.enqueueCalls)
+        assertEquals(listOf<Any?>(false, 1), listOf<Any?>(scrobbleQueue.isAuthBlocked(id), flushScheduler.enqueueCalls))
+    }
+
+    /** Saving with NOTHING changed is not a credentials change: the block and the job stay. */
+    @Test fun `saving with nothing changed leaves the auth-block and the flush job alone`() = runTest {
+        val id = blockedAccount()
+
+        vm.update(id, "http://h1:4533", "Kyle", "")
+        assertEquals(SaveState.Saved, settledSave())
+
+        assertEquals(
+            listOf<Any?>(true, 0, emptyList<String>()),
+            listOf<Any?>(scrobbleQueue.isAuthBlocked(id), flushScheduler.enqueueCalls, sync.calls),
+        )
+    }
+
+    /** A server that answers `ping` and the extensions probe OK, whatever it is sent. */
+    private fun acceptingServer(): FakeHttpServer = FakeHttpServer().also {
+        it.start()
+        it.enqueue("""{"subsonic-response":{"status":"ok","version":"1.16.1","type":"navidrome","serverVersion":"0.64.0"}}""")
+        it.enqueue("""{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[]}}""")
+    }
+
+    @Test fun `a successful test of the SAVED credentials clears the auth-block and flushes`() = runTest {
+        val server = acceptingServer()
+        try {
+            val id = blockedAccount(url = server.baseUrl)
+
+            vm.testConnection(server.baseUrl, "Kyle", "hunter2", sourceId = id)
+            vm.test.first { it is TestState.Ok }
+
+            assertEquals(listOf<Any?>(false, 1), listOf<Any?>(scrobbleQueue.isAuthBlocked(id), flushScheduler.enqueueCalls))
+        } finally {
+            server.close()
+        }
+    }
+
+    /** Typed-but-unsaved credentials working says nothing about the saved ones. */
+    @Test fun `a successful test of DIFFERENT credentials leaves the auth-block alone`() = runTest {
+        val server = acceptingServer()
+        try {
+            val id = blockedAccount(url = server.baseUrl)
+
+            vm.testConnection(server.baseUrl, "Kyle", "not-the-saved-one", sourceId = id)
+            vm.test.first { it is TestState.Ok }
+
+            assertEquals(listOf<Any?>(true, 0), listOf<Any?>(scrobbleQueue.isAuthBlocked(id), flushScheduler.enqueueCalls))
+        } finally {
+            server.close()
+        }
     }
 
     /**
