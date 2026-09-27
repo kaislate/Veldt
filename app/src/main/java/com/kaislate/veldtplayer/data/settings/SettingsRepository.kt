@@ -254,14 +254,14 @@ class SettingsRepository @Inject constructor(
     // Veldt Wisp's SettingsDefaults where an equivalent setting exists there. ----
 
     /**
-     * The user's three-way choice for the built-in pill (spec §3). Stored by NAME, degrading
-     * to [PillMode.BUILT_IN] for anything unrecognised — same convention as [themeMode], and
-     * the same reasoning: a corrupt or out-of-version preference must not stop the app, and
-     * [PillMode.BUILT_IN] is the documented default (spec §4).
+     * The "Floating pill" switch (Step 5 spec §9). Stored by NAME, degrading to
+     * [PillMode.BUILT_IN] for anything unrecognised — same convention as [themeMode], and the
+     * same reasoning: a corrupt or out-of-version preference must not stop the app, and
+     * [PillMode.BUILT_IN] is the documented default (spec §4). The retired `USE_WISP` value
+     * also reads as [PillMode.BUILT_IN]; [PillMode.fromStored] owns that decision and says why.
      */
     val pillMode: Flow<PillMode> = context.settingsStore.data.map { prefs ->
-        prefs[PILL_MODE]?.let { stored -> PillMode.entries.firstOrNull { it.name == stored } }
-            ?: PillMode.BUILT_IN
+        PillMode.fromStored(prefs[PILL_MODE])
     }
 
     suspend fun setPillMode(mode: PillMode) {
@@ -269,8 +269,8 @@ class SettingsRepository @Inject constructor(
     }
 
     /**
-     * The "use built-in anyway" override (spec §3): only meaningful while [pillMode] would
-     * otherwise defer to an installed Veldt Wisp. Off by default.
+     * The "Use Veldt's own pill instead" override (spec §3, §9): only meaningful while the
+     * built-in pill would otherwise stand down for an installed Veldt Wisp. Off by default.
      */
     val pillForceBuiltIn: Flow<Boolean> =
         context.settingsStore.data.map { it[PILL_FORCE_BUILTIN] ?: false }

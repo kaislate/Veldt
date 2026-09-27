@@ -245,6 +245,12 @@ class SettingsRepositoryTest {
         assertEquals(PillMode.BUILT_IN, repo.pillMode.first())
     }
 
+    /** Step 5 §9: the retired "Use Veldt Wisp" choice reads as the switch on, not off. */
+    @Test fun `a stored legacy USE_WISP reads as built-in`() = runTest {
+        repo.writeRawPillModeForTest("USE_WISP")
+        assertEquals(PillMode.BUILT_IN, repo.pillMode.first())
+    }
+
     @Test fun `pill mode is stored under pill_mode`() = runTest {
         repo.setPillMode(PillMode.OFF)
         assertEquals(
