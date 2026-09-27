@@ -25,6 +25,7 @@ object Destinations {
     const val SETTINGS = "settings"
     const val NOTICES = "notices"
     const val ACCOUNTS = "accounts"
+    const val PILL_APPEARANCE = "pill_appearance"
 
     const val ARG_KEY = "key"
     const val ALBUM_DETAIL = "album/{$ARG_KEY}"
