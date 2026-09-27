@@ -44,8 +44,16 @@ class SettingsRepository @Inject constructor(
         } ?: ThemeMode.SYSTEM
     }
 
+    /** The launch window's synchronous copy of [themeMode]; see [ThemeModeMirror]. */
+    private val themeMirror = ThemeModeMirror(context)
+
+    /**
+     * Writes DataStore, then the mirror. In that order, so a failed DataStore write leaves the
+     * mirror agreeing with the store it caches rather than with a choice that was never saved.
+     */
     suspend fun setThemeMode(mode: ThemeMode) {
         context.settingsStore.edit { it[THEME_MODE] = mode.name }
+        themeMirror.write(mode)
     }
 
     /**

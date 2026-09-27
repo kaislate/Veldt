@@ -111,9 +111,14 @@ fun SearchScreen(
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
+    // FIRST, before anything below reads the field: a fresh trip empties it. See StartSearchTrip.
+    val focus = remember { FocusRequester() }
+    StartSearchTrip(search = vm.search, focusRequester = focus)
+    // Read straight from snapshot state, never through a flow; see SearchQuery.
+    val query = vm.search.field.text
+
     // collectAsStateWithLifecycle, not collectAsState: every VM flow here is
     // WhileSubscribed, and a backgrounded screen must let the upstream stop.
-    val query by vm.query.collectAsStateWithLifecycle()
     val settled by vm.settledQuery.collectAsStateWithLifecycle()
     // The ROWS AND THE TERM THEY ANSWER, from one value. Not vm.results: an empty list on
     // its own cannot say whether the term matched nothing or has not reached Room yet.
@@ -137,26 +142,8 @@ fun SearchScreen(
         onDismiss = { pendingAddition = null },
     )
 
-    val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
-
-    // Opening search means wanting to type: the field takes focus, which brings the
-    // keyboard with it, so reaching the screen costs one tap rather than two.
-    //
-    // ONCE, though — hence rememberSaveable rather than a bare LaunchedEffect(Unit).
-    // This is a plain `composable` destination, so opening an album from a result DISPOSES
-    // this screen and popping back RECOMPOSES it; an unguarded effect would re-run there
-    // and shove the keyboard over the bottom half of the results the user came back to
-    // READ. The flag rides the back stack entry's saved state, so it survives that round
-    // trip and dies with the entry — the next fresh trip to search opens typing-ready.
-    var focusClaimed by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        if (!focusClaimed) {
-            focusClaimed = true
-            focus.requestFocus()
-        }
-    }
 
     // Scrolling means reading, not typing. Dropping the keyboard on the first drag gives
     // the results back half the screen without the user having to aim at a Back gesture.
@@ -199,8 +186,7 @@ fun SearchScreen(
             .imePadding(),
     ) {
         SearchField(
-            query = query,
-            onQueryChange = vm::setQuery,
+            search = vm.search,
             onBack = onBack,
             onSubmit = { keyboard?.hide() },
             focusRequester = focus,
@@ -332,14 +318,51 @@ fun SearchScreen(
 }
 
 /**
+ * What arriving at search does, told apart from what RETURNING to it does.
+ *
+ * Arriving means wanting to type something new. The field starts empty, even though the
+ * query lives in the activity-scoped view model and so still holds the last trip's text. It
+ * also takes focus, which brings the keyboard with it, so reaching the screen costs one tap
+ * rather than two.
+ *
+ * Returning must do neither. This is a plain `composable` destination, so opening an album
+ * from a result DISPOSES the screen and popping back RECOMPOSES it. Clearing there would
+ * throw away the results the user came back to, and focusing would shove the keyboard over
+ * the bottom half of them. So both are guarded by one [rememberSaveable] flag. It rides the
+ * back stack entry's saved state, so it survives that round trip and dies with the entry,
+ * and the next fresh trip starts empty and typing-ready.
+ *
+ * The clear runs during composition, not in the effect. An effect runs after the first frame
+ * has been composed, and that frame would draw the last trip's text and results. The screen
+ * calls this before anything reads [SearchQuery.field], so the write comes before every read
+ * of it in the composition; it is not a backwards write. Focus has to wait for the effect,
+ * because the field it focuses is not attached until the frame is.
+ *
+ * `internal` so the search field's tests drive the same arrival logic the screen does.
+ */
+@Composable
+internal fun StartSearchTrip(search: SearchQuery, focusRequester: FocusRequester) {
+    var tripStarted by rememberSaveable { mutableStateOf(false) }
+    if (!tripStarted) search.clear()
+    LaunchedEffect(Unit) {
+        if (!tripStarted) {
+            tripStarted = true
+            focusRequester.requestFocus()
+        }
+    }
+}
+
+/**
  * The search bar: back, field, clear. The field is a filled pill rather than an outlined
  * box — an outline drawn a few dp under the status bar reads as a seam across the top of
  * the screen, while a tonal container reads as a slot the text sits in.
+ *
+ * Bound to [search] directly, value and edits both, so nothing asynchronous stands between
+ * the field and its text; see [SearchQuery]. `internal` for the same tests as [StartSearchTrip].
  */
 @Composable
-private fun SearchField(
-    query: String,
-    onQueryChange: (String) -> Unit,
+internal fun SearchField(
+    search: SearchQuery,
     onBack: () -> Unit,
     onSubmit: () -> Unit,
     focusRequester: FocusRequester,
@@ -355,8 +378,8 @@ private fun SearchField(
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
         }
         OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
+            value = search.field,
+            onValueChange = search::edit,
             modifier = Modifier
                 .weight(1f)
                 .focusRequester(focusRequester),
@@ -368,11 +391,12 @@ private fun SearchField(
                 // Fades rather than appearing: the affordance arrives with the first
                 // keystroke, and a hard cut there draws the eye away from what is typed.
                 AnimatedVisibility(
-                    visible = query.isNotEmpty(),
+                    visible = search.field.text.isNotEmpty(),
                     enter = fadeIn(animationSpec = Motion.gentle),
                     exit = fadeOut(animationSpec = Motion.gentle),
                 ) {
-                    IconButton(onClick = { onQueryChange("") }) {
+                    // Clears synchronously and ends the IME composition with it; see SearchQuery.
+                    IconButton(onClick = search::clear) {
                         Icon(Icons.Filled.Close, contentDescription = "Clear search")
                     }
                 }

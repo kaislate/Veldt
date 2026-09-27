@@ -60,6 +60,22 @@ class SettingsRepositoryTest {
         assertEquals(ThemeMode.entries.map { it to it }, readBack)
     }
 
+    /**
+     * Finding 10: the launch window reads [ThemeModeMirror], so a choice that reached only
+     * DataStore would be drawn wrong on the next cold start. Each mode is asserted in BOTH stores,
+     * by value, and from a different starting mode each time, so a write that happened to leave
+     * the mirror on its previous value cannot pass.
+     */
+    @Test fun `setting the theme writes DataStore and the launch mirror`() = runTest {
+        val mirror = ThemeModeMirror(ApplicationProvider.getApplicationContext())
+        val written = listOf(ThemeMode.DARK, ThemeMode.LIGHT, ThemeMode.SYSTEM, ThemeMode.DARK)
+        val readBack = written.map { mode ->
+            repo.setThemeMode(mode)
+            Triple(mode, repo.readRawForTest("theme_mode"), mirror.read())
+        }
+        assertEquals(written.map { Triple(it, it.name, it) }, readBack)
+    }
+
     // ---- Folder view sort (P1.6). Same shape as the ThemeMode block above, deliberately. ----
 
     /** Filename, not tags — the folder view exists to bypass the tags. See `FolderSort`'s KDoc. */

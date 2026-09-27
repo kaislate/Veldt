@@ -124,6 +124,17 @@ dependencies {
     // ExistingWorkPolicy.KEEP) is WorkManager's semantics, not ours — a hand-written fake
     // asserting it would be asserting its own model, so the real scheduler is used instead.
     testImplementation(libs.androidx.work.testing)
+    // Compose UI tests, run under Robolectric in this JVM suite rather than on a device (Step 5
+    // spec §1.4). The BOM pins both, as it does every other Compose artifact here, so the test
+    // toolkit can never drift from the UI toolkit it drives.
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.androidx.ui.test.junit4)
+    // debugImplementation, not testImplementation: this artifact is only a manifest entry
+    // declaring the empty ComponentActivity that createComposeRule() launches, and Robolectric
+    // resolves activities from the APP's merged manifest for the variant under test. A
+    // test-classpath AAR's manifest is never merged into that, so the rule could not start its
+    // activity. Debug-only keeps the stray activity out of release builds.
+    debugImplementation(libs.androidx.ui.test.manifest)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

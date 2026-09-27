@@ -1,22 +1,34 @@
 <resources>
     <!--
-      Dark parent, not DayNight. This style only ever paints the pre-Compose LAUNCH WINDOW —
-      the frame the OS shows before the first composition runs and VeldtTheme (see Theme.kt)
-      resolves the user's actual Light/Dark/Follow-system choice from DataStore. That choice
-      is not synchronously readable here, so this style cannot reflect it and is pinned dark.
+      These styles only ever paint WINDOWS: the system's starting window on a cold start, and the
+      activity window's background until the first composition. Every colour after that comes
+      from VeldtTheme (see Theme.kt). Which of the three a window gets is decided in one place,
+      LaunchTheme.kt, from the user's Light/Dark/Follow-system choice.
 
-      KNOWN LIMITATION: a user who has explicitly chosen Light theme sees a dark launch frame
-      for one frame on cold start, before Compose applies their choice and repaints. This is
-      not correct, only chosen over the alternative — a DayNight parent would instead show a
-      WHITE launch frame to every Dark-theme and Follow-system-in-dark user, which is worse for
-      more people on the common path. A real fix needs a synchronously-readable cached theme
-      preference plus `setTheme()` before `super.onCreate()` in MainActivity; out of scope for
-      this pass pending a measurement of how visible the flash actually is on a device.
+      Theme.Veldt is the MANIFEST theme, so it has to be DayNight: the starting window is drawn
+      before any app code runs, and follows either the system's night mode or, on API 31+, the
+      per-app night mode LaunchTheme hands the system. A pinned Dark parent here showed a Light
+      user a dark launch window for about 450 ms (finding 10).
 
-      statusBarColor stays transparent for the same window: MainActivity's enableEdgeToEdge()
-      sets the runtime value, but the theme is what the launch frame is drawn with.
+      Theme.Veldt.Light and Theme.Veldt.Dark are what MainActivity sets before super.onCreate for
+      an explicit choice, read from ThemeModeMirror because DataStore cannot be read
+      synchronously. Their parents name the ground outright rather than inheriting DayNight, so the
+      choice beats the system's night mode.
+
+      statusBarColor is transparent on all three for the launch frame: MainActivity's
+      enableEdgeToEdge() sets the runtime value, but the theme is what the frame is drawn with.
+
+      ThemeSourceGuardTest pins all three parents. Change them together with it.
     -->
-    <style name="Theme.Veldt" parent="Theme.Material3.DynamicColors.Dark">
+    <style name="Theme.Veldt" parent="Theme.Material3.DynamicColors.DayNight">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.Veldt.Light" parent="Theme.Material3.DynamicColors.Light">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+
+    <style name="Theme.Veldt.Dark" parent="Theme.Material3.DynamicColors.Dark">
         <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 </resources>
