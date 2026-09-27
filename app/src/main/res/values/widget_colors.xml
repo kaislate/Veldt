@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- Only for what is drawn before the app has rendered anything: the initial layout and the
+     picker previews. Neutral light ground, and a text tone well past 7:1 on it. Every update
+     after that sets tones solved from the cover (WidgetTones). -->
+<resources>
+    <color name="widget_default_ground">#FFF9F9F9</color>
+    <color name="widget_default_text">#FF303030</color>
+</resources>
