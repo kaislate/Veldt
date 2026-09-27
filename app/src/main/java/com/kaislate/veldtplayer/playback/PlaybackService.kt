@@ -6,9 +6,11 @@ package com.kaislate.veldtplayer.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -22,8 +24,19 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.kaislate.veldtplayer.MainActivity
+import com.kaislate.veldtplayer.R
+import com.kaislate.veldtplayer.playback.audio.GainStage
+import com.kaislate.veldtplayer.playback.audio.VeldtRenderersFactory
+import com.kaislate.veldtplayer.playback.sleep.SleepTimer
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerCommands
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerRequest
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerState
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerStatus
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
@@ -73,6 +86,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlin.math.abs
 
 /**
  * Media3 MediaLibraryService: hosts the ExoPlayer and publishes a
@@ -82,7 +96,8 @@ import javax.inject.Inject
  * Since 0.9.2 it also keeps the queue across process death (spec §3: saved on disk, restored
  * paused in [onCreate], offered to the system for resumption) and serves the Android Auto /
  * Assistant browse tree (spec §6) — [LibraryCallback] delegates the latter to
- * [BrowseSessionBridge], over the pure [BrowseTree].
+ * [BrowseSessionBridge], over the pure [BrowseTree] — and runs the sleep timer (spec §4), whose
+ * fade goes through [GainStage], the one owner of the final output gain.
  */
 @AndroidEntryPoint
 class PlaybackService : MediaLibraryService() {
@@ -156,6 +171,15 @@ class PlaybackService : MediaLibraryService() {
     private var browseScope: CoroutineScope? = null
     private var browse: BrowseSessionBridge? = null
 
+    // ---- output gain + sleep timer (spec §4) ----
+    /** The audio sink's gain processor: the only thing that changes the output level. */
+    private var gainStage: GainStage? = null
+    private var sleepTimer: SleepTimer? = null
+    private var sleepListener: Player.Listener? = null
+
+    /** Last state sent as session extras, so a per-minute label change does not resend them. */
+    private var publishedSleepState: SleepTimerState = SleepTimerState.Off
+
     /**
      * The restore's outcome: the queue put on the player, or null when there was nothing to put.
      * Completes exactly once — from the restore coroutine, or from [onDestroy] if the service dies
@@ -177,7 +201,12 @@ class PlaybackService : MediaLibraryService() {
         // Hilt injects in the generated base class's onCreate, so `uriResolver` is only safe to
         // touch below this line.
         super.onCreate()
+        val stage = GainStage()
+        gainStage = stage
         val exo = ExoPlayer.Builder(this)
+            // DefaultRenderersFactory with [stage] in the audio sink's processor chain, and
+            // nothing else changed — see VeldtRenderersFactory.
+            .setRenderersFactory(VeldtRenderersFactory(this, stage))
             // The builder's own default is `DefaultMediaSourceFactory(context,
             // DefaultExtractorsFactory())`, whose whole use of the context is
             // `DefaultDataSource.Factory(context)` (disassembly, N0). PlayerDataSources keeps that
@@ -258,6 +287,7 @@ class PlaybackService : MediaLibraryService() {
         }
 
         startQueueRestore(exo)
+        startSleepTimer(exo, stage)
 
         // Nothing here touches the library until a controller browses: the catalog's flow is
         // cold, and the repositories are Lazy until then.
@@ -323,6 +353,76 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /**
+     * Spec §4: the timer drives the player's pause and [stage]'s fade. Its state goes out to every
+     * controller as session extras (the app's now-playing screen reads them through
+     * `PlaybackConnection`), and to the media notification as a button that cancels it.
+     */
+    private fun startSleepTimer(exo: ExoPlayer, stage: GainStage) {
+        val timer = SleepTimer(
+            now = SystemClock::elapsedRealtime,
+            scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
+            playback = object : SleepTimer.Playback {
+                override val positionMs: Long get() = exo.currentPosition
+                override val durationMs: Long get() = exo.duration.takeIf { it != C.TIME_UNSET } ?: 0L
+                override val isPlaying: Boolean get() = exo.isPlaying
+                override fun pause() = exo.pause()
+                override fun setPauseAtEndOfItem(enabled: Boolean) {
+                    exo.pauseAtEndOfMediaItems = enabled
+                }
+            },
+            fade = { volume ->
+                stage.setFade(volume)
+                traceFade(volume)
+            },
+            onUpdate = ::publishSleepTimer,
+        )
+        sleepTimer = timer
+        SleepTimerPlayerListener(timer).also {
+            sleepListener = it
+            exo.addListener(it)
+        }
+    }
+
+    /** The fade last written to the log; see [traceFade]. */
+    private var tracedFade = 1f
+
+    /**
+     * The fade's volume trace, for a device check (`adb logcat -s VeldtGain`): one line per 5%
+     * step and one for each end, about twenty lines per fade — the ticks themselves come ten a
+     * second, too many to read.
+     */
+    private fun traceFade(volume: Float) {
+        val ends = (volume == 0f || volume == 1f) && volume != tracedFade
+        if (!ends && abs(volume - tracedFade) < FADE_TRACE_STEP) return
+        tracedFade = volume
+        Log.i(GainStage.LOG_TAG, "fade=${"%.3f".format(volume)} at ${SystemClock.elapsedRealtime()}ms")
+    }
+
+    private fun publishSleepTimer(status: SleepTimerStatus) {
+        val s = session ?: return
+        if (status.state != publishedSleepState) {
+            publishedSleepState = status.state
+            s.setSessionExtras(SleepTimerCommands.toExtras(status.state))
+        }
+        val label = SleepTimerCommands.notificationLabel(status)
+        s.setMediaButtonPreferences(
+            if (label == null) {
+                ImmutableList.of()
+            } else {
+                // Media3's icon set has no moon, hence the custom icon. ICON_UNDEFINED's default
+                // slot is the overflow, which leaves previous/play/next exactly where they were.
+                ImmutableList.of(
+                    CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+                        .setCustomIconResId(R.drawable.ic_sleep_timer)
+                        .setDisplayName(label)
+                        .setSessionCommand(SleepTimerCommands.CANCEL)
+                        .build(),
+                )
+            },
+        )
+    }
+
     /** The saved queue, with tracks that no longer resolve dropped — see [QueueRestore]. */
     private suspend fun loadRestorableQueue(store: QueueStore): SavedQueue? {
         val saved = store.read() ?: return null
@@ -374,6 +474,9 @@ class PlaybackService : MediaLibraryService() {
         // Anything still waiting on the restore gets "nothing" rather than a future that never
         // completes (a no-op if the restore already finished).
         restored.set(null)
+        // The timer is not persisted (spec §4): it simply stops with the service.
+        sleepListener?.let { player?.removeListener(it) }
+        sleepTimer?.release()
         busAdapter?.detach()
         // Detach first, then clear: the adapter can push during teardown, and a push landing
         // after the reset would refill the bus with the state this is meant to drop.
@@ -409,6 +512,9 @@ class PlaybackService : MediaLibraryService() {
         queueScope = null
         browseScope = null
         browse = null
+        sleepTimer = null
+        sleepListener = null
+        gainStage = null
         super.onDestroy()
     }
 
@@ -439,6 +545,55 @@ class PlaybackService : MediaLibraryService() {
 
     /** Default player-command handling (play/pause/seek/next/prev) is inherited. */
     private inner class LibraryCallback : MediaLibrarySession.Callback {
+
+        /**
+         * The defaults, plus the sleep timer's commands (spec §4). Cancel is granted to every
+         * controller because the notification's button can reach the session through System UI's
+         * controller as well as Media3's own notification controller, and a cancel can only ever
+         * give the user their music back. Setting or extending a timer is this app's business, so
+         * only controllers in this package (the app's `MediaController` and Media3's notification
+         * controller) may.
+         */
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val base = super.onConnect(session, controller)
+            if (!base.isAccepted) return base
+            val commands = base.availableSessionCommands.buildUpon()
+                .add(SleepTimerCommands.CANCEL)
+                .apply {
+                    if (controller.packageName == packageName) {
+                        add(SleepTimerCommands.SET)
+                        add(SleepTimerCommands.EXTEND)
+                    }
+                }
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(commands)
+                .setAvailablePlayerCommands(base.availablePlayerCommands)
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            val timer = sleepTimer
+            val request = SleepTimerCommands.parse(customCommand.customAction, args)
+            if (timer == null || request == null) {
+                return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+            }
+            when (request) {
+                is SleepTimerRequest.SetMinutes -> timer.setMinutes(request.minutes)
+                SleepTimerRequest.SetEndOfTrack -> timer.setEndOfTrack()
+                SleepTimerRequest.Extend -> timer.extend()
+                SleepTimerRequest.Cancel -> timer.cancel()
+            }
+            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+        }
 
         /**
          * Spec §3's system resumption: what Media3 1.8.0 asks for when a "play" reaches a player
@@ -548,6 +703,9 @@ class PlaybackService : MediaLibraryService() {
         /** How long [onDestroy]/[onTaskRemoved] wait for the final queue write. A write of the
          *  capped queue is a few hundred KB at most; this only bounds a stuck disk. */
         const val FLUSH_TIMEOUT_MS = 2_000L
+
+        /** See [traceFade]. */
+        const val FADE_TRACE_STEP = 0.05f
     }
 }
 
@@ -625,6 +783,25 @@ private class ScrobblerPlayerListener(
         val fromPlayer = player.duration
         if (fromPlayer != C.TIME_UNSET) return fromPlayer
         return mediaItem?.mediaMetadata?.durationMs ?: C.TIME_UNSET
+    }
+}
+
+/**
+ * Tells [SleepTimer] about the two player events "end of this track" waits for: the player
+ * pausing ITSELF at an item's end (the `pauseAtEndOfMediaItems` the timer set), and the queue
+ * running out. A user's own pause has a different reason and is deliberately not forwarded: the
+ * timer keeps its place, as a bedside clock radio's would.
+ */
+private class SleepTimerPlayerListener(private val timer: SleepTimer) : Player.Listener {
+
+    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+            timer.onPausedAtEndOfItem()
+        }
+    }
+
+    override fun onPlaybackStateChanged(playbackState: Int) {
+        if (playbackState == Player.STATE_ENDED) timer.onPlaybackEnded()
     }
 }
 

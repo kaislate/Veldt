@@ -5,6 +5,7 @@ package com.kaislate.veldtplayer.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.os.Bundle
 import android.os.Looper
 import androidx.annotation.MainThread
 import androidx.media3.common.MediaItem
@@ -16,6 +17,8 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.MoreExecutors
 import com.kaislate.veldtplayer.data.library.MusicRepository
 import com.kaislate.veldtplayer.data.library.model.Song
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerCommands
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerState
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -115,6 +118,21 @@ class PlaybackConnection @Inject constructor(
     private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val errors: SharedFlow<String> = _errors.asSharedFlow()
 
+    private val _sleepTimer = MutableStateFlow<SleepTimerState>(SleepTimerState.Off)
+
+    /**
+     * The service's sleep timer (spec §4), decoded from the session extras it publishes — read
+     * once on connect and then on every [MediaController.Listener.onExtrasChanged]. The timer
+     * itself lives in the service, so this is a view of it, never its owner.
+     */
+    val sleepTimer: StateFlow<SleepTimerState> = _sleepTimer.asStateFlow()
+
+    private val controllerListener = object : MediaController.Listener {
+        override fun onExtrasChanged(controller: MediaController, extras: Bundle) {
+            _sleepTimer.value = SleepTimerCommands.fromExtras(extras)
+        }
+    }
+
     /**
      * MediaController does not push position continuously, so it is polled — but only
      * while something is subscribed (WhileSubscribed) and only quickly while actually
@@ -207,6 +225,7 @@ class PlaybackConnection @Inject constructor(
             // the command methods' @MainThread contract holds even if some future background
             // entry point is the first thing to ask Hilt for this singleton.
             .setApplicationLooper(Looper.getMainLooper())
+            .setListener(controllerListener)
             .buildAsync()
         controllerFuture = future
         future.addListener({
@@ -229,6 +248,8 @@ class PlaybackConnection @Inject constructor(
             }
             controller = built
             built.addListener(listener)
+            // A timer set before this connection existed (the UI was gone; the service was not).
+            _sleepTimer.value = SleepTimerCommands.fromExtras(built.sessionExtras)
             // Removal-before-invocation keeps the replay exactly-once and FIFO; the finally
             // stops a throwing block from stranding the rest of the queue forever (Guava's
             // listener runner swallows the exception).
@@ -328,6 +349,26 @@ class PlaybackConnection @Inject constructor(
     fun cycleRepeat() = withController { c ->
         c.repeatMode = RepeatModes.toPlayer(RepeatModes.next(RepeatModes.fromPlayer(c.repeatMode)))
     }
+
+    // ---- sleep timer (spec §4): commands to the service's timer; its state is [sleepTimer] ----
+
+    /** A timer of [minutes] (1–180; the service refuses anything else), replacing any running one. */
+    @MainThread
+    fun setSleepTimer(minutes: Int) = withController {
+        it.sendCustomCommand(SleepTimerCommands.SET, SleepTimerCommands.minutesArgs(minutes))
+    }
+
+    @MainThread
+    fun setSleepTimerEndOfTrack() = withController {
+        it.sendCustomCommand(SleepTimerCommands.SET, SleepTimerCommands.endOfTrackArgs())
+    }
+
+    /** "+10 min". */
+    @MainThread
+    fun extendSleepTimer() = withController { it.sendCustomCommand(SleepTimerCommands.EXTEND, Bundle.EMPTY) }
+
+    @MainThread
+    fun cancelSleepTimer() = withController { it.sendCustomCommand(SleepTimerCommands.CANCEL, Bundle.EMPTY) }
 
     /**
      * Drops the connection. **Terminal and one-way — there is no reconnect path.** After
