@@ -1,0 +1,26 @@
+<p>Veldt plays the music on your phone and the music on your own server, in one library. It is free software with no ads, no accounts and no tracking. It makes no network requests except to servers you add, and to an online lyrics service only if you turn that on.</p>
+
+<p><b>Your library</b></p>
+<ul>
+<li>Songs, albums, artists and playlists, built from your phone's music and your files' own tags (album artist, disc and track numbers, embedded art).</li>
+<li>A Folders view of your music as it sits on disk, across internal storage and SD cards, including audiobooks and podcasts.</li>
+<li>Hide a folder from the library without deleting it, and give storage volumes your own names.</li>
+<li>Playlists with <code>.m3u</code> import that survive files moving or a card being remounted.</li>
+</ul>
+
+<p><b>Your server</b></p>
+<ul>
+<li>Add an OpenSubsonic server such as Navidrome. Its catalogue joins the same library, with cover art, and streams from it.</li>
+<li>Works on a home network or over Tailscale. Your password is stored encrypted on the phone.</li>
+<li>An optional bitrate limit on mobile data, and plays scrobbled back to the server, even when you were offline.</li>
+</ul>
+
+<p><b>Playing</b></p>
+<ul>
+<li>A now-playing screen coloured by the album art, with text colours chosen to stay readable against it.</li>
+<li>Synced or plain lyrics from <code>.lrc</code> files, the file's tags or your server, shown in place of the artwork or full screen.</li>
+<li>A floating now-playing pill, shared with the Veldt Wisp app, that appears when you leave Veldt while music plays.</li>
+<li>Light, dark or follow-system theme.</li>
+</ul>
+
+<p>Veldt is in public beta. Please report problems on the issue tracker.</p>

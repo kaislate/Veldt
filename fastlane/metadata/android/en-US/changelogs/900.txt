@@ -1,0 +1,1 @@
+First public beta. Local library with folders, playlists and hidden folders; OpenSubsonic/Navidrome servers with streaming, cover art and scrobbling; synced lyrics; a now-playing screen coloured by the artwork; the built-in floating pill; light, dark or follow-system theme.
