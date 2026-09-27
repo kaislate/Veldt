@@ -97,6 +97,11 @@ import kotlin.coroutines.CoroutineContext
  * `ACTION_VIEW` of the Releases page that the user starts by tapping it, handed to their browser.
  * Veldt makes no request of its own, so none of these invariants is touched. Its intent is
  * asserted in `FloatingPillSectionTest` instead.
+ *
+ * About's "Support Veldt" (0.9.2) is not audited here for the same reason: each of its links is an
+ * `ACTION_VIEW` the user starts by tapping it, handed to their browser, and the row itself fetches
+ * nothing (no counts, no check that a page exists). Its intents are asserted in
+ * `SupportSectionTest`.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])

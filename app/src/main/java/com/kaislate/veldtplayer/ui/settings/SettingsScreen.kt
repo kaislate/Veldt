@@ -61,7 +61,8 @@ import com.kaislate.veldtplayer.ui.browse.SectionLabel
 /**
  * The one settings surface: a three-way theme selector, the hidden folders, ReplayGain, the
  * mobile-data streaming quality, the online-lyrics opt-in, the floating pill, the way in to server
- * accounts, and an About block with the notices it is obliged to carry. It draws its own header rather
+ * accounts, and an About block with the notices it is obliged to carry and, when any link is
+ * configured, "Support Veldt" ([SupportSection]). It draws its own header rather
  * than taking the shared `TopAppBar`, same as every non-tab destination — see
  * `VeldtNavHost.TAB_ROUTES`.
  *
@@ -208,6 +209,10 @@ fun SettingsScreen(
             icon = Icons.Filled.Description,
             label = "Third-party notices",
             onClick = onOpenNotices,
+        )
+        SupportSection(
+            links = SupportLinks.configured(),
+            startActivity = { startActivitySafely(context, it) },
         )
     }
 }
