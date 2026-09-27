@@ -126,6 +126,32 @@ class SettingsRepository @Inject constructor(
         context.settingsStore.edit { it[LYRICS_ONLINE] = enabled }
     }
 
+    /**
+     * The tag-reading "generation" this install's library was last fully re-tagged under (API 29
+     * legacy-storage fix). A plain Int, not a name — there is no enum to outlive, it only ever
+     * moves forward, and the value itself has no meaning beyond "less than" / "at least" the
+     * current one.
+     *
+     * `LibraryScanWorker` compares this to its own `CURRENT_TAG_SCAN_GENERATION`: when the stored
+     * value is lower, every scanned local song is treated as changed for that one scan — re-
+     * reading tags for rows `ScanDiffer` would otherwise call unchanged — and the worker advances
+     * this to the current generation only after that scan succeeds. This exists because an API 29
+     * library scanned before `android:requestLegacyExternalStorage` was added got MediaStore-only
+     * tags for every row (file-path reads failed with `EACCES`; see `EAlvaTagReader`'s KDoc), and
+     * `ScanDiffer` only re-reads tags for rows that are added or changed — an untouched row would
+     * otherwise keep its MediaStore-only tags forever, even after the fix ships.
+     *
+     * Defaults to 0, which is below every real generation, so an install that predates this
+     * feature — or a fresh one racing the DataStore default before a scan ever writes here — is
+     * always treated as needing the one-time re-tag.
+     */
+    val tagScanGeneration: Flow<Int> =
+        context.settingsStore.data.map { it[TAG_SCAN_GENERATION] ?: 0 }
+
+    suspend fun setTagScanGeneration(generation: Int) {
+        context.settingsStore.edit { it[TAG_SCAN_GENERATION] = generation }
+    }
+
     // ---- Built-in pill (P1.5c Task 2). Keys and defaults per spec §4; defaults copied from
     // Veldt Wisp's SettingsDefaults where an equivalent setting exists there. ----
 
@@ -289,6 +315,7 @@ class SettingsRepository @Inject constructor(
         val FOLDER_SORT_DESC = booleanPreferencesKey("folder_sort_desc")
         val METERED_MAX_BITRATE = intPreferencesKey("metered_max_bitrate")
         val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
+        val TAG_SCAN_GENERATION = intPreferencesKey("tag_scan_generation")
 
         /** Every value [meteredMaxBitRate] can hold. 0 is original quality. */
         val METERED_CAPS: Set<Int> = setOf(0, 320, 192, 128)

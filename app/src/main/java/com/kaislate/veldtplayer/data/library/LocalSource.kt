@@ -108,7 +108,12 @@ class LocalSource @Inject constructor(
             MediaStore.Audio.Media.YEAR,
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.DATE_MODIFIED,
-            MediaStore.Audio.Media.DATA, // file path for the tag reader; nullable on API 29+
+            // File path for the tag reader; nullable on API 29+, and on API 29 the returned path
+            // is unreadable as a File without android:requestLegacyExternalStorage (measured on
+            // an LG G7 running this app's own uid: Environment.isExternalStorageLegacy() false,
+            // every shared-storage File(_DATA) read EACCES; see EAlvaTagReader's KDoc, which is
+            // where the app degrades to the MediaStore-derived values surfaced here).
+            MediaStore.Audio.Media.DATA,
             // The non-deprecated location triple (API 29+). Together they compose the
             // rescan-stable playlist key, which DATA cannot be relied on to provide. VOLUME_NAME
             // is required, not optional: RELATIVE_PATH is volume-relative and this query spans

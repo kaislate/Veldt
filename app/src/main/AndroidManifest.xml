@@ -31,10 +31,19 @@
         <package android:name="com.kaislate.veldt" />
     </queries>
 
+    <!-- Measured on an LG G7 (API 29, Veldt's own uid): Environment.isExternalStorageLegacy()
+         was false and EVERY file-path read of shared storage (the .mp3s, a sidecar .lrc) hit
+         EACCES, while MediaStore content-uri reads succeeded. Adding this flag flipped
+         isExternalStorageLegacy() to true and made all three files readable by path on the same
+         device (an update install sufficed) — eAlvaTag's `File(_DATA)` tag reads, embedded-art-
+         by-path, embedded lyrics and sidecar .lrc all depend on it. This flag has effect ONLY on
+         API 29: with targetSdk >= 30 it is ignored on API 30+, where scoped storage applies
+         regardless. -->
     <application
         android:name=".VeldtApp"
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
