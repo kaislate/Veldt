@@ -23,6 +23,28 @@ Like Veldt Wisp, Veldt is **pure Kotlin/Compose with no native code we author**
 (Media3 decodes via the platform `MediaCodec`), so it runs on 32-bit and modern
 arm64 devices alike.
 
+## Screenshots
+
+| Songs | Albums | Artist |
+|:---:|:---:|:---:|
+| <img src="screenshots/songs.png" width="240" alt="Songs tab"> | <img src="screenshots/albums.png" width="240" alt="Albums tab"> | <img src="screenshots/artist.png" width="240" alt="An artist page"> |
+
+| Now playing | Now playing, dark | Synced lyrics |
+|:---:|:---:|:---:|
+| <img src="screenshots/now-playing-light.png" width="240" alt="Now playing in the light theme"> | <img src="screenshots/now-playing-dark.png" width="240" alt="Now playing in the dark theme, coloured by the artwork"> | <img src="screenshots/lyrics.png" width="240" alt="Synced lyrics from an .lrc file"> |
+
+| Search | Folders | Settings |
+|:---:|:---:|:---:|
+| <img src="screenshots/search.png" width="240" alt="Search"> | <img src="screenshots/folders.png" width="240" alt="Folders tab"> | <img src="screenshots/settings.png" width="240" alt="Settings"> |
+
+**The built-in pill**, over the home screen, and expanded into its card:
+
+<img src="screenshots/pill.png" width="220" alt="The floating pill"> &nbsp; <img src="screenshots/pill-card.png" width="420" alt="The pill's expanded card">
+
+<sub>Library screenshots show a Navidrome server's catalogue. The search, folders, lyrics and pill
+shots use a small demo library made for these screenshots: fictional artists, generated artwork
+and original lyrics.</sub>
+
 ## Status — what works today
 
 - **Playback.** A Media3 `PlaybackService` with audio focus, a media notification,
