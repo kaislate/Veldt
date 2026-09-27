@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- The widget's card. White so setColorFilter paints it in the cover's solved ground tone; the
+     layouts' android:tint gives it @color/widget_default_ground until the first update. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#FFFFFFFF" />
+    <corners android:radius="@dimen/widget_corner_radius" />
+</shape>

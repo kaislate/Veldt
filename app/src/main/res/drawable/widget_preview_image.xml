@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- The widget picker's preview on launchers that do not render previewLayout (before API 31):
+     the wide layout drawn from vectors alone, so no bitmap has to be kept in step with it. The
+     card, the app icon in the art slot, and previous/play/next, in the neutral tones. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- The card's size is the drawable's intrinsic size: a 4x1 in portrait. -->
+    <item android:width="276dp" android:height="56dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/widget_default_ground" />
+            <corners android:radius="@dimen/widget_corner_radius" />
+        </shape>
+    </item>
+
+    <item android:drawable="@drawable/widget_empty_art"
+        android:width="48dp" android:height="48dp"
+        android:gravity="start|center_vertical" android:left="8dp" />
+
+    <!-- Title and artist, as two bars: a picture of text rather than words that would have to
+         be localised inside a drawable. -->
+    <item android:width="96dp" android:height="8dp" android:gravity="start|top"
+        android:left="68dp" android:top="17dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/widget_default_text" />
+            <corners android:radius="4dp" />
+        </shape>
+    </item>
+    <item android:width="64dp" android:height="6dp" android:gravity="start|top"
+        android:left="68dp" android:top="32dp">
+        <shape android:shape="rectangle">
+            <solid android:color="@color/widget_default_text" />
+            <corners android:radius="3dp" />
+        </shape>
+    </item>
+
+    <item android:width="24dp" android:height="24dp" android:gravity="end|center_vertical" android:right="88dp">
+        <vector android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+            <path android:fillColor="@color/widget_default_text" android:pathData="M6,6h2v12H6zM9.5,12l8.5,6V6z" />
+        </vector>
+    </item>
+    <item android:width="32dp" android:height="32dp" android:gravity="end|center_vertical" android:right="48dp">
+        <vector android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+            <path android:fillColor="@color/widget_default_text" android:pathData="M8,5v14l11,-7z" />
+        </vector>
+    </item>
+    <item android:width="24dp" android:height="24dp" android:gravity="end|center_vertical" android:right="16dp">
+        <vector android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+            <path android:fillColor="@color/widget_default_text" android:pathData="M6,18l8.5,-6L6,6v12zM16,6v12h2V6h-2z" />
+        </vector>
+    </item>
+</layer-list>

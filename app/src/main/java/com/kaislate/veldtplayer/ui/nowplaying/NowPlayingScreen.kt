@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.ui.nowplaying
 
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityManager
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.OpenInFull
@@ -52,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -71,6 +74,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.playback.NowPlayingState
 import com.kaislate.veldtplayer.playback.RepeatMode
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerState
 import com.kaislate.veldtplayer.ui.components.ArtBackdrop
 import com.kaislate.veldtplayer.ui.components.ArtImage
 import com.kaislate.veldtplayer.ui.components.scrimAtText
@@ -427,6 +431,19 @@ fun NowPlayingScreen(
     var draggedY by remember { mutableFloatStateOf(0f) }
 
     var showQueue by remember { mutableStateOf(false) }
+    var showSleep by remember { mutableStateOf(false) }
+    // The service's sleep timer (spec §4). A timed one counts down on the elapsed-realtime clock,
+    // re-read once a second while it runs and not at all otherwise; "end of this track" counts
+    // down with the position this screen already polls.
+    val sleep by vm.sleepTimer.collectAsStateWithLifecycle()
+    val sleepNow by produceState(SystemClock.elapsedRealtime(), sleep) {
+        while (sleep is SleepTimerState.Timed) {
+            value = SystemClock.elapsedRealtime()
+            delay(1_000)
+        }
+    }
+    val sleepRemaining = sleepRemainingMs(sleep, sleepNow, position, state.durationMs)
+        ?.let(::formatSleepRemaining)
     // Lyrics in place of the artwork (spec §7). Saveable, so the pane is still up when the
     // user comes back from the full-screen lyrics route or from Settings — this entry stays on
     // the back stack under both. A collapse POPS this entry, so reopening now-playing always
@@ -442,6 +459,7 @@ fun NowPlayingScreen(
         if (!state.isActive) {
             showQueue = false
             showLyrics = false
+            showSleep = false
         }
     }
     // Resolution runs only while the pane is actually on screen (spec §6). A DisposableEffect
@@ -458,8 +476,9 @@ fun NowPlayingScreen(
         touchExploration = rememberTouchExploration(),
         isActive = state.isActive,
         isPlaying = state.isPlaying,
-        // Review Focus 2: lyrics mode disarms the fade — see the sheetOpen clause.
-        sheetOpen = showQueue || showLyrics,
+        // Review Focus 2: lyrics mode disarms the fade — see the sheetOpen clause. The sleep
+        // sheet is a sheet like the queue's, for the same reason.
+        sheetOpen = showQueue || showLyrics || showSleep,
     )
     // Keyed on the tick AND on eligibility, so both a touch and anything that disarms ambient
     // mode (a pause, the sheet opening, TalkBack coming on) bring the chrome straight back.
@@ -790,7 +809,31 @@ fun NowPlayingScreen(
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(end = 8.dp)
                     .ambientChrome(chromeAlpha, chromeUsable),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                // The sleep timer (spec §4) joins the corner for the reason the lyrics toggle did:
+                // the transport row is a symmetric object. While a timer runs, the time left sits
+                // beside the moon, in the solved text tone like the title.
+                if (sleepRemaining != null) {
+                    Text(
+                        text = sleepRemaining,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = text.primary,
+                        // Announced by the button instead, as part of what it opens.
+                        modifier = Modifier.clearAndSetSemantics { },
+                    )
+                }
+                IconButton(
+                    onClick = { showSleep = true },
+                    enabled = chromeUsable,
+                ) {
+                    Icon(
+                        Icons.Filled.Bedtime,
+                        contentDescription = if (sleepRemaining == null) "Sleep timer"
+                        else "Sleep timer, $sleepRemaining left",
+                        tint = if (sleep != SleepTimerState.Off) marks.accent else text.primary,
+                    )
+                }
                 IconButton(
                     onClick = { showLyrics = !showLyrics },
                     enabled = chromeUsable,
@@ -842,6 +885,20 @@ fun NowPlayingScreen(
                     showQueue = false
                 },
                 onDismiss = { showQueue = false },
+            )
+        }
+
+        // Guarded on isActive for the reason the queue sheet's host is.
+        if (showSleep && state.isActive) {
+            SleepTimerSheet(
+                state = sleep,
+                remaining = sleepRemaining,
+                palette = palette,
+                onSetMinutes = vm::setSleepTimer,
+                onSetEndOfTrack = vm::setSleepTimerEndOfTrack,
+                onExtend = vm::extendSleepTimer,
+                onCancel = vm::cancelSleepTimer,
+                onDismiss = { showSleep = false },
             )
         }
     }

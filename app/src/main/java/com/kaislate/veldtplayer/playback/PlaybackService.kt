@@ -6,9 +6,11 @@ package com.kaislate.veldtplayer.playback
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -22,8 +24,24 @@ import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CacheBitmapLoader
 import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
 import com.kaislate.veldtplayer.MainActivity
+import com.kaislate.veldtplayer.R
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainResolver
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
+import com.kaislate.veldtplayer.playback.audio.GainStage
+import com.kaislate.veldtplayer.playback.audio.VeldtRenderersFactory
+import com.kaislate.veldtplayer.playback.replaygain.ReplayGainCoordinator
+import com.kaislate.veldtplayer.playback.replaygain.ReplayGainSettings
+import kotlinx.coroutines.flow.combine
+import com.kaislate.veldtplayer.playback.sleep.SleepTimer
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerCommands
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerRequest
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerState
+import com.kaislate.veldtplayer.playback.sleep.SleepTimerStatus
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
@@ -37,19 +55,55 @@ import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import com.kaislate.veldtplayer.playback.scrobble.ListenClock
 import com.kaislate.veldtplayer.playback.scrobble.Scheduler
 import com.kaislate.veldtplayer.playback.scrobble.Scrobbler
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.SessionError
+import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
+import com.google.common.util.concurrent.SettableFuture
+import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.playlist.PlaylistRepository
+import com.kaislate.veldtplayer.playback.browse.BrowseSessionBridge
+import com.kaislate.veldtplayer.playback.browse.BrowseTree
+import com.kaislate.veldtplayer.playback.browse.LibraryBrowseCatalog
+import com.kaislate.veldtplayer.playback.queue.QueueRestore
+import com.kaislate.veldtplayer.playback.queue.QueueResumption
+import com.kaislate.veldtplayer.playback.queue.QueueSaveScheduler
+import com.kaislate.veldtplayer.playback.queue.QueueSaveTriggers
+import com.kaislate.veldtplayer.playback.queue.QueueStore
+import com.kaislate.veldtplayer.playback.queue.SavedQueue
+import com.kaislate.veldtplayer.playback.queue.applyTo
+import com.kaislate.veldtplayer.playback.queue.snapshotOf
+import com.kaislate.veldtplayer.playback.queue.toResumption
+import androidx.core.content.ContextCompat
 import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlin.math.abs
 
 /**
  * Media3 MediaLibraryService: hosts the ExoPlayer and publishes a
  * MediaLibrarySession. Media3 auto-manages the media notification and the
- * mediaPlayback foreground service. The browsable library tree is empty in
- * P1.1 (default callback) — it is filled in P1.2.
+ * mediaPlayback foreground service.
+ *
+ * Since 0.9.2 it also keeps the queue across process death (spec §3: saved on disk, restored
+ * paused in [onCreate], offered to the system for resumption) and serves the Android Auto /
+ * Assistant browse tree (spec §6) — [LibraryCallback] delegates the latter to
+ * [BrowseSessionBridge], over the pure [BrowseTree] — and runs the sleep timer (spec §4) and
+ * ReplayGain (spec §5), whose fade and per-item gain both go through [GainStage], the one owner of
+ * the final output gain.
  */
 @AndroidEntryPoint
 class PlaybackService : MediaLibraryService() {
@@ -92,6 +146,22 @@ class PlaybackService : MediaLibraryService() {
      */
     @Inject lateinit var pillController: PillController
 
+    /**
+     * What a restored queue is checked against (spec §3): a saved track whose row is gone is
+     * dropped. [Lazy] for the reason [remoteArt] is — `MusicRepository` reaches the Room database
+     * and the settings DataStore, and nothing needs either until the restore coroutine runs.
+     */
+    @Inject lateinit var library: Lazy<MusicRepository>
+
+    /** The browse tree's playlists (spec §6). [Lazy] for the same reason as [library]. */
+    @Inject lateinit var playlists: Lazy<PlaylistRepository>
+
+    /** ReplayGain values at play time (spec §5). [Lazy]: nothing resolves until something plays. */
+    @Inject lateinit var replayGainResolver: Lazy<ReplayGainResolver>
+
+    /** The ReplayGain mode and pre-amp (spec §5). [Lazy] for the reason [library] is. */
+    @Inject lateinit var settings: Lazy<SettingsRepository>
+
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
@@ -100,12 +170,57 @@ class PlaybackService : MediaLibraryService() {
     private var scrobblerListener: Player.Listener? = null
     private var scrobblerScope: CoroutineScope? = null
 
+    // ---- queue persistence (spec §3) ----
+    private var queueStore: QueueStore? = null
+    private var queueSaver: QueueSaveScheduler? = null
+    private var queueTriggers: Player.Listener? = null
+    /** One thread, so saves land in the order they were taken and the last one wins. */
+    private var queueWriter: ExecutorService? = null
+    private var queueScope: CoroutineScope? = null
+
+    // ---- browse tree (spec §6) ----
+    /** Background scope for browse requests and the catalog's warm library; see [BrowseSessionBridge]. */
+    private var browseScope: CoroutineScope? = null
+    private var browse: BrowseSessionBridge? = null
+
+    // ---- output gain + sleep timer (spec §4) ----
+    /** The audio sink's gain processor: the only thing that changes the output level. */
+    private var gainStage: GainStage? = null
+    private var sleepTimer: SleepTimer? = null
+    private var sleepListener: Player.Listener? = null
+    private var replayGain: ReplayGainCoordinator? = null
+    private var replayGainScope: CoroutineScope? = null
+
+    /** Last state sent as session extras, so a per-minute label change does not resend them. */
+    private var publishedSleepState: SleepTimerState = SleepTimerState.Off
+
+    /**
+     * The restore's outcome: the queue put on the player, or null when there was nothing to put.
+     * Completes exactly once — from the restore coroutine, or from [onDestroy] if the service dies
+     * first — because [LibraryCallback.onPlaybackResumption] may be waiting on it: a Bluetooth
+     * "play" that cold-starts the service arrives while the restore is still reading the database.
+     */
+    private val restored: SettableFuture<SavedQueue?> = SettableFuture.create()
+
+    /**
+     * The newest queue this service knows: the restored one, then every save's snapshot. Written
+     * on the main thread only; @Volatile because the browse tree's Recent node reads it from a
+     * background thread. What resumption falls back to when the player is empty, and null — no
+     * file, an emptied queue — is what makes it opt out (spec §3).
+     */
+    @Volatile private var latestQueue: SavedQueue? = null
+
     @OptIn(UnstableApi::class)
     override fun onCreate() {
         // Hilt injects in the generated base class's onCreate, so `uriResolver` is only safe to
         // touch below this line.
         super.onCreate()
+        val stage = GainStage()
+        gainStage = stage
         val exo = ExoPlayer.Builder(this)
+            // DefaultRenderersFactory with [stage] in the audio sink's processor chain, and
+            // nothing else changed — see VeldtRenderersFactory.
+            .setRenderersFactory(VeldtRenderersFactory(this, stage))
             // The builder's own default is `DefaultMediaSourceFactory(context,
             // DefaultExtractorsFactory())`, whose whole use of the context is
             // `DefaultDataSource.Factory(context)` (disassembly, N0). PlayerDataSources keeps that
@@ -175,7 +290,9 @@ class PlaybackService : MediaLibraryService() {
                 }
             },
             queue = scrobbleQueue,
-            flush = scrobbleFlusher::flush,
+            // Scrobbler calls this only after a send the server ACCEPTED: authenticated success,
+            // so it also lifts a stale auth-block before flushing (finding 21).
+            flush = scrobbleFlusher::afterAuthenticatedSuccess,
             enqueueFlush = scrobbleFlushScheduler::enqueue,
             scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
         )
@@ -185,16 +302,221 @@ class PlaybackService : MediaLibraryService() {
             exo.addListener(it)
         }
 
+        startQueueRestore(exo)
+        startSleepTimer(exo, stage)
+        startReplayGain(exo, stage)
+
+        // Nothing here touches the library until a controller browses: the catalog's flow is
+        // cold, and the repositories are Lazy until then.
+        val browseWork = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        browseScope = browseWork
+        val repo = library
+        val lists = playlists
+        browse = BrowseSessionBridge(
+            context = this,
+            tree = BrowseTree(
+                LibraryBrowseCatalog(
+                    repo = { repo.get() },
+                    playlistRepo = { lists.get() },
+                    scope = browseWork,
+                    recentQueue = { latestQueue },
+                ),
+            ),
+            playableUri = { song -> repo.get().playableUri(song) },
+            scope = browseWork,
+        )
+
         // Last: the bus adapter above is already publishing, so the pill's first read is real.
         pillController.start()
+    }
+
+    /**
+     * Spec §3: put the saved queue back on the player, PAUSED and NOT prepared, then start saving.
+     *
+     * Asynchronous because checking the saved tracks still exist is a database read, and
+     * `onCreate` is on the main thread. Until it finishes the player is empty, which is why:
+     * - saving is not armed until it finishes — a save of the still-empty player would delete the
+     *   very file being restored;
+     * - the restored queue is only applied if the player is STILL empty. A controller that got in
+     *   first (the app's own `playFrom` during the first frames, or Media3 applying
+     *   [LibraryCallback.onPlaybackResumption]'s result) has said what should play, and a restore
+     *   landing on top of it would replace the user's choice with yesterday's.
+     */
+    private fun startQueueRestore(exo: ExoPlayer) {
+        val store = QueueStore(File(filesDir, QUEUE_DIR))
+        queueStore = store
+        queueWriter = Executors.newSingleThreadExecutor()
+        val saver = QueueSaveScheduler(
+            scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
+            save = { persistQueue(waitForWrite = false) },
+        )
+        queueSaver = saver
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        queueScope = scope
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) { loadRestorableQueue(store) }
+            val applied = saved != null && exo.mediaItemCount == 0
+            if (applied) saved!!.applyTo(exo)
+            latestQueue = saved
+            restored.set(saved)
+            QueueSaveTriggers(saver).also {
+                queueTriggers = it
+                exo.addListener(it)
+            }
+            // Whatever got onto the player while the restore ran produced its events before the
+            // triggers were listening; catch up on them once.
+            if (!applied && exo.mediaItemCount > 0) saver.requestSave()
+            saver.setPlaying(exo.isPlaying)
+        }
+    }
+
+    /**
+     * Spec §4: the timer drives the player's pause and [stage]'s fade. Its state goes out to every
+     * controller as session extras (the app's now-playing screen reads them through
+     * `PlaybackConnection`), and to the media notification as a button that cancels it.
+     */
+    private fun startSleepTimer(exo: ExoPlayer, stage: GainStage) {
+        val timer = SleepTimer(
+            now = SystemClock::elapsedRealtime,
+            scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
+            playback = object : SleepTimer.Playback {
+                override val positionMs: Long get() = exo.currentPosition
+                override val durationMs: Long get() = exo.duration.takeIf { it != C.TIME_UNSET } ?: 0L
+                override val isPlaying: Boolean get() = exo.isPlaying
+                override fun pause() = exo.pause()
+                override fun setPauseAtEndOfItem(enabled: Boolean) {
+                    exo.pauseAtEndOfMediaItems = enabled
+                }
+            },
+            fade = { volume ->
+                stage.setFade(volume)
+                traceFade(volume)
+            },
+            onUpdate = ::publishSleepTimer,
+        )
+        sleepTimer = timer
+        SleepTimerPlayerListener(timer).also {
+            sleepListener = it
+            exo.addListener(it)
+        }
+    }
+
+    /** The fade last written to the log; see [traceFade]. */
+    private var tracedFade = 1f
+
+    /**
+     * The fade's volume trace, for a device check (`adb logcat -s VeldtGain`): one line per 5%
+     * step and one for each end, about twenty lines per fade — the ticks themselves come ten a
+     * second, too many to read.
+     */
+    private fun traceFade(volume: Float) {
+        val ends = (volume == 0f || volume == 1f) && volume != tracedFade
+        if (!ends && abs(volume - tracedFade) < FADE_TRACE_STEP) return
+        tracedFade = volume
+        Log.i(GainStage.LOG_TAG, "fade=${"%.3f".format(volume)} at ${SystemClock.elapsedRealtime()}ms")
+    }
+
+    /**
+     * Spec §5: ReplayGain for the playing item and the next one, handed to [stage] — the same
+     * owner of the final gain the sleep timer's fade goes through, so the two compose as one
+     * product rather than fighting over a volume.
+     */
+    private fun startReplayGain(exo: ExoPlayer, stage: GainStage) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        replayGainScope = scope
+        val repo = library
+        val resolver = replayGainResolver
+        val prefs = settings.get()
+        replayGain = ReplayGainCoordinator(
+            player = exo,
+            scope = scope,
+            lookupSongs = { refs -> repo.get().findByKeys(refs) },
+            valuesFor = { song -> resolver.get().valuesFor(song) },
+            settings = combine(prefs.replayGainMode, prefs.replayGainPreampDb, ::ReplayGainSettings),
+            stage = stage,
+        ).also { it.start() }
+    }
+
+    private fun publishSleepTimer(status: SleepTimerStatus) {
+        val s = session ?: return
+        if (status.state != publishedSleepState) {
+            publishedSleepState = status.state
+            s.setSessionExtras(SleepTimerCommands.toExtras(status.state))
+        }
+        val label = SleepTimerCommands.notificationLabel(status)
+        s.setMediaButtonPreferences(
+            if (label == null) {
+                ImmutableList.of()
+            } else {
+                // Media3's icon set has no moon, hence the custom icon. ICON_UNDEFINED's default
+                // slot is the overflow, which leaves previous/play/next exactly where they were.
+                ImmutableList.of(
+                    CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+                        .setCustomIconResId(R.drawable.ic_sleep_timer)
+                        .setDisplayName(label)
+                        .setSessionCommand(SleepTimerCommands.CANCEL)
+                        .build(),
+                )
+            },
+        )
+    }
+
+    /** The saved queue, with tracks that no longer resolve dropped — see [QueueRestore]. */
+    private suspend fun loadRestorableQueue(store: QueueStore): SavedQueue? {
+        val saved = store.read() ?: return null
+        val repo = library.get()
+        // A database that cannot be read is NOT "every track is gone": null restores as saved.
+        val rows = runCatching { repo.findByKeys(QueueRestore.refsOf(saved)) }.getOrNull()
+        return QueueRestore.restorable(saved, rows, repo::playableUri)
+    }
+
+    /**
+     * Snapshots the player (main thread — the player's thread) and writes it on [queueWriter].
+     * [waitForWrite] blocks, bounded, until that write is done: for [onDestroy], where the process
+     * may be gone the moment this returns. Waiting on the same single-thread executor, rather than
+     * writing inline, is what keeps an older save still queued there from landing AFTER this one.
+     *
+     * A no-op until the restore has finished — see [startQueueRestore].
+     */
+    private fun persistQueue(waitForWrite: Boolean) {
+        if (!restored.isDone) return
+        val exo = player ?: return
+        val store = queueStore ?: return
+        val writer = queueWriter ?: return
+        val snapshot = snapshotOf(exo)
+        latestQueue = snapshot
+        val write = runCatching { writer.submit { store.write(snapshot) } }.getOrNull() ?: return
+        if (waitForWrite) runCatching { write.get(FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
         session
 
+    /** Spec §3: swiping the app away is a save trigger — the process may not live to the next. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        persistQueue(waitForWrite = true)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         // FIRST (plan Review Focus 5): removes the overlay window. See [pillController].
         pillController.release()
+        // The final save, while the player still holds the queue; then nothing more is scheduled.
+        persistQueue(waitForWrite = true)
+        queueSaver?.release()
+        queueTriggers?.let { player?.removeListener(it) }
+        queueScope?.cancel()
+        // Pending browse futures complete exceptionally (see BrowseSessionBridge.future).
+        browseScope?.cancel()
+        queueWriter?.shutdown()
+        // Anything still waiting on the restore gets "nothing" rather than a future that never
+        // completes (a no-op if the restore already finished).
+        restored.set(null)
+        // The timer is not persisted (spec §4): it simply stops with the service.
+        sleepListener?.let { player?.removeListener(it) }
+        sleepTimer?.release()
+        replayGain?.release()
+        replayGainScope?.cancel()
         busAdapter?.detach()
         // Detach first, then clear: the adapter can push during teardown, and a push landing
         // after the reset would refill the bus with the state this is meant to drop.
@@ -223,6 +545,18 @@ class PlaybackService : MediaLibraryService() {
         scrobbler = null
         scrobblerListener = null
         scrobblerScope = null
+        queueStore = null
+        queueSaver = null
+        queueTriggers = null
+        queueWriter = null
+        queueScope = null
+        browseScope = null
+        browse = null
+        sleepTimer = null
+        sleepListener = null
+        replayGain = null
+        replayGainScope = null
+        gainStage = null
         super.onDestroy()
     }
 
@@ -251,9 +585,170 @@ class PlaybackService : MediaLibraryService() {
         )
     }
 
-    /** Minimal callback; browse tree arrives in P1.2. Default player-command
-     *  handling (play/pause/seek/next/prev) is inherited. */
-    private inner class LibraryCallback : MediaLibrarySession.Callback
+    /** Default player-command handling (play/pause/seek/next/prev) is inherited. */
+    private inner class LibraryCallback : MediaLibrarySession.Callback {
+
+        /**
+         * The defaults, plus the sleep timer's commands (spec §4). Cancel is granted to every
+         * controller because the notification's button can reach the session through System UI's
+         * controller as well as Media3's own notification controller, and a cancel can only ever
+         * give the user their music back. Setting or extending a timer is this app's business, so
+         * only controllers in this package (the app's `MediaController` and Media3's notification
+         * controller) may.
+         */
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val base = super.onConnect(session, controller)
+            if (!base.isAccepted) return base
+            val commands = base.availableSessionCommands.buildUpon()
+                .add(SleepTimerCommands.CANCEL)
+                .apply {
+                    if (controller.packageName == packageName) {
+                        add(SleepTimerCommands.SET)
+                        add(SleepTimerCommands.EXTEND)
+                    }
+                }
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(commands)
+                .setAvailablePlayerCommands(base.availablePlayerCommands)
+                .build()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: Bundle,
+        ): ListenableFuture<SessionResult> {
+            val timer = sleepTimer
+            val request = SleepTimerCommands.parse(customCommand.customAction, args)
+            if (timer == null || request == null) {
+                return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+            }
+            when (request) {
+                is SleepTimerRequest.SetMinutes -> timer.setMinutes(request.minutes)
+                SleepTimerRequest.SetEndOfTrack -> timer.setEndOfTrack()
+                SleepTimerRequest.Extend -> timer.extend()
+                SleepTimerRequest.Cancel -> timer.cancel()
+            }
+            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+        }
+
+        /**
+         * Spec §3's system resumption: what Media3 1.8.0 asks for when a "play" reaches a player
+         * with no current item — a Bluetooth or headset button, the resume card, a car starting
+         * cold — and, for System UI's resume card, when it asks the session for its "recent" item.
+         *
+         * Media3 only offers resumption at all when the app declares
+         * `androidx.media3.session.MediaButtonReceiver` for `MEDIA_BUTTON` (1.8.0's
+         * `MediaSessionLegacyStub.canResumePlaybackOnStart` is exactly "a receiver was found");
+         * see the manifest.
+         *
+         * Which queue answers, and the opt-out when there is none, is [QueueResumption]'s.
+         */
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val main = ContextCompat.getMainExecutor(this@PlaybackService)
+            val queue = QueueResumption(
+                restored = restored,
+                live = { player?.let(::snapshotOf) },
+                latest = { latestQueue },
+                executor = main,
+            ).resume()
+            return Futures.transform(queue, { it.toResumption() }, main)
+        }
+
+        // ---- spec §6: the browse tree, delegated whole to BrowseSessionBridge ----
+
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> =
+            browse?.libraryRoot(browser, params) ?: gone()
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
+            browse?.children(browser, parentId, page, pageSize, params) ?: gone()
+
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> =
+            browse?.item(browser, mediaId) ?: gone()
+
+        override fun onSearch(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<Void>> =
+            browse?.search(session, browser, query, params) ?: gone()
+
+        override fun onGetSearchResult(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
+            browse?.searchResult(browser, query, page, pageSize, params) ?: gone()
+
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+        ): ListenableFuture<MutableList<MediaItem>> {
+            val bridge = browse ?: return Futures.immediateFuture(mediaItems)
+            return Futures.transform(
+                bridge.addMediaItems(mediaItems),
+                { it.toMutableList() },
+                MoreExecutors.directExecutor(),
+            )
+        }
+
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val bridge = browse ?: return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs),
+            )
+            return bridge.setMediaItems(mediaItems, startIndex, startPositionMs)
+        }
+
+        /** A browse request reaching a service already torn down. */
+        private fun <T : Any> gone(): ListenableFuture<LibraryResult<T>> =
+            Futures.immediateFuture(LibraryResult.ofError<T>(SessionError.ERROR_UNKNOWN))
+    }
+
+    private companion object {
+        /** `filesDir/playback/queue.json` (spec §3). */
+        const val QUEUE_DIR = "playback"
+
+        /** How long [onDestroy]/[onTaskRemoved] wait for the final queue write. A write of the
+         *  capped queue is a few hundred KB at most; this only bounds a stuck disk. */
+        const val FLUSH_TIMEOUT_MS = 2_000L
+
+        /** See [traceFade]. */
+        const val FADE_TRACE_STEP = 0.05f
+    }
 }
 
 /**
@@ -330,6 +825,25 @@ private class ScrobblerPlayerListener(
         val fromPlayer = player.duration
         if (fromPlayer != C.TIME_UNSET) return fromPlayer
         return mediaItem?.mediaMetadata?.durationMs ?: C.TIME_UNSET
+    }
+}
+
+/**
+ * Tells [SleepTimer] about the two player events "end of this track" waits for: the player
+ * pausing ITSELF at an item's end (the `pauseAtEndOfMediaItems` the timer set), and the queue
+ * running out. A user's own pause has a different reason and is deliberately not forwarded: the
+ * timer keeps its place, as a bedside clock radio's would.
+ */
+private class SleepTimerPlayerListener(private val timer: SleepTimer) : Player.Listener {
+
+    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (!playWhenReady && reason == Player.PLAY_WHEN_READY_CHANGE_REASON_END_OF_MEDIA_ITEM) {
+            timer.onPausedAtEndOfItem()
+        }
+    }
+
+    override fun onPlaybackStateChanged(playbackState: Int) {
+        if (playbackState == Player.STATE_ENDED) timer.onPlaybackEnded()
     }
 }
 

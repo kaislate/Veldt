@@ -147,7 +147,9 @@ fun AccountsScreen(
             TestConnectionRow(
                 state = test,
                 enabled = AccountForm.canSubmit(url, username, password),
-                onTest = { vm.testConnection(url, username, password) },
+                // The edited account's id, so a test that proves its SAVED credentials work can
+                // lift its scrobble auth-block (finding 21).
+                onTest = { vm.testConnection(url, username, password, existing?.sourceId) },
             )
 
             Spacer(Modifier.height(16.dp))

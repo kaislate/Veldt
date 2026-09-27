@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- The now-playing widget (spec 0.9.2 §7).
+     - Placed as a 4x1: targetCell* on API 31+, minWidth/minHeight (the classic 4-cell 250dp) before.
+     - Resizable down to 2x1 (minResize*, the classic 2-cell 110dp) and up to 4x2 and beyond;
+       WidgetLayout picks the layout for the size.
+     - updatePeriodMillis 0: the app pushes every change from MediaSessionBus
+       (NowPlayingWidgetUpdater); a timer would only wake the process to redraw the same thing. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_now_playing_wide"
+    android:minWidth="250dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="40dp"
+    android:previewImage="@drawable/widget_preview_image"
+    android:previewLayout="@layout/widget_now_playing_preview"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="4"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

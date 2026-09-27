@@ -67,14 +67,58 @@
             </intent-filter>
         </activity>
 
+        <!-- The home-screen now-playing widget (0.9.2 §7). Not exported: only the system's
+             AppWidget service talks to it. Its buttons are media-button intents straight to
+             PlaybackService, so it needs nothing else in this manifest. -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_info" />
+        </receiver>
+
         <service
             android:name=".playback.PlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback">
+            <!-- MediaBrowserService: the legacy browse action. System UI looks for it to offer a
+                 resume card after reboot (spec §3), and Android Auto to list the app (spec §6);
+                 Media3 serves both through the same MediaLibrarySession. -->
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
+
+        <!-- Playback resumption (spec §3). Media3 1.8.0 offers resumption only when exactly one
+             MEDIA_BUTTON receiver exists in the package (MediaSessionLegacyStub
+             .canResumePlaybackOnStart). A headset/Bluetooth "play" with the service dead then
+             starts PlaybackService, and the session asks onPlaybackResumption what to play. -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Browse-item artwork for Android Auto (spec §6). NOT exported: a head unit can open a
+             uri only through the per-uri read grant PlaybackService hands out with each item. -->
+        <provider
+            android:name=".playback.browse.BrowseArtProvider"
+            android:authorities="${applicationId}.browseart"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- Android Auto: this app is a media app (spec §6). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
 
         <!-- Remove WorkManager's default initializer so our custom
              Configuration.Provider (VeldtApp) drives on-demand init. -->

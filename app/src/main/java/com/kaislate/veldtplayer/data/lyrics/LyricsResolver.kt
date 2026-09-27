@@ -13,7 +13,7 @@ import javax.inject.Singleton
  * Chooses which [LyricsProvider]s to ask for a [Song], in which order, and remembers the answer
  * per track for the life of the process (spec §5).
  *
- * **Chain** (first non-null, non-weak result wins): a LOCAL track (`song.sourceId ==
+ * **Chain** (first non-null, non-link-only, non-weak result wins): a LOCAL track (`song.sourceId ==
  * localSourceId`) tries [sidecar] → [embedded] → [lrclib]; anything else tries [server] →
  * [lrclib]. Server-only tracks skip sidecar/embedded outright — those two read [Song.filePath],
  * which is null for them anyway — and a local track never asks [server], which has nothing to
@@ -26,6 +26,12 @@ import javax.inject.Singleton
  * because all 26 of the owner's Navidrome songs with server lyrics are a single watermark line
  * (`www.t.me/pmedia_music`) pulled from a file tag — real lyrics, under first-non-null-wins,
  * would otherwise never be asked of LRCLIB at all.
+ *
+ * **Link-only results (0.9.2 §1, finding 20):** weak was not enough — with nothing better
+ * anywhere, that watermark was still the fallback and still shown. A result that
+ * [LinkOnlyLyrics.isLinkOnly] judges to be nothing but links is now treated exactly as if the
+ * provider had answered null, for every provider: it is never a fallback, and a chain that ends
+ * on it ends with no lyrics (memoised as a miss, like any other).
  *
  * **Memo**: an in-process LRU of the last [MEMO_CAPACITY] `(sourceId, externalId)` pairs, keyed
  * exactly like [LrclibCache] (`sourceId + '\u0000' + externalId`) for the same reason — it is the
@@ -105,7 +111,8 @@ class LyricsResolver(
     }
 
     /**
-     * Walks [providers] in order. A WEAK result (see [isWeak]) is remembered as [weakFallback]
+     * Walks [providers] in order. A link-only result is skipped as if it were null (see the
+     * class KDoc). A WEAK result (see [isWeak]) is remembered as [weakFallback]
      * rather than accepted outright, and the chain keeps going; the first NON-weak result wins
      * immediately, short-circuiting the rest of the chain exactly as before. If every provider
      * that answered at all answered weak (or nothing), the FIRST weak answer is returned — never
@@ -115,7 +122,7 @@ class LyricsResolver(
     private suspend fun chain(song: Song, vararg providers: Pair<LyricsProvider, LyricsSource>): ResolvedLyrics? {
         var weakFallback: ResolvedLyrics? = null
         for ((provider, source) in providers) {
-            val lyrics = provider.lyricsFor(song) ?: continue
+            val lyrics = provider.lyricsFor(song)?.takeUnless(LinkOnlyLyrics::isLinkOnly) ?: continue
             if (lyrics.isWeak()) {
                 if (weakFallback == null) weakFallback = ResolvedLyrics(lyrics, source)
                 continue
@@ -133,7 +140,8 @@ class LyricsResolver(
      * single-line but genuinely TIMED result is still real, structured data no provider would
      * fabricate. Purely structural, per the spec: no URL or content matching, so a real one-line
      * lyric (short chants, some hooks) is misjudged the same way a watermark is judged correctly
-     * — the trade the owner's measurement decided.
+     * — the trade the owner's measurement decided. Link matching is a separate, earlier rule
+     * ([LinkOnlyLyrics]); by the time a result reaches this check it has real text in it.
      */
     private fun Lyrics.isWeak(): Boolean {
         if (this !is Lyrics.Plain) return false

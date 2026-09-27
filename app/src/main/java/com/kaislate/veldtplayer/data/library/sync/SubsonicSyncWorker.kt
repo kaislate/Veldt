@@ -47,9 +47,11 @@ import dagger.assisted.AssistedInject
  *    (a dead socket, a 500, an unclassified rejection) retries up to [MAX_ATTEMPTS], **never**
  *    touching the stored songs — a sync that cannot reach the server must leave the library
  *    exactly as it was, not empty it.
- * 5. (N3) A [CatalogResult.Ok] that writes successfully also calls [ScrobbleFlusher.flush] for
- *    this [sourceId] — the piggyback half of design spec §5's delivery story, so a source's
- *    queued scrobbles do not wait for its own next scrobble to go out before being retried.
+ * 5. (N3) A [CatalogResult.Ok] that writes successfully also calls [ScrobbleFlusher
+ *    .afterAuthenticatedSuccess] for this [sourceId] — the piggyback half of design spec §5's
+ *    delivery story, so a source's queued scrobbles do not wait for its own next scrobble to go
+ *    out before being retried, and (finding 21) a stale auth-block is lifted first, since the
+ *    catalog was just fetched with these very credentials.
  *
  * [now] exists only so `SubsonicSyncWorkerTest` can pin [SyncStatus.lastSuccessMs]; the
  * `@AssistedInject` constructor Hilt uses supplies the real clock, for the same reason
@@ -113,8 +115,9 @@ class SubsonicSyncWorker internal constructor(
                     status.recordSuccess(sourceId, now(), result.songs.size)
                     // N3 design spec §5: a successful sync is "any successful contact with that
                     // server" — piggyback this source's queued scrobbles onto it rather than
-                    // waiting for the next scrobble attempt or the separate retry job.
-                    flusher.flush(sourceId)
+                    // waiting for the next scrobble attempt or the separate retry job. And it was
+                    // AUTHENTICATED contact, so it also lifts an auth-block (finding 21).
+                    flusher.afterAuthenticatedSuccess(sourceId)
                     Result.success()
                 }
             }

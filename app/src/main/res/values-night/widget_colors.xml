@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<!-- The dark counterparts of values/widget_colors.xml. -->
+<resources>
+    <color name="widget_default_ground">#FF1B1B1B</color>
+    <color name="widget_default_text">#FFE2E2E2</color>
+</resources>

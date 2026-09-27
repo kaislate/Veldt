@@ -28,7 +28,7 @@ import com.kaislate.veldtplayer.data.library.model.Song
  *
  * The surrogate is unique, but it is **reassigned by a database wipe** — and a mediaId has to
  * outlive one. It is the handle a restored session hands back to the app (see
- * [PlaybackConnection.publish]'s TODO), so after a destructive migration a surrogate-keyed
+ * `PlaybackConnection.hydrateIfNeeded`), so after a destructive migration a surrogate-keyed
  * mediaId would either name a different track or name nothing. `(sourceId, externalId)` is the
  * identity that survives, because it is what the source itself calls the track.
  *
@@ -38,7 +38,7 @@ import com.kaislate.veldtplayer.data.library.model.Song
  * file has to remember (Global Constraint 10).
  */
 internal fun sessionMediaItem(song: Song, playableUri: String): MediaItem = MediaItem.Builder()
-    .setMediaId("${song.sourceId}:${song.externalId}")
+    .setMediaId(SessionMediaId.of(song))
     .setUri(Uri.parse(playableUri))
     // Through DisplayNames, like every other surface. This metadata is what the
     // notification, the lock screen and Android Auto render, so a raw tag here means
@@ -63,3 +63,24 @@ internal fun sessionMediaItem(song: Song, playableUri: String): MediaItem = Medi
             .build()
     )
     .build()
+
+/**
+ * Both directions of the session mediaId, `sourceId:externalId` — see [sessionMediaItem]'s KDoc
+ * for why it is the source identity and not the surrogate.
+ *
+ * The inverse exists because 0.9.2 is the first release in which a mediaId comes BACK: from the
+ * saved queue on disk, from a browsing car head unit, from a controller that kept only the id. All
+ * of them go through [parse], so the one fact the split relies on — [SourceRegistry] bans `':'`
+ * in a source id, so the FIRST colon is the boundary — is applied in one place.
+ */
+internal object SessionMediaId {
+
+    fun of(song: Song): String = "${song.sourceId}:${song.externalId}"
+
+    /** The [TrackRef] this mediaId names, or null when it has no colon or an empty half. */
+    fun parse(mediaId: String): TrackRef? {
+        val colon = mediaId.indexOf(':')
+        if (colon <= 0 || colon == mediaId.lastIndex) return null
+        return TrackRef(mediaId.substring(0, colon), mediaId.substring(colon + 1))
+    }
+}

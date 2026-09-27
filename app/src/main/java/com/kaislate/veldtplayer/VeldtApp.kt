@@ -11,6 +11,7 @@ import coil.ImageLoaderFactory
 import com.kaislate.veldtplayer.data.art.AlbumArtFetcher
 import com.kaislate.veldtplayer.data.art.AlbumArtKeyer
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
+import com.kaislate.veldtplayer.widget.NowPlayingWidgetUpdater
 import dagger.Lazy
 import dagger.hilt.android.HiltAndroidApp
 import ealvatag.tag.TagOptionSingleton
@@ -45,6 +46,9 @@ class VeldtApp : Application(), Configuration.Provider, ImageLoaderFactory {
         // AudioFileIO.read(...) call. Verify the class path resolves against 0.4.6:
         // ealvatag.tag.TagOptionSingleton.
         TagOptionSingleton.getInstance().isAndroid = true
+        // Every process start, because the playback service that feeds the bus can start in a
+        // process the widget's provider never ran in. A no-op unless a widget is placed.
+        NowPlayingWidgetUpdater.ensureRunning(this)
     }
 
     // Custom WorkManager config so @HiltWorker workers can be constructed.

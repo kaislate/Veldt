@@ -89,7 +89,15 @@ class AccountsViewModel @Inject constructor(
         _save.value = SaveState.Idle
     }
 
-    fun testConnection(url: String, username: String, password: String) {
+    /**
+     * [sourceId] is the account being edited, or null on the "Add server" form. When the server
+     * accepts EXACTLY that account's saved credentials — same address, same username, same
+     * password — the test was a successful authenticated request to that source, so its scrobble
+     * auth-block is lifted and its queue flushed (finding 21). A test of credentials the user has
+     * typed but not saved proves nothing about the saved ones, so it lifts nothing; saving them
+     * does that, in [update].
+     */
+    fun testConnection(url: String, username: String, password: String, sourceId: String? = null) {
         val base = baseUrlOf(url) ?: run {
             _test.value = TestState.Unreachable("That does not look like a server address.")
             return
@@ -97,10 +105,13 @@ class AccountsViewModel @Inject constructor(
         _test.value = TestState.Running
         viewModelScope.launch {
             _test.value = when (val outcome = client.probe(base, username, password)) {
-                is ConnectionOutcome.Reachable -> TestState.Ok(
-                    listOfNotNull(outcome.serverType, outcome.serverVersion).joinToString(" ")
-                        .ifBlank { "Connected" }
-                )
+                is ConnectionOutcome.Reachable -> {
+                    if (sourceId != null && isSaved(sourceId, base, username, password)) unblockAndFlush(sourceId)
+                    TestState.Ok(
+                        listOfNotNull(outcome.serverType, outcome.serverVersion).joinToString(" ")
+                            .ifBlank { "Connected" }
+                    )
+                }
                 is ConnectionOutcome.Rejected ->
                     // Keyed on the classification, not on `code == 40`: absent credentials
                     // come back as 10, and a client that only knows 40 sits silently on it.
@@ -137,22 +148,22 @@ class AccountsViewModel @Inject constructor(
     }
 
     /**
-     * Only a URL change or a new password justifies a re-sync here (owner decision — spec §10:
-     * sync runs on add, on a credential/URL change, and on the Refresh button, never merely
-     * because the screen was saved). The previous url is read with a fresh [AccountRepository
-     * .observe] call, deliberately NOT from [accounts] — that `StateFlow` is
-     * `SharingStarted.WhileSubscribed`, so its cached value can still be the construction-time
-     * default until something actually collects it, and this decision must not depend on whether
-     * anything has.
+     * Only a credentials change — the URL, the username, or a new password — justifies a re-sync
+     * here (owner decision — spec §10: sync runs on add, on a credential/URL change, and on the
+     * Refresh button, never merely because the screen was saved). The previous url and username
+     * are read with a fresh [AccountRepository.observe] call, deliberately NOT from [accounts] —
+     * that `StateFlow` is `SharingStarted.WhileSubscribed`, so its cached value can still be the
+     * construction-time default until something actually collects it, and this decision must not
+     * depend on whether anything has.
      *
-     * A saved NEW password also clears [sourceId]'s scrobble auth-block (N3 design spec §5:
-     * "credentials change for an account ... clears its auth-block"). This is the controller's
-     * ruling on where that belongs: this method already knows whether the password changed and
-     * already re-syncs on exactly that condition, so it is the one place that already observes a
-     * credential change without teaching [AccountRepository] anything about scrobbling. Any
-     * entries already queued for this source get one flush attempt via [flushScheduler] — a bad
-     * password blocked them, so a good one is worth re-arming the retry job for, rather than
-     * waiting for this source's next unrelated successful contact to piggyback on.
+     * The same credentials change also clears [sourceId]'s scrobble auth-block (N3 design spec §5:
+     * "credentials change for an account ... clears its auth-block"). Until finding 21 only a NEW
+     * PASSWORD counted, so restoring a wrong USERNAME left a queued play stranded; any of the three
+     * now counts, because a block is the server rejecting the whole triple. This method is the one
+     * place that already observes a credential change without teaching [AccountRepository]
+     * anything about scrobbling. Any entries already queued for this source get one flush attempt
+     * via [flushScheduler] — rather than waiting for this source's next unrelated successful
+     * contact to piggyback on.
      */
     fun update(sourceId: String, url: String, username: String, password: String) {
         val base = baseUrlOf(url) ?: run {
@@ -161,18 +172,31 @@ class AccountsViewModel @Inject constructor(
         }
         val passwordChanged = password.isNotEmpty()
         viewModelScope.launch {
-            val previousUrl = repo.observe().first().firstOrNull { it.sourceId == sourceId }?.baseUrl
-            val urlChanged = previousUrl != base
+            val previous = repo.observe().first().firstOrNull { it.sourceId == sourceId }
+            val credentialsChanged = passwordChanged ||
+                previous?.baseUrl != base ||
+                previous?.username != username
             val result = repo.updateCredentials(sourceId, base, username, password.ifEmpty { null })
-            _save.value = saveStateOf(result)
-            if (result is AccountWriteResult.Saved && passwordChanged) {
-                scrobbleQueue.setAuthBlocked(sourceId, false)
-                if (scrobbleQueue.forSource(sourceId).isNotEmpty()) flushScheduler.enqueue()
-            }
-            if (result is AccountWriteResult.Saved && (urlChanged || passwordChanged)) {
+            if (result is AccountWriteResult.Saved && credentialsChanged) {
+                unblockAndFlush(sourceId)
                 sync.request(sourceId)
             }
+            // Last: "Saved" is announced once everything the save implies has been done, so
+            // nothing observing it can see the account saved but still blocked.
+            _save.value = saveStateOf(result)
         }
+    }
+
+    /** Lifts [sourceId]'s scrobble auth-block and, if anything is waiting, re-arms the flush job. */
+    private suspend fun unblockAndFlush(sourceId: String) {
+        scrobbleQueue.setAuthBlocked(sourceId, false)
+        if (scrobbleQueue.forSource(sourceId).isNotEmpty()) flushScheduler.enqueue()
+    }
+
+    /** Whether ([base], [username], [password]) is exactly what [sourceId] has saved. */
+    private suspend fun isSaved(sourceId: String, base: String, username: String, password: String): Boolean {
+        val saved = repo.observe().first().firstOrNull { it.sourceId == sourceId } ?: return false
+        return saved.baseUrl == base && saved.username == username && repo.password(sourceId) == password
     }
 
     /**

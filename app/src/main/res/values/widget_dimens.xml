@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copyright (c) 2026 kaislate. SPDX-License-Identifier: GPL-3.0-or-later. -->
+<resources>
+    <!-- API 29-30 launchers draw no widget frame of their own; 16dp is close to the rounding
+         API 31+ launchers use (values-v31 takes the system's own value). -->
+    <dimen name="widget_corner_radius">16dp</dimen>
+</resources>
