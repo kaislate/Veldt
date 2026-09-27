@@ -187,6 +187,27 @@ class SettingsRepositoryTest {
         assertEquals(false, repo.lyricsOnline.first())
     }
 
+    // ---- Tag scan generation (API 29 legacy-storage fix). Plain Int, defaults to 0. ----
+
+    @Test fun `the tag scan generation defaults to 0`() = runTest {
+        assertEquals(0, repo.tagScanGeneration.first())
+    }
+
+    /**
+     * The raw read pins both halves of the on-disk contract, same reasoning as the metered-cap
+     * and lyrics-online tests above: the KEY string `tag_scan_generation` (a rename would make
+     * `LibraryScanWorker` treat every install as generation 0 again, silently forcing a re-tag on
+     * every scan forever) and the Int WIRE FORMAT.
+     */
+    @Test fun `the tag scan generation round-trips as an Int under tag_scan_generation`() = runTest {
+        repo.setTagScanGeneration(2)
+        assertEquals(
+            "the tag scan generation is not on disk as an Int under its own key, or does not read back",
+            listOf<Any?>(2, 2),
+            listOf<Any?>(repo.tagScanGeneration.first(), repo.readRawIntForTest("tag_scan_generation")),
+        )
+    }
+
     // ---- Built-in pill (P1.5c Task 2). Keys and defaults per spec §4. ----
 
     @Test fun `the pill mode defaults to built-in`() = runTest {

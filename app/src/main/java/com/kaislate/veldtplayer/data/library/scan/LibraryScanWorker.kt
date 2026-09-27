@@ -18,9 +18,11 @@ import com.kaislate.veldtplayer.data.library.db.toEntity
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.library.tag.TagReader
 import com.kaislate.veldtplayer.data.library.tag.TrackTags
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.di.LocalLibrary
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.flow.first
 import java.io.IOException
 
 /**
@@ -40,6 +42,15 @@ import java.io.IOException
  * remote source syncs through its own worker (design spec §5.4). That also keeps `ScanDiffer`'s
  * one-source precondition satisfied structurally — there is no set here to loop over and therefore
  * no way to hand the differ a concatenation of two sources' rows.
+ *
+ * **Tag-scan generation (API 29 legacy-storage fix).** [ScanDiffer] only re-reads tags for rows it
+ * calls added or changed — deliberately, that is the whole anti-churn point — but that means a row
+ * scanned while `_DATA` reads were failing (pre-`requestLegacyExternalStorage`, see
+ * [com.kaislate.veldtplayer.data.library.tag.EAlvaTagReader]'s KDoc) would keep its MediaStore-only
+ * tags forever: it is neither added nor changed on the next scan, so it is never revisited. When
+ * [SettingsRepository.tagScanGeneration] is below [CURRENT_TAG_SCAN_GENERATION], this scan treats
+ * EVERY scanned local song as touched — not just the diff's added/changed — so every row gets one
+ * real tag re-read, and on success the stored generation advances so this only happens once.
  */
 @HiltWorker
 class LibraryScanWorker @AssistedInject constructor(
@@ -51,6 +62,7 @@ class LibraryScanWorker @AssistedInject constructor(
     @LocalLibrary private val librarySource: LibrarySource,
     private val tagReader: TagReader,
     private val songDao: SongDao,
+    private val settingsRepository: SettingsRepository,
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result = try {
@@ -65,7 +77,16 @@ class LibraryScanWorker @AssistedInject constructor(
             scanned = scanned.map { IndexEntry(it.externalId, it.dateModifiedSec, it.relativeKey) },
         )
 
-        val touched = (diff.added + diff.changed).toHashSet()
+        // See the class KDoc: a stored generation below current means this install may have rows
+        // whose tags were read while `_DATA` was unreadable, and those rows are neither added nor
+        // changed — so the touched set widens to every scanned row for exactly this one scan.
+        val storedGeneration = settingsRepository.tagScanGeneration.first()
+        val forceFullRetag = storedGeneration < CURRENT_TAG_SCAN_GENERATION
+        val touched = if (forceFullRetag) {
+            scanned.map { it.externalId }.toHashSet()
+        } else {
+            (diff.added + diff.changed).toHashSet()
+        }
         val toUpsert = scanned.filter { it.externalId in touched }.map { song ->
             val fallback = TrackTags(
                 title = song.title,
@@ -99,6 +120,9 @@ class LibraryScanWorker @AssistedInject constructor(
         // Chunked (N2 Task 3): a local library can shed more rows in one scan (a whole album
         // directory deleted) than SQLite's 999-bound-variable limit tolerates in one `IN (...)`.
         if (diff.removed.isNotEmpty()) songDao.deleteAllByExternalIds(librarySource.id, diff.removed)
+        // Only after the scan above actually succeeded, and only forward — advancing this is what
+        // stops the forced full re-tag from repeating on every future scan.
+        if (forceFullRetag) settingsRepository.setTagScanGeneration(CURRENT_TAG_SCAN_GENERATION)
         Result.success()
     } catch (io: IOException) {
         // Transient I/O (DB/storage) — retry, but only a bounded number of times.
@@ -120,6 +144,15 @@ class LibraryScanWorker @AssistedInject constructor(
         const val UNIQUE_NAME = "veldt-library-scan"
         private const val TAG = "LibraryScanWorker"
         private const val MAX_ATTEMPTS = 3
+
+        /**
+         * Bumped whenever a change to tag reading means an existing library needs every row
+         * re-tagged, not just the rows [ScanDiffer] would call added/changed — see the class
+         * KDoc. Currently 2: 1 was the pre-existing (undeclared) baseline, and 2 is this fix —
+         * `android:requestLegacyExternalStorage` making `_DATA` paths readable again on API 29,
+         * so a library scanned before the flag shipped gets a one-time full re-tag.
+         */
+        const val CURRENT_TAG_SCAN_GENERATION = 2
 
         /** Enqueue a unique one-time scan; keeps an in-flight scan rather than piling up. */
         fun enqueue(context: Context) {

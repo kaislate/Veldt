@@ -20,7 +20,10 @@ import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.library.tag.TagReader
 import com.kaislate.veldtplayer.data.library.tag.TrackTags
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -106,10 +109,25 @@ class LibraryScanWorkerTest {
         override fun read(filePath: String?, fallback: TrackTags): TrackTags = fallback
     }
 
+    /**
+     * Records which `filePath`s were actually handed to a [TagReader] — the observable that
+     * proves a row was re-tagged, as distinct from merely being re-upserted (an upsert with an
+     * untouched tag reader would look identical from [RecordingSongDao] alone).
+     */
+    private class RecordingTagReader(private val delegate: TagReader) : TagReader {
+        val readFilePaths = mutableListOf<String?>()
+        override fun read(filePath: String?, fallback: TrackTags): TrackTags {
+            readFilePaths += filePath
+            return delegate.read(filePath, fallback)
+        }
+    }
+
     private lateinit var context: Context
     private lateinit var db: VeldtDatabase
     private lateinit var dao: RecordingSongDao
     private lateinit var source: FakeSource
+    private lateinit var tagReader: RecordingTagReader
+    private lateinit var settings: SettingsRepository
 
     @Before fun setUp() {
         context = ApplicationProvider.getApplicationContext()
@@ -117,6 +135,16 @@ class LibraryScanWorkerTest {
             .allowMainThreadQueries().build()
         dao = RecordingSongDao(db.songDao())
         source = FakeSource(id = THIS_SOURCE)
+        tagReader = RecordingTagReader(PassThroughTagReader)
+        settings = SettingsRepository(context)
+        // One DataStore is shared by every test method in this JVM (SettingsRepositoryTest makes
+        // the same observation) -- start empty, then pin the generation at CURRENT so every test
+        // that is not itself about the generation feature keeps its pre-existing behaviour: a
+        // scan under the default (0) would otherwise force a full re-tag in every test here.
+        runBlocking {
+            settings.clearForTest()
+            settings.setTagScanGeneration(LibraryScanWorker.CURRENT_TAG_SCAN_GENERATION)
+        }
     }
 
     @After fun tearDown() = db.close()
@@ -173,7 +201,7 @@ class LibraryScanWorkerTest {
                     workerClassName: String,
                     workerParameters: WorkerParameters,
                 ): ListenableWorker =
-                    LibraryScanWorker(appContext, workerParameters, source, PassThroughTagReader, dao)
+                    LibraryScanWorker(appContext, workerParameters, source, tagReader, dao, settings)
             })
             .build()
             .doWork()
@@ -297,5 +325,82 @@ class LibraryScanWorkerTest {
         assertEquals(listOf("ms-9001"), dao.upsertedExternalIds) // it really was re-upserted
         val row = db.songDao().getAllSongs().single()
         assertEquals(41L to 999L, row.id to row.dateModifiedSec)
+    }
+
+    // ---- Tag scan generation (API 29 legacy-storage fix). `setUp` pins the generation at
+    // CURRENT so every test above keeps proving the pre-existing (diff-based) behaviour; these
+    // pin the generation-below-current path against that same baseline. ----
+
+    /**
+     * **The forced re-tag itself.** `a` and `b` are byte-for-byte unchanged from the DB's point of
+     * view (same mtime, same relativeKey) — [ScanDiffer] would call this scan's diff empty and the
+     * existing behaviour (proved above by `an unchanged rescan writes nothing`) is exactly that no
+     * one gets re-upserted or re-read. A stored generation below current must override that: both
+     * rows are re-tagged (the tag reader actually sees both file paths, not just re-upserted with
+     * stale tags) and both are re-upserted so the freshly-read tags land.
+     *
+     * Both observables are asserted because either alone is satisfiable by a wrong implementation:
+     * re-upserting without re-reading would pass the upsert assertion using the OLD tag values, and
+     * calling the tag reader without upserting would pass the read assertion while writing nothing.
+     */
+    @Test fun `a stored generation below current forces every scanned row to be re-tagged`() = runTest {
+        val a = song(1)
+        val b = song(2)
+        seed(a.toEntity(), b.toEntity())
+        source.songs = listOf(a, b) // unchanged: diff alone would call this an empty scan
+        runBlocking { settings.setTagScanGeneration(LibraryScanWorker.CURRENT_TAG_SCAN_GENERATION - 1) }
+
+        assertEquals(ListenableWorker.Result.success(), runScan())
+
+        assertEquals(
+            "an unchanged row was not re-tagged despite the generation being below current",
+            listOf(a.filePath, b.filePath),
+            tagReader.readFilePaths.sortedBy { it },
+        )
+        assertEquals(
+            "an unchanged row was not re-upserted despite the generation being below current",
+            listOf("ms-9001", "ms-9002"),
+            dao.upsertedExternalIds.sorted(),
+        )
+    }
+
+    /** The other half of the same test: a successful forced re-tag must advance the stored
+     *  generation, or the next scan would force the same full re-tag all over again. */
+    @Test fun `a successful forced re-tag advances the stored generation to current`() = runTest {
+        val a = song(1)
+        seed(a.toEntity())
+        source.songs = listOf(a)
+        runBlocking { settings.setTagScanGeneration(0) }
+
+        assertEquals(ListenableWorker.Result.success(), runScan())
+
+        assertEquals(
+            LibraryScanWorker.CURRENT_TAG_SCAN_GENERATION,
+            runBlocking { settings.tagScanGeneration.first() },
+        )
+    }
+
+    /**
+     * **The control.** At the current generation (as every test above already runs, via `setUp`),
+     * only the diff's added/changed rows are re-tagged — the pre-existing behaviour must survive
+     * this feature landing. Restated explicitly here, rather than left implicit in the tests above,
+     * because it is the other side of the one branch this feature adds: skip the generation check
+     * (always force a full re-tag) and THIS test goes red, over-eagerly re-tagging `untouched`,
+     * while the tests above stay green (they do not assert non-emptiness of the tag reader's log).
+     */
+    @Test fun `at the current generation, only added and changed rows are re-tagged`() = runTest {
+        val untouched = song(1)
+        seed(untouched.toEntity())
+        val fresh = song(2)
+        source.songs = listOf(untouched, fresh) // untouched: same mtime + relativeKey as seeded
+
+        assertEquals(ListenableWorker.Result.success(), runScan())
+
+        assertEquals(
+            "an untouched row was re-tagged even though the generation is already current",
+            listOf(fresh.filePath),
+            tagReader.readFilePaths,
+        )
+        assertEquals(listOf("ms-9002"), dao.upsertedExternalIds)
     }
 }

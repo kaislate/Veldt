@@ -25,8 +25,13 @@ class EAlvaTagReader @Inject constructor() : TagReader {
     override fun read(filePath: String?, fallback: TrackTags): TrackTags {
         if (filePath.isNullOrBlank()) return fallback
         val file = File(filePath)
-        // Scoped storage (API 29+): many MediaStore _DATA paths are not directly
-        // readable as a File. When we can't read it, degrade rather than throw.
+        // Scoped storage (API 29+): many MediaStore _DATA paths are not directly readable as a
+        // File. Measured on an LG G7 (API 29, Veldt's own uid), pre-fix:
+        // Environment.isExternalStorageLegacy() was false and file.canRead() was false for every
+        // shared-storage file, silently degrading every row to MediaStore-only tags. With
+        // android:requestLegacyExternalStorage="true" in the manifest (this app, API 29 only —
+        // ignored from API 30 with targetSdk >= 30), isExternalStorageLegacy() is true and the
+        // same path reads. When we can't read it, degrade rather than throw.
         if (!file.canRead()) return fallback
 
         return try {
