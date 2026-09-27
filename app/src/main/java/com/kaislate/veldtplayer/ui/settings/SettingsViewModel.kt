@@ -9,6 +9,8 @@ import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.settings.ThemeMode
 import com.kaislate.veldtplayer.pill.OverlayPermission
 import com.kaislate.veldtplayer.pill.PillMode
+import com.kaislate.veldtplayer.pill.PillStandDown
+import com.kaislate.veldtplayer.pill.PillStatus
 import com.kaislate.veldtplayer.pill.WispPresence
 import com.kaislate.veldtplayer.pill.util.IslandPosition
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,6 +39,7 @@ class SettingsViewModel @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val wispPresence: WispPresence,
     private val overlayPermission: OverlayPermission,
+    pillStatus: PillStatus,
 ) : ViewModel() {
 
     val themeMode: StateFlow<ThemeMode> = settingsRepository.themeMode.stateIn(
@@ -121,6 +124,12 @@ class SettingsViewModel @Inject constructor(
     fun refreshOverlayPermissionStatus() {
         _overlayPermissionGranted.value = overlayPermission.isGranted()
     }
+
+    /**
+     * Why the running pill has stood down, if it has — written by `PillController` in the
+     * playback service (Task 4), shown as a line in the "Floating pill" section.
+     */
+    val pillStandDown: StateFlow<PillStandDown> = pillStatus.standDown
 
     /** Where the pill docks on screen. */
     val pillAnchor: StateFlow<IslandPosition> = settingsRepository.pillAnchor.stateIn(

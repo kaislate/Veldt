@@ -80,6 +80,7 @@ fun SettingsScreen(
     val pillForceBuiltIn by vm.pillForceBuiltIn.collectAsStateWithLifecycle()
     val wispInstalled by vm.wispInstalled.collectAsStateWithLifecycle()
     val overlayGranted by vm.overlayPermissionGranted.collectAsStateWithLifecycle()
+    val pillStandDown by vm.pillStandDown.collectAsStateWithLifecycle()
     val pillAnchor by vm.pillAnchor.collectAsStateWithLifecycle()
     val pillWidthDp by vm.pillWidthDp.collectAsStateWithLifecycle()
     val pillWaveStyle by vm.pillWaveStyle.collectAsStateWithLifecycle()
@@ -194,6 +195,15 @@ fun SettingsScreen(
                 },
             )
 
+            pillStandDown.message?.let { message ->
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(horizontal = SIDE_MARGIN, vertical = 4.dp),
+                )
+            }
+
             if (wispInstalled) {
                 Text(
                     "Veldt Wisp is installed — Veldt defers to it, so its own pill shows instead " +
@@ -250,7 +260,9 @@ fun SettingsScreen(
                 options = listOf(
                     "accent-light" to "Accent, lightened",
                     "auto" to "Automatic",
-                    "white" to "White",
+                    // Persisted as "white" (Wisp's value); it draws the solved TEXT tone,
+                    // which is dark on a light ground, so the label says what it does.
+                    "white" to "Match text",
                 ),
                 selected = pillWaveColor,
                 onSelect = vm::setPillWaveColor,

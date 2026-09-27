@@ -27,6 +27,7 @@ import com.kaislate.veldtplayer.MainActivity
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.media.MediaSessionBus
+import com.kaislate.veldtplayer.pill.PillController
 import com.kaislate.veldtplayer.data.net.ScrobbleResult
 import com.kaislate.veldtplayer.data.net.SubsonicAuth
 import com.kaislate.veldtplayer.data.net.SubsonicClient
@@ -82,6 +83,14 @@ class PlaybackService : MediaLibraryService() {
     @Inject lateinit var scrobbleQueue: ScrobbleQueue
     @Inject lateinit var scrobbleFlusher: ScrobbleFlusher
     @Inject lateinit var scrobbleFlushScheduler: ScrobbleFlushScheduler
+
+    /**
+     * The built-in pill (P1.5c, spec §3), owned here so there is no second foreground service:
+     * started at the end of [onCreate], released FIRST in [onDestroy] — before the bus is reset,
+     * so the pill never redraws from an emptied bus, and before anything else can fail, so its
+     * overlay window can never outlive the service.
+     */
+    @Inject lateinit var pillController: PillController
 
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
@@ -175,12 +184,17 @@ class PlaybackService : MediaLibraryService() {
             scrobblerListener = it
             exo.addListener(it)
         }
+
+        // Last: the bus adapter above is already publishing, so the pill's first read is real.
+        pillController.start()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
         session
 
     override fun onDestroy() {
+        // FIRST (plan Review Focus 5): removes the overlay window. See [pillController].
+        pillController.release()
         busAdapter?.detach()
         // Detach first, then clear: the adapter can push during teardown, and a push landing
         // after the reset would refill the bus with the state this is meant to drop.

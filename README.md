@@ -3,8 +3,8 @@
 **A local + self-hosted music player for Android — with the Veldt Wisp pill built in.**
 
 > ⚠️ **Early development.** Veldt is being built in phases. The local library, browse,
-> now-playing, playlists, folders and settings are in, and server accounts can be added;
-> streaming from a server, the built-in pill and lyrics are not yet. Treat it as a working
+> now-playing, playlists, folders, settings and the built-in pill are in, and server accounts
+> can be added; streaming from a server and lyrics are not yet. Treat it as a working
 > preview, not a release.
 
 Veldt is the full-player companion to [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp)
@@ -31,7 +31,7 @@ arm64 devices alike.
 - **Playback.** A Media3 `PlaybackService` with audio focus, a media notification,
   and background playback via a `mediaPlayback` foreground service. A
   `PlayerBusAdapter` mirrors player state into `MediaSessionBus`, which is the seam
-  the built-in pill will read.
+  the built-in pill reads.
 - **Library.** On-device scan via `MediaStore`, augmented with eAlvaTag tag reading,
   stored in Room and kept live by a `MediaStore` observer.
 - **Browse and now-playing.** Songs / albums / artists / search, an album-art
@@ -44,12 +44,17 @@ arm64 devices alike.
   cards, with audiobooks and podcasts included.
 - **Settings.** Light / Dark / Follow-system theme, with now-playing colours solved for
   legible contrast against the artwork actually on screen.
+- **Built-in pill.** Veldt Wisp's floating now-playing pill for Veldt's own playback: it
+  appears when you leave Veldt while music plays and expands into a card with the artwork,
+  a scrub bar and transport. Settings → Floating pill picks Built-in / Use Veldt Wisp / Off
+  (with Veldt Wisp installed, Veldt defers to it unless told otherwise), plus the anchor,
+  width, wave style and colour, hide delay and pill buttons. Needs "Display over other apps".
 - **Server accounts.** Add an OpenSubsonic server (tested against Navidrome), test the
   connection, and store the password encrypted with an Android Keystore key. Plain
   `http://` is allowed for LAN and Tailscale setups, with a warning as you type it.
 
-Not yet: browsing and streaming a server's library (under way — **N2**), the built-in
-pill, lyrics, and scrobbling.
+Not yet: browsing and streaming a server's library (under way — **N2**), lyrics, and
+scrobbling.
 
 ## Requirements
 
@@ -67,10 +72,13 @@ Requires JDK 17+ and the Android SDK (compileSdk 36).
 
 ## Credits & license
 
-Veldt is original work, written from scratch. It is the sibling of
-[**Veldt Wisp**](https://github.com/kaislate/veldt-wisp) and shares its design
-language, but no code is carried over — the two files that once were (the palette
-extractor and the media-session bus) were both rewritten clean-room during Veldt's
+Veldt is the sibling of [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp)
+(same author) and shares its design language. **The built-in pill is ported from Veldt
+Wisp**, which is also GPL-3.0-or-later: the overlay window, the pill and its expanded card,
+and the rules that decide when it shows and hides (under
+`app/src/main/java/com/kaislate/veldtplayer/pill/`), each file saying so in its header. The
+rest of Veldt is original work; the two other files that were once shared with Veldt Wisp
+(the palette extractor and the media-session bus) were rewritten clean-room during Veldt's
 own development. Distributed under the GNU General Public License v3.0 or later
 — see [LICENSE](LICENSE). If you distribute a modified version, it must carry the
 same licence and ship its source.

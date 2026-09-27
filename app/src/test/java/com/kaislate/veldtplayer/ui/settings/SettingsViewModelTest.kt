@@ -7,6 +7,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.pill.OverlayPermission
 import com.kaislate.veldtplayer.pill.PillMode
+import com.kaislate.veldtplayer.pill.PillStandDown
+import com.kaislate.veldtplayer.pill.PillStatus
 import com.kaislate.veldtplayer.pill.WispPresence
 import com.kaislate.veldtplayer.pill.util.IslandPosition
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +55,7 @@ class SettingsViewModelTest {
     private lateinit var repo: SettingsRepository
     private lateinit var wisp: FakeWispPresence
     private lateinit var overlay: FakeOverlayPermission
+    private lateinit var pillStatus: PillStatus
 
     @Before fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -60,11 +63,12 @@ class SettingsViewModelTest {
         runBlocking { repo.clearForTest() }
         wisp = FakeWispPresence(installed = false)
         overlay = FakeOverlayPermission(granted = false)
+        pillStatus = PillStatus()
     }
 
     @After fun tearDown() = Dispatchers.resetMain()
 
-    private fun viewModel() = SettingsViewModel(repo, wisp, overlay)
+    private fun viewModel() = SettingsViewModel(repo, wisp, overlay, pillStatus)
 
     // `vm.setXxx` is fire-and-forget (`viewModelScope.launch { ... }`, same as every other
     // setter in SettingsViewModel), and DataStore's own `edit` genuinely suspends on its own
@@ -179,5 +183,14 @@ class SettingsViewModelTest {
         vm.setPillTransportButtons("play-next")
         assertEquals("play-next", vm.pillTransportButtons.first { it == "play-next" })
         assertEquals("play-next", repo.pillTransportButtons.first())
+    }
+
+    @Test fun `the pill stand-down status follows what the controller reports`() {
+        val vm = viewModel()
+        assertEquals(PillStandDown.NONE, vm.pillStandDown.value)
+        pillStatus.report(PillStandDown.ATTACH_REFUSED)
+        assertEquals(PillStandDown.ATTACH_REFUSED, vm.pillStandDown.value)
+        pillStatus.report(PillStandDown.NONE)
+        assertEquals(PillStandDown.NONE, vm.pillStandDown.value)
     }
 }

@@ -28,6 +28,8 @@ import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.settings.ThemeMode
 import com.kaislate.veldtplayer.pill.OverlayPermission
 import com.kaislate.veldtplayer.pill.PillCommands
+import com.kaislate.veldtplayer.pill.PillOverlay
+import com.kaislate.veldtplayer.pill.ShowFailure
 import com.kaislate.veldtplayer.pill.ui.island.IslandRoot
 import com.kaislate.veldtplayer.pill.ui.island.PanelRoot
 import com.kaislate.veldtplayer.pill.ui.island.PillAppearance
@@ -60,7 +62,7 @@ class OverlayWindowManager @Inject constructor(
     private val settingsRepo: SettingsRepository,
     private val overlayPermission: OverlayPermission,
     private val commands: PillCommands,
-) {
+) : PillOverlay {
     private val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var root: ComposeView? = null
     private var owner: OverlayOwner? = null
@@ -72,16 +74,16 @@ class OverlayWindowManager @Inject constructor(
      * such service, so the owner of this manager wires it (Task 4). Unset, the flick does
      * nothing.
      */
-    var onStashRequested: (() -> Unit)? = null
+    override var onStashRequested: (() -> Unit)? = null
 
-    private val _showFailure = MutableStateFlow<String?>(null)
+    private val _showFailure = MutableStateFlow<ShowFailure?>(null)
 
     /**
      * Why the last [showIsland] could not attach the pill, or null after a successful attach.
      * The pill "stands down" on these (spec §3) rather than crashing or retrying in a loop;
      * this is what lets the stand-down be shown to the user.
      */
-    val showFailure: StateFlow<String?> = _showFailure.asStateFlow()
+    override val showFailure: StateFlow<ShowFailure?> = _showFailure.asStateFlow()
 
     // Expanded-panel state lives here so the outside-touch listener can collapse it.
     private val expandedState = androidx.compose.runtime.mutableStateOf(false)
@@ -484,7 +486,7 @@ class OverlayWindowManager @Inject constructor(
         // then throw a SecurityException from deep inside the window manager.
         if (!overlayPermission.isGranted()) {
             Log.d("Overlay", "showIsland: overlay permission not held, staying hidden")
-            _showFailure.value = "overlay permission not granted"
+            _showFailure.value = ShowFailure("overlay permission not granted")
             return
         }
         Log.d("Overlay", "showIsland: attaching the pill window")
@@ -503,15 +505,15 @@ class OverlayWindowManager @Inject constructor(
             applySystemGestureExclusion(view)
         } catch (e: SecurityException) {
             Log.w("Overlay", "pill window rejected — permission revoked or OEM overlay policy: ${e.message}")
-            _showFailure.value = "permission revoked or blocked by the system: ${e.message}"
+            _showFailure.value = ShowFailure("permission revoked or blocked by the system: ${e.message}")
             cleanup()
         } catch (e: WindowManager.BadTokenException) {
             Log.w("Overlay", "pill window rejected — bad window token: ${e.message}")
-            _showFailure.value = "window rejected (bad token): ${e.message}"
+            _showFailure.value = ShowFailure("window rejected (bad token): ${e.message}")
             cleanup()
         } catch (e: IllegalStateException) {
             Log.w("Overlay", "pill window rejected — illegal state, view may already be attached: ${e.message}")
-            _showFailure.value = "window rejected (illegal state): ${e.message}"
+            _showFailure.value = ShowFailure("window rejected (illegal state): ${e.message}")
             cleanup()
         }
     }
@@ -533,7 +535,7 @@ class OverlayWindowManager @Inject constructor(
         showing = false
     }
 
-    fun hide() {
+    override fun hide() {
         if (!showing) {
             Log.d("Overlay", "hide: no pill window attached, nothing to do")
             return
