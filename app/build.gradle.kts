@@ -28,8 +28,8 @@ android {
         minSdk = 29
         targetSdk = 36
         // major*10000 + minor*100 + patch
-        versionCode = 900
-        versionName = "0.9.0"
+        versionCode = 901
+        versionName = "0.9.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

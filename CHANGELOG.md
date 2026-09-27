@@ -3,6 +3,13 @@
 All notable changes to Veldt. Versions follow `major.minor.patch`; the version code is
 `major*10000 + minor*100 + patch`.
 
+## 0.9.1 — 2026-09-27 (public beta)
+
+### Changed
+- Veldt has its own app icon: a record rising like a sun over green hills. 0.9.0 shipped
+  with a copy of Veldt Wisp's icon, so the two apps looked identical on a home screen. The
+  new icon also has a themed (single-colour) version for Android 13 and later.
+
 ## 0.9.0 — 2026-09-27 (public beta)
 
 The first public release. It covers everything built since the project began. It is a beta:
