@@ -4,7 +4,7 @@
 
 **A local + self-hosted music player for Android — with the Veldt Wisp pill built in.**
 
-> ⚠️ **Public beta.** 0.9.0 is a beta. The local library, browse, now-playing, playlists,
+> ⚠️ **Public beta.** The 0.9 releases are betas. The local library, browse, now-playing, playlists,
 > folders, settings, OpenSubsonic servers, lyrics, scrobbling and the built-in pill are in.
 > Expect rough edges, and please report them. See [CHANGELOG.md](CHANGELOG.md) for what's in it.
 
@@ -91,7 +91,7 @@ and original lyrics.</sub>
 
 ## Install
 
-0.9.0 is a beta.
+The 0.9 releases are betas.
 
 - Download the APK from [GitHub Releases](https://github.com/kaislate/Veldt/releases). Beta
   builds are marked as pre-releases.
