@@ -371,4 +371,48 @@ class SettingsRepositoryTest {
             listOf<Any?>(repo.pillTransportButtons.first(), repo.readRawForTest("pill_transport_buttons")),
         )
     }
+
+    // ---- Hidden folders (Step 5 spec §4) ----
+
+    @Test fun `no folder is hidden by default`() = runTest {
+        assertEquals(emptySet<String>(), repo.excludedFolders.first())
+    }
+
+    /**
+     * Asserted on the RAW set under the literal key `excluded_folders`, for the reason the folder
+     * sort's key test records: a key renamed on both sides stays green through the flow and un-hides
+     * every user's folders on upgrade. The keys themselves are stored verbatim — a folder key is
+     * byte-exact and a normalising write would hide a different folder.
+     */
+    @Test fun `hidden folders are stored as a set under their own key, and showing one removes it`() =
+        runTest {
+            repo.setFolderHidden("1234-5678:BACKUP/Downloads", hidden = true)
+            repo.setFolderHidden("external_primary:Music/ A", hidden = true)
+            val both = repo.readRawStringSetForTest("excluded_folders")
+            repo.setFolderHidden("1234-5678:BACKUP/Downloads", hidden = false)
+            val one = repo.readRawStringSetForTest("excluded_folders")
+            repo.setFolderHidden("external_primary:Music/ A", hidden = false)
+            assertEquals(
+                listOf(
+                    setOf("1234-5678:BACKUP/Downloads", "external_primary:Music/ A"),
+                    setOf("external_primary:Music/ A"),
+                    null,
+                    emptySet<String>(),
+                ),
+                listOf(both, one, repo.readRawStringSetForTest("excluded_folders"), repo.excludedFolders.first()),
+            )
+        }
+
+    /**
+     * The synthetic keys are not folders and hiding one is a caller bug. Showing is never refused,
+     * though: a stored key this build cannot read still has to be removable from Settings.
+     */
+    @Test fun `a non-folder key cannot be hidden, but any stored key can be shown`() = runTest {
+        val refused = runCatching { repo.setFolderHidden("\u0000unfiled", hidden = true) }
+        repo.setFolderHidden("\u0000unfiled", hidden = false)
+        assertEquals(
+            listOf<Any?>(IllegalArgumentException::class.java, emptySet<String>()),
+            listOf<Any?>(refused.exceptionOrNull()?.javaClass, repo.excludedFolders.first()),
+        )
+    }
 }

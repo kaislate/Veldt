@@ -5,6 +5,9 @@ package com.kaislate.veldtplayer.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.kaislate.veldtplayer.data.library.FolderExclusion
+import com.kaislate.veldtplayer.data.library.FolderSort
+import com.kaislate.veldtplayer.data.library.VolumeNames
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.settings.ThemeMode
 import com.kaislate.veldtplayer.pill.OverlayPermission
@@ -18,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -40,6 +44,7 @@ class SettingsViewModel @Inject constructor(
     private val wispPresence: WispPresence,
     private val overlayPermission: OverlayPermission,
     pillStatus: PillStatus,
+    private val volumeNames: VolumeNames,
 ) : ViewModel() {
 
     val themeMode: StateFlow<ThemeMode> = settingsRepository.themeMode.stateIn(
@@ -72,6 +77,25 @@ class SettingsViewModel @Inject constructor(
 
     fun setLyricsOnline(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setLyricsOnline(enabled) }
+    }
+
+    /**
+     * The "Library" section's hidden folders (Step 5 spec §4), each named the way the Folders tab
+     * names it — volume label first, then the path — and in the order a person would scan for one.
+     *
+     * Read from the STORED keys, not from the folder tree: a hidden folder that has since been
+     * deleted, or sits on a card that is not inserted, is still hidden and still has to be
+     * removable from here, and the tree no longer has a node for it.
+     */
+    val hiddenFolders: StateFlow<List<HiddenFolder>> = settingsRepository.excludedFolders
+        .map { keys ->
+            keys.map { HiddenFolder(it, FolderExclusion.describe(it, volumeNames::label)) }
+                .sortedWith(compareBy(FolderSort.NATURAL) { it.label })
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun showFolder(key: String) {
+        viewModelScope.launch { settingsRepository.setFolderHidden(key, hidden = false) }
     }
 
     // ---- Built-in pill (P1.5c Task 2). Settings screen "Floating pill" section, spec §4. ----
@@ -208,3 +232,6 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.setPillTransportButtons(value) }
     }
 }
+
+/** One entry of the Settings list of hidden folders: the stored [key], and how to show it. */
+data class HiddenFolder(val key: String, val label: String)

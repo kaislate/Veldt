@@ -57,6 +57,12 @@ data class FolderUiState(
     val sort: TrackSort = TrackSort.FILENAME,
     val descending: Boolean = false,
     val scanning: Boolean = false,
+    /**
+     * The hidden folders' keys, as stored. The tree already carries [FolderNode.hidden]; this is
+     * the other half a menu needs — whether a hidden row was hidden ITSELF, and so can be shown
+     * from here, or is hidden only because a folder above it is.
+     */
+    val excluded: Set<String> = emptySet(),
 ) {
     /**
      * The library has songs, and not one of them has a derivable location.
@@ -72,8 +78,25 @@ data class FolderUiState(
         get() = roots.size == 1 && roots.single().displayRoot.key == UNFILED_KEY
 }
 
-/** One directory row: the node, and the label the row actually draws. See [FolderListing]. */
-data class FolderRowItem(val node: FolderNode, val label: String)
+/**
+ * One directory row: the node, the label the row actually draws (see [FolderListing]), and what its
+ * long-press menu can hide.
+ *
+ * [exclusionKey] is the key "Hide from library" writes, or null where the row is not a folder (the
+ * Unfiled bucket). It is NOT always `node.key`: a volume row stands for its whole VOLUME, and its
+ * node is only the volume's elided display root — hiding `SD card` has to hide the card, including
+ * whatever lands above `Music/` later, not just the directory elision happened to stop at.
+ *
+ * [hiddenHere] says [exclusionKey] is itself hidden, so the menu can offer "Show in library". A row
+ * that is [FolderNode.hidden] only because a folder ABOVE it is hidden offers neither verb: showing
+ * it would need un-hiding that ancestor, which is a different folder from the one pressed.
+ */
+data class FolderRowItem(
+    val node: FolderNode,
+    val label: String,
+    val exclusionKey: String? = null,
+    val hiddenHere: Boolean = false,
+)
 
 /** One breadcrumb segment. A null [route] is inert — the current folder, or an elided ancestor. */
 data class FolderCrumb(val label: String, val route: String?)
@@ -148,12 +171,14 @@ class FolderViewModel @Inject constructor(
         settings.folderSort,
         settings.folderSortDescending,
         repo.scanning(),
-    ) { tree, sort, descending, scanning ->
+        settings.excludedFolders,
+    ) { tree, sort, descending, scanning, excluded ->
         FolderUiState(
             roots = FolderTree.elideRoots(tree),
             sort = sort,
             descending = descending,
             scanning = scanning,
+            excluded = excluded,
         )
     }.stateIn(
         viewModelScope,
@@ -185,8 +210,15 @@ class FolderViewModel @Inject constructor(
         // Only the synthetic node's children are volumes. One volume's tab root is the elided
         // display root itself, whose children are ordinary directories.
         val volumeRows = node.key == DEVICE_KEY
-        val folders = FolderSort.folders(node.children)
-            .map { child -> FolderRowItem(child, rowLabel(child, volumeRows)) }
+        val folders = FolderSort.folders(node.children).map { child ->
+            val exclusionKey = exclusionKey(child, volumeRows)
+            FolderRowItem(
+                node = child,
+                label = rowLabel(child, volumeRows),
+                exclusionKey = exclusionKey,
+                hiddenHere = exclusionKey != null && exclusionKey in state.excluded,
+            )
+        }
         val crumbs = if (volumeRows) listOf(FolderCrumb(DEVICE_LABEL, null)) else crumbs(node, roots)
         return FolderListing(
             node = node,
@@ -215,6 +247,13 @@ class FolderViewModel @Inject constructor(
      */
     private fun rowLabel(node: FolderNode, volumeRow: Boolean): String =
         if (volumeRow) volumeNames.label(node.volume) else node.name
+
+    /** What hiding this row hides. See [FolderRowItem.exclusionKey]. */
+    private fun exclusionKey(node: FolderNode, volumeRow: Boolean): String? = when {
+        node.key == UNFILED_KEY -> null
+        volumeRow -> FolderTree.folderKey(node.volume, emptyList())
+        else -> node.key
+    }
 
     /**
      * `Internal storage › Music › Beck › Sea Change`, built from [FolderNode.segments] rather than
@@ -314,6 +353,15 @@ class FolderViewModel @Inject constructor(
 
     fun scan() {
         repo.requestScan()
+    }
+
+    /**
+     * Hide a folder from the library, or show it again (Step 5 spec §4). [key] is a row's
+     * [FolderRowItem.exclusionKey]. The tree re-marks itself from the stored set, so there is no
+     * local state here to fall out of step with it.
+     */
+    fun setFolderHidden(key: String, hidden: Boolean) {
+        viewModelScope.launch { settings.setFolderHidden(key, hidden) }
     }
 
     /**

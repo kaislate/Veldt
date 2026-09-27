@@ -9,7 +9,9 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.kaislate.veldtplayer.data.library.FolderExclusion
 import com.kaislate.veldtplayer.data.library.TrackSort
 import com.kaislate.veldtplayer.pill.PillMode
 import com.kaislate.veldtplayer.pill.util.Constants as PillConstants
@@ -79,6 +81,34 @@ class SettingsRepository @Inject constructor(
 
     suspend fun setFolderSortDescending(descending: Boolean) {
         context.settingsStore.edit { it[FOLDER_SORT_DESC] = descending }
+    }
+
+    /**
+     * The folders hidden from the library (Step 5 spec §4), as `FolderNode.key`s. See
+     * [FolderExclusion] for what a key covers and why it is that key.
+     *
+     * A string SET, not a delimited string: DataStore stores one natively, and a folder key may
+     * legally contain any delimiter a joined string would need.
+     */
+    val excludedFolders: Flow<Set<String>> =
+        context.settingsStore.data.map { it[EXCLUDED_FOLDERS] ?: emptySet() }
+
+    /**
+     * Hide [key] from the library, or show it again. Showing the last one removes the preference
+     * rather than storing an empty set, so a user who tried the feature once leaves nothing behind.
+     *
+     * @throws IllegalArgumentException when HIDING a key [FolderExclusion] cannot read — the
+     *   Unfiled bucket or the volume chooser, neither of which is a folder. A caller bug, not user
+     *   input. Showing is never refused: a stored key this build cannot read is still listed in
+     *   Settings, and the user has to be able to remove it.
+     */
+    suspend fun setFolderHidden(key: String, hidden: Boolean) {
+        require(!hidden || FolderExclusion.isFolderKey(key)) { "not a folder key: $key" }
+        context.settingsStore.edit { prefs ->
+            val was = prefs[EXCLUDED_FOLDERS] ?: emptySet()
+            val now = if (hidden) was + key else was - key
+            if (now.isEmpty()) prefs.remove(EXCLUDED_FOLDERS) else prefs[EXCLUDED_FOLDERS] = now
+        }
     }
 
     /**
@@ -290,6 +320,10 @@ class SettingsRepository @Inject constructor(
     internal suspend fun readRawForTest(key: String): String? =
         context.settingsStore.data.map { it[stringPreferencesKey(key)] }.first()
 
+    /** As [readRawForTest], for a string-set preference — pins [excludedFolders]' key. */
+    internal suspend fun readRawStringSetForTest(key: String): Set<String>? =
+        context.settingsStore.data.map { it[stringSetPreferencesKey(key)] }.first()
+
     /** Test seam: writes a raw Int under the metered-cap key, so the out-of-set path is reachable. */
     internal suspend fun writeRawMeteredMaxBitRateForTest(raw: Int) {
         context.settingsStore.edit { it[METERED_MAX_BITRATE] = raw }
@@ -324,6 +358,7 @@ class SettingsRepository @Inject constructor(
         val METERED_MAX_BITRATE = intPreferencesKey("metered_max_bitrate")
         val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
         val TAG_SCAN_GENERATION = intPreferencesKey("tag_scan_generation")
+        val EXCLUDED_FOLDERS = stringSetPreferencesKey("excluded_folders")
 
         /** Every value [meteredMaxBitRate] can hold. 0 is original quality. */
         val METERED_CAPS: Set<Int> = setOf(0, 320, 192, 128)

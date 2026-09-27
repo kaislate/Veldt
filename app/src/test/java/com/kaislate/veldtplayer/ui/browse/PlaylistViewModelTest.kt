@@ -17,6 +17,7 @@ import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.playlist.PlaylistRepository
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.playlist.m3u.DocumentNameReader
 import com.kaislate.veldtplayer.data.playlist.m3u.PlaylistImporter
 import com.kaislate.veldtplayer.playback.NetworkReturn
@@ -93,7 +94,7 @@ class PlaylistViewModelTest {
         source = FakeSource()
         val registry = SourceRegistry(setOf(source))
         playlists = PlaylistRepository(db.playlistDao(), db.songDao(), registry) { ++clock }
-        music = MusicRepository(db.songDao(), registry, source, context)
+        music = MusicRepository(db.songDao(), registry, source, context, SettingsRepository(context))
         vm = PlaylistViewModel(
             playlists = playlists,
             importer = PlaylistImporter(context, source, playlists),
@@ -422,6 +423,35 @@ class PlaylistViewModelTest {
             .map { state -> (state as? PlaylistDetailUiState.Ready)?.rows?.map { it.title } }
             .first { it == expected }
         assertEquals(expected, titles)
+    }
+
+    /**
+     * Hiding a folder never edits or blanks a playlist (Step 5 spec §4). Asserted beside the proof
+     * that the hide took effect — the same songs are gone from the library flow — so a hide that
+     * silently did nothing cannot pass it. The rows are read from ONE emission, not awaited, so a
+     * playlist that lost them fails on the value rather than timing out.
+     */
+    @Test fun `hiding a folder leaves its songs in a playlist`() = runTest {
+        val settings = SettingsRepository(context)
+        try {
+            val drafts = listOf(
+                song("/storage/1234-5678/BACKUP/Downloads/a.mp3", title = "A"),
+                song("/storage/1234-5678/BACKUP/Downloads/b.mp3", title = "B"),
+            )
+            seedLibrary(*drafts.toTypedArray())
+            val id = playlists.create("Drafts")
+            playlists.addSongs(id, drafts)
+
+            settings.setFolderHidden("1234-5678:BACKUP/Downloads", hidden = true)
+
+            val detail = vm.detail(id).first() as? PlaylistDetailUiState.Ready
+            assertEquals(
+                listOf<Any?>(emptyList<String>(), listOf("A", "B")),
+                listOf<Any?>(music.songs().first().map { it.title }, detail?.rows?.map { it.title }),
+            )
+        } finally {
+            settings.clearForTest()
+        }
     }
 
     private suspend fun cards(): List<PlaylistCard> =

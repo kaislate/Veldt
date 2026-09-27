@@ -28,6 +28,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -38,6 +40,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -88,6 +93,8 @@ fun SettingsScreen(
     val pillArtCrossfade by vm.pillArtCrossfade.collectAsStateWithLifecycle()
     val pillHideDelayMs by vm.pillHideDelayMs.collectAsStateWithLifecycle()
     val pillTransportButtons by vm.pillTransportButtons.collectAsStateWithLifecycle()
+    val hiddenFolders by vm.hiddenFolders.collectAsStateWithLifecycle()
+    var showingHidden by remember { mutableStateOf(false) }
     val direction = LocalLayoutDirection.current
     val context = LocalContext.current
 
@@ -133,6 +140,20 @@ fun SettingsScreen(
             selected = mode == ThemeMode.SYSTEM,
             onSelect = { vm.setThemeMode(ThemeMode.SYSTEM) },
         )
+
+        SectionLabel("Library")
+        SettingsLinkRow(
+            icon = Icons.Filled.VisibilityOff,
+            label = "Hidden folders (${hiddenFolders.size})",
+            onClick = { showingHidden = true },
+        )
+        if (showingHidden) {
+            HiddenFoldersDialog(
+                folders = hiddenFolders,
+                onShow = vm::showFolder,
+                onDismiss = { showingHidden = false },
+            )
+        }
 
         SectionLabel("Streaming")
         Text(
@@ -471,6 +492,52 @@ private fun OverlayPermissionRow(
             TextButton(onClick = onGrant) { Text("Grant") }
         }
     }
+}
+
+/**
+ * The hidden folders (Step 5 spec §4), each with the one thing to do to it here: show it again.
+ *
+ * A dialog rather than a destination because the list is short and has one verb — a screen of its
+ * own would be a back stack entry for a list most users keep at zero or one. It stays open as
+ * entries are shown, so clearing several is several taps rather than several round trips, and it
+ * says so plainly when there is nothing left, rather than closing under the user's thumb.
+ *
+ * Hiding happens in the Folders tab, by long-pressing a folder; the empty text says where, because
+ * this dialog is where someone who wants that feature is most likely to look first.
+ */
+@Composable
+internal fun HiddenFoldersDialog(
+    folders: List<HiddenFolder>,
+    onShow: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Hidden folders") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (folders.isEmpty()) {
+                    Text(
+                        "No folders are hidden. Long-press a folder in the Folders tab to hide " +
+                            "its music from Songs, Albums, Artists and search.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                folders.forEach { folder ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            folder.label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { onShow(folder.key) }) { Text("Show") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 /**
