@@ -10,8 +10,10 @@ import org.junit.Test
 import java.io.File
 
 /**
- * Pure JVM. Both tests are about ONE decision — [resolveDark] — from two angles: a source scan
- * that nothing else makes the decision, and a value-level check of the decision itself.
+ * Pure JVM. Every test is about ONE decision — which ground a [ThemeMode] resolves to — from
+ * several angles: a source scan that nothing but Theme.kt asks the system, a check that the
+ * launch-window XML holds one style per mode and nothing more, the mode-to-style map
+ * [LaunchTheme] uses, and a value-level check of [resolveDark] itself.
  */
 class ThemeSourceGuardTest {
 
@@ -43,9 +45,14 @@ class ThemeSourceGuardTest {
             ktFiles.size >= 40,
         )
 
+        // Two spellings of the same question: Compose's, and the Configuration's night bit that
+        // code outside composition (MainActivity, before its first frame) would read instead.
         val offenders = ktFiles
             .filter { it.name != "Theme.kt" }
-            .filter { it.readText().contains("isSystemInDarkTheme(") }
+            .filter { file ->
+                val text = file.readText()
+                text.contains("isSystemInDarkTheme(") || text.contains("UI_MODE_NIGHT_MASK")
+            }
             .map { it.name }
         assertEquals("theme resolution must live only in Theme.kt; found in: $offenders",
             emptyList<String>(), offenders)
@@ -59,40 +66,64 @@ class ThemeSourceGuardTest {
      * branch deleted. A `.kt`-only guard lets a real theme decision made outside Kotlin hide
      * from every review sweep that greps for `.kt` files.
      *
-     * This pins the CURRENT parent so a future edit toward a Light/DayNight parent fails here
-     * instead of silently reintroducing a second theme source that disagrees with
-     * [resolveDark]. `Theme.Veldt` is still legitimately dark-only — see the KDoc comment in
-     * themes.xml for why (it paints only the pre-Compose launch window, which cannot read the
-     * user's stored Light/Dark/Follow-system choice synchronously) — so if that ever changes,
-     * update BOTH this assertion and the themes.xml comment together; do not just delete the
-     * guard.
+     * Finding 10 then made the XML carry a real decision on purpose: which window theme a launch
+     * gets. It is still not a second theme SOURCE, and this pins why. There are exactly three
+     * window styles, one per [ThemeMode]: the manifest's `Theme.Veldt` is DayNight (the starting
+     * window follows the system, or on API 31+ the per-app night mode `LaunchTheme` hands it),
+     * and the two explicit ones name their ground outright, so the user's choice beats the
+     * system's night mode. `LaunchTheme` is the only code that picks between them. If any
+     * parent changes, update this assertion AND themes.xml's comment together; do not just
+     * delete the guard.
+     *
+     * No `values-night` themes file is allowed either: it would silently re-parent one of these
+     * styles for night mode, a second decision this map could not see.
      */
-    @Test fun `themes xml launch-window parent is pinned dark, not a second theme source`() {
+    @Test fun `themes xml has exactly one window style per theme mode`() {
         val root = mainSourceRoot()
         val themesXml = File(root, "res/values/themes.xml")
         assertTrue("expected ${themesXml.absolutePath} to exist", themesXml.isFile)
 
-        // The actual <style ... parent="..."> declaration ONLY — not the whole file, which
+        // The actual <style ... parent="..."> declarations ONLY — not the whole file, which
         // legitimately talks about "DayNight" and "Light" in its explanatory comment. Matching
-        // the tag itself is what keeps this guard from being tripped by prose describing the
-        // very thing it guards against.
-        val styleTag = Regex("""<style\s+name="Theme\.Veldt"[^>]*>""")
-            .find(themesXml.readText())
-            ?.value
-            ?: error("could not find the <style name=\"Theme.Veldt\" ...> declaration in " +
-                "${themesXml.absolutePath}; themes.xml was restructured — update this guard")
+        // the tags themselves is what keeps this guard from being tripped by prose describing
+        // the very thing it guards against.
+        val parents = Regex("""<style\s+name="([^"]+)"\s+parent="([^"]+)"\s*>""")
+            .findAll(themesXml.readText())
+            .associate { it.groupValues[1] to it.groupValues[2] }
 
-        assertTrue(
-            "Theme.Veldt's parent changed away from the pinned-dark launch-window style. If " +
-                "that is deliberate, update this assertion AND themes.xml's comment explaining " +
-                "why (FINDING 2, whole-branch review) — do not just delete this guard.",
-            styleTag.contains("parent=\"Theme.Material3.DynamicColors.Dark\""),
+        assertEquals(
+            "themes.xml's window styles changed. If that is deliberate, update this map AND " +
+                "themes.xml's comment explaining it (findings 2 and 10) — do not just delete " +
+                "this guard.",
+            mapOf(
+                "Theme.Veldt" to "Theme.Material3.DynamicColors.DayNight",
+                "Theme.Veldt.Light" to "Theme.Material3.DynamicColors.Light",
+                "Theme.Veldt.Dark" to "Theme.Material3.DynamicColors.Dark",
+            ),
+            parents,
         )
-        assertTrue(
-            "themes.xml must not gain a Light/DayNight parent without this guard being " +
-                "updated: that would make it a second, undocumented theme source disagreeing " +
-                "with VeldtTheme.resolveDark().",
-            !styleTag.contains("DynamicColors.Light") && !styleTag.contains("DayNight"),
+        val nightThemes = File(root, "res").listFiles().orEmpty()
+            .filter { it.isDirectory && it.name.contains("night") }
+            .filter { File(it, "themes.xml").isFile }
+            .map { it.name }
+        assertEquals("a night-qualified themes.xml re-parents a window style unseen: $nightThemes",
+            emptyList<String>(), nightThemes)
+    }
+
+    /**
+     * The map above names the styles; this pins which [ThemeMode] gets which, since a swapped
+     * pair would pass the map and draw every explicit choice inverted.
+     */
+    @Test fun `each ThemeMode launches with its own window style and night mode`() {
+        assertEquals(
+            listOf(
+                com.kaislate.veldtplayer.R.style.Theme_Veldt_Light to android.app.UiModeManager.MODE_NIGHT_NO,
+                com.kaislate.veldtplayer.R.style.Theme_Veldt_Dark to android.app.UiModeManager.MODE_NIGHT_YES,
+                com.kaislate.veldtplayer.R.style.Theme_Veldt to android.app.UiModeManager.MODE_NIGHT_AUTO,
+            ),
+            listOf(ThemeMode.LIGHT, ThemeMode.DARK, ThemeMode.SYSTEM).map {
+                LaunchTheme.styleFor(it) to LaunchTheme.nightModeFor(it)
+            },
         )
     }
 

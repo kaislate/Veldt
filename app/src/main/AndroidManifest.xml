@@ -50,8 +50,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Veldt">
 
+        <!-- configChanges="uiMode": on API 31+ LaunchTheme hands the user's theme choice to the
+             system as a per-app night mode, so the next cold start's launch window matches it
+             (finding 10), and the system applies that change to the running app at once.
+             Declared here, it arrives as a configuration change that Compose absorbs (VeldtTheme
+             re-resolves from the new configuration) instead of relaunching the activity in the
+             middle of Settings. A system dark-mode switch is handled the same way. -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="uiMode"
             android:exported="true"
             android:theme="@style/Theme.Veldt">
             <intent-filter>

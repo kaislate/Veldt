@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer.ui.theme
 
+import android.content.res.Configuration
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -45,6 +46,20 @@ internal fun resolveDark(mode: ThemeMode, systemDark: Boolean): Boolean = when (
     ThemeMode.DARK -> true
     ThemeMode.SYSTEM -> systemDark
 }
+
+/**
+ * [resolveDark] for code that runs before any composition exists and so has a [Configuration]
+ * rather than `isSystemInDarkTheme()`: `MainActivity` choosing its first system-bar style.
+ *
+ * Here, in this file, so that reading the configuration's night bit stays in the one place that
+ * resolves the theme; `ThemeSourceGuardTest` holds every other file to that.
+ */
+internal fun resolveDark(mode: ThemeMode, configuration: Configuration): Boolean =
+    resolveDark(
+        mode,
+        systemDark = (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES,
+    )
 
 /**
  * Veldt follows [mode]: Light, Dark, or the system.
