@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import androidx.work.Configuration
 import androidx.work.ListenableWorker
+import androidx.work.WorkManager
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.SynchronousExecutor
@@ -193,6 +194,10 @@ class FolderViewModelTest {
         // Before anything else: `state` is stateIn(viewModelScope, WhileSubscribed) and is live
         // from construction, holding flows over the DataStore this test's context owns.
         vm?.viewModelScope?.cancel()
+        // FINDING 13: a StuckWorker left RUNNING would be failed later by its GC'd completer's
+        // finalizer, on the Finalizer thread, against this test's closed WorkDatabase. See
+        // ScanSingleFlightTest.tearDown for the whole chain. Cancelling settles it now.
+        WorkManager.getInstance(context).cancelAllWork().result.get()
         Dispatchers.resetMain()
     }
 
