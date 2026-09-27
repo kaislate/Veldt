@@ -177,7 +177,7 @@ class ScrobbleFlusherTest {
         server.enqueue(okEnvelope()) // e1: delivered
         server.enqueue("this is not a subsonic envelope at all") // e2: Malformed -> Unreachable
 
-        flusher().flush(sourceId)
+        val outcome = flusher().flush(sourceId)
 
         assertEquals(
             "expected exactly 2 requests: e1 delivered, e2's unreachable answer must stop the loop before e3",
@@ -185,6 +185,11 @@ class ScrobbleFlusherTest {
             server.requests.size,
         )
         assertEquals("e1 delivered; e2 and e3 remain, in order", listOf(e2, e3), queue.forSource(sourceId))
+        assertEquals(
+            "an entry left behind by an unreachable answer must be reported, not just left queued",
+            FlushOutcome.UNREACHABLE,
+            outcome,
+        )
     }
 
     @Test fun `an ok result removes the entry and the request carries submission=true and time`() = runTest {
@@ -209,10 +214,17 @@ class ScrobbleFlusherTest {
         queue.add(e1)
         server.enqueue(failedEnvelope(40, "Wrong username or password"))
 
-        flusher().flush(sourceId)
+        val outcome = flusher().flush(sourceId)
 
         assertTrue("40 means credentials won't work: the source must be auth-blocked", queue.isAuthBlocked(sourceId))
         assertEquals("the rejected entry must stay queued, not be dropped", listOf(e1), queue.forSource(sourceId))
+        assertEquals(
+            "an entry left behind by an auth-block must NOT be reported as unreachable — " +
+                "the bounded retry (amendment 2026-09-27) must never spend attempts on a source " +
+                "that needs a new password, not a reachable server",
+            FlushOutcome.DELIVERED,
+            outcome,
+        )
     }
 
     @Test fun `an auth-blocked source is skipped with no request at all`() = runTest {
@@ -221,10 +233,11 @@ class ScrobbleFlusherTest {
         queue.add(e1)
         queue.setAuthBlocked(sourceId, true)
 
-        flusher().flush(sourceId)
+        val outcome = flusher().flush(sourceId)
 
         assertEquals("an auth-blocked source must never be contacted", emptyList<FakeHttpServer.Recorded>(), server.requests)
         assertEquals(listOf(e1), queue.forSource(sourceId))
+        assertEquals(FlushOutcome.DELIVERED, outcome)
     }
 
     // -------------------------------------------------------------------------- non-credential rejection
@@ -250,15 +263,16 @@ class ScrobbleFlusherTest {
     @Test fun `an unknown source's entries are purged with no request`() = runTest {
         queue.add(QueuedScrobble("ghost", "song-1", 1_000L))
 
-        flusher().flush("ghost")
+        val outcome = flusher().flush("ghost")
 
         assertEquals(emptyList<FakeHttpServer.Recorded>(), server.requests)
         assertEquals(emptyList<QueuedScrobble>(), queue.forSource("ghost"))
+        assertEquals("a purged/unknown source is not an unreachable server", FlushOutcome.DELIVERED, outcome)
     }
 
     // ------------------------------------------------------------------------------------------- flushAll
 
-    @Test fun `flushAll flushes every source with entries`() = runTest {
+    @Test fun `flushAll flushes every source with entries and reports delivered when all succeed`() = runTest {
         val a = addAccount(username = "kyle-a")
         val other = FakeHttpServer().also { it.start() }
         try {
@@ -270,12 +284,38 @@ class ScrobbleFlusherTest {
             server.enqueue(okEnvelope())
             other.enqueue(okEnvelope())
 
-            flusher().flushAll()
+            val outcome = flusher().flushAll()
 
             assertEquals(emptyList<QueuedScrobble>(), queue.forSource(a))
             assertEquals(emptyList<QueuedScrobble>(), queue.forSource(b))
+            assertEquals(FlushOutcome.DELIVERED, outcome)
         } finally {
             other.close()
+        }
+    }
+
+    /** Amendment 2026-09-27's bounded retry must fire when ANY source's flush was left behind
+     *  unreachable, even if another source in the same run delivered cleanly — a healthy server
+     *  must not mask a stranded entry on a different, currently-unreachable one. */
+    @Test fun `flushAll reports unreachable when one source delivers and another is unreachable`() = runTest {
+        val delivered = addAccount(username = "kyle-a")
+        val unreachable = FakeHttpServer().also { it.start() }
+        try {
+            val stuck = accounts.add("Other", unreachable.baseUrl, "kyle-b", "hunter2").let {
+                (it as? AccountWriteResult.Saved)?.sourceId ?: error("expected Saved, got $it")
+            }
+            queue.add(QueuedScrobble(delivered, "song-a", 1_000L))
+            queue.add(QueuedScrobble(stuck, "song-b", 2_000L))
+            server.enqueue(okEnvelope())
+            unreachable.enqueue("this is not a subsonic envelope at all")
+
+            val outcome = flusher().flushAll()
+
+            assertEquals("the delivered source's entry must be gone", emptyList<QueuedScrobble>(), queue.forSource(delivered))
+            assertEquals("the unreachable source's entry must remain", 1, queue.forSource(stuck).size)
+            assertEquals(FlushOutcome.UNREACHABLE, outcome)
+        } finally {
+            unreachable.close()
         }
     }
 }
