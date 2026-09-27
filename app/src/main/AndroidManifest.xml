@@ -21,6 +21,16 @@
          on a transitive manifest. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- The built-in pill's overlay window (P1.5c, spec §3). Requested from the settings
+         screen via ACTION_MANAGE_OVERLAY_PERMISSION; Settings.canDrawOverlays reports it. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Package visibility (API 30+) so PackageManager.getPackageInfo can see whether Veldt
+         Wisp is installed, for the pill's Wisp-deference gate (spec §3). -->
+    <queries>
+        <package android:name="com.kaislate.veldt" />
+    </queries>
+
     <application
         android:name=".VeldtApp"
         android:allowBackup="true"

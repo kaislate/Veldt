@@ -56,6 +56,11 @@ import com.kaislate.veldtplayer.ui.settings.SettingsScreen
 import com.kaislate.veldtplayer.ui.settings.accounts.AccountsScreen
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+
+/** How long an "open at now-playing" request waits for the queue to read as active. */
+private const val OPEN_NOW_PLAYING_WAIT_MS = 3_000L
 
 /**
  * The destinations that carry the app bar — the tabs, and only the tabs. Every other
@@ -87,7 +92,7 @@ private val TAB_ROUTES = setOf(
  */
 @OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun VeldtNavHost() {
+fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
     val navController = rememberNavController()
     // Held as State and unwrapped separately, because the STATE OBJECT is passed on to the
     // now-playing route while the unwrapped value is used here. Both ends of the track-art
@@ -136,6 +141,20 @@ fun VeldtNavHost() {
         // through plVm above and are already covered by that collector.
         LaunchedEffect(Unit) {
             fVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
+        // The pill's "open Veldt at now-playing" (NowPlayingDeepLink via MainActivity). Waits,
+        // briefly, for the queue to read as active: on a cold start the controller connects
+        // asynchronously, and now-playing with nothing loaded is a blank screen. If it never
+        // becomes active the app simply opens where it is.
+        LaunchedEffect(openNowPlayingRequest) {
+            if (openNowPlayingRequest <= 0) return@LaunchedEffect
+            val active = withTimeoutOrNull(OPEN_NOW_PLAYING_WAIT_MS) {
+                npVm.nowPlaying.first { it.isActive }
+            }
+            if (active != null) {
+                navController.navigate(Destinations.NOW_PLAYING) { launchSingleTop = true }
+            }
         }
 
         // Populate the library on open when access is already granted. WorkManager's

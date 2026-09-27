@@ -5,6 +5,9 @@ package com.kaislate.veldtplayer.data.settings
 
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.TrackSort
+import com.kaislate.veldtplayer.pill.PillMode
+import com.kaislate.veldtplayer.pill.util.Constants as PillConstants
+import com.kaislate.veldtplayer.pill.util.IslandPosition
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
@@ -182,5 +185,153 @@ class SettingsRepositoryTest {
         repo.setLyricsOnline(true)
         repo.setLyricsOnline(false)
         assertEquals(false, repo.lyricsOnline.first())
+    }
+
+    // ---- Built-in pill (P1.5c Task 2). Keys and defaults per spec §4. ----
+
+    @Test fun `the pill mode defaults to built-in`() = runTest {
+        assertEquals(PillMode.BUILT_IN, repo.pillMode.first())
+    }
+
+    @Test fun `each pill mode round-trips under its own name`() = runTest {
+        val readBack = PillMode.entries.map { mode ->
+            repo.setPillMode(mode); mode to repo.pillMode.first()
+        }
+        assertEquals(PillMode.entries.map { it to it }, readBack)
+    }
+
+    /** Stored by NAME, not ordinal -- same reasoning as [themeMode]'s test above: an ordinal
+     *  ties the stored value to declaration order, so inserting a PillMode constant would
+     *  silently rewrite every installed user's setting on upgrade. */
+    @Test fun `an unrecognised stored pill mode degrades to built-in`() = runTest {
+        repo.writeRawPillModeForTest("NOT_A_MODE")
+        assertEquals(PillMode.BUILT_IN, repo.pillMode.first())
+    }
+
+    @Test fun `pill mode is stored under pill_mode`() = runTest {
+        repo.setPillMode(PillMode.OFF)
+        assertEquals(
+            "the pill mode is not on disk under its own key, or not by NAME",
+            "OFF",
+            repo.readRawForTest("pill_mode"),
+        )
+    }
+
+    @Test fun `force built-in defaults to off`() = runTest {
+        assertEquals(false, repo.pillForceBuiltIn.first())
+    }
+
+    @Test fun `force built-in round-trips as a Boolean under pill_force_builtin`() = runTest {
+        repo.setPillForceBuiltIn(true)
+        assertEquals(
+            listOf<Any?>(true, true),
+            listOf<Any?>(repo.pillForceBuiltIn.first(), repo.readRawBooleanForTest("pill_force_builtin")),
+        )
+    }
+
+    @Test fun `the pill anchor defaults to top-center`() = runTest {
+        assertEquals(IslandPosition.TOP_CENTER, repo.pillAnchor.first())
+    }
+
+    @Test fun `each pill anchor round-trips under its own key string`() = runTest {
+        val readBack = IslandPosition.entries.map { position ->
+            repo.setPillAnchor(position); position to repo.pillAnchor.first()
+        }
+        assertEquals(IslandPosition.entries.map { it to it }, readBack)
+    }
+
+    /**
+     * Stored by [IslandPosition.key] (`"top-center"`), not the enum's Kotlin name
+     * (`"TOP_CENTER"`) -- the wire format is pinned on the literal string, which reading back
+     * only through [SettingsRepository.pillAnchor] cannot tell apart from a name-based scheme.
+     */
+    @Test fun `the pill anchor is stored under pill_anchor by its key string`() = runTest {
+        repo.setPillAnchor(IslandPosition.BOTTOM_RIGHT)
+        assertEquals(
+            "the pill anchor is not on disk under its own key, or not by IslandPosition.key",
+            "bottom-right",
+            repo.readRawForTest("pill_anchor"),
+        )
+    }
+
+    @Test fun `an unrecognised stored pill anchor degrades to top-center`() = runTest {
+        repo.writeRawPillAnchorForTest("diagonally")
+        assertEquals(IslandPosition.TOP_CENTER, repo.pillAnchor.first())
+    }
+
+    @Test fun `the pill width defaults to 160 dp`() = runTest {
+        assertEquals(160, repo.pillWidthDp.first())
+    }
+
+    @Test fun `the pill width round-trips as an Int under pill_width`() = runTest {
+        repo.setPillWidthDp(220)
+        assertEquals(
+            listOf<Any?>(220, 220),
+            listOf<Any?>(repo.pillWidthDp.first(), repo.readRawIntForTest("pill_width")),
+        )
+    }
+
+    @Test fun `the pill wave style defaults to wisptrail`() = runTest {
+        assertEquals("wisptrail", repo.pillWaveStyle.first())
+    }
+
+    @Test fun `the pill wave style round-trips under pill_wave_style, unvalidated`() = runTest {
+        repo.setPillWaveStyle("hills")
+        assertEquals(
+            listOf<Any?>("hills", "hills"),
+            listOf<Any?>(repo.pillWaveStyle.first(), repo.readRawForTest("pill_wave_style")),
+        )
+    }
+
+    @Test fun `the pill wave color defaults to accent-light`() = runTest {
+        assertEquals("accent-light", repo.pillWaveColor.first())
+    }
+
+    @Test fun `the pill wave color round-trips under pill_wave_color, unvalidated`() = runTest {
+        repo.setPillWaveColor("white")
+        assertEquals(
+            listOf<Any?>("white", "white"),
+            listOf<Any?>(repo.pillWaveColor.first(), repo.readRawForTest("pill_wave_color")),
+        )
+    }
+
+    @Test fun `pill art crossfade defaults to on`() = runTest {
+        assertEquals(true, repo.pillArtCrossfade.first())
+    }
+
+    @Test fun `pill art crossfade round-trips as a Boolean under pill_art_crossfade`() = runTest {
+        repo.setPillArtCrossfade(false)
+        assertEquals(
+            listOf<Any?>(false, false),
+            listOf<Any?>(repo.pillArtCrossfade.first(), repo.readRawBooleanForTest("pill_art_crossfade")),
+        )
+    }
+
+    /** Shares its default with the ported state machine's built-in timeout (Task 1's
+     *  Constants.INACTIVITY_TIMEOUT_MS) -- the same cross-check Wisp's own
+     *  SettingsDefaultsTest pinned, so the stored default and the timer cannot drift apart. */
+    @Test fun `the pill hide delay defaults to the state machine's own timeout`() = runTest {
+        assertEquals(PillConstants.INACTIVITY_TIMEOUT_MS, repo.pillHideDelayMs.first())
+        assertEquals(25_000L, repo.pillHideDelayMs.first())
+    }
+
+    @Test fun `the pill hide delay round-trips as a Long under pill_hide_delay_ms`() = runTest {
+        repo.setPillHideDelayMs(5_000L)
+        assertEquals(
+            listOf<Any?>(5_000L, 5_000L),
+            listOf<Any?>(repo.pillHideDelayMs.first(), repo.readRawLongForTest("pill_hide_delay_ms")),
+        )
+    }
+
+    @Test fun `pill transport buttons default to off`() = runTest {
+        assertEquals("off", repo.pillTransportButtons.first())
+    }
+
+    @Test fun `pill transport buttons round-trip under pill_transport_buttons, unvalidated`() = runTest {
+        repo.setPillTransportButtons("prev-play-next")
+        assertEquals(
+            listOf<Any?>("prev-play-next", "prev-play-next"),
+            listOf<Any?>(repo.pillTransportButtons.first(), repo.readRawForTest("pill_transport_buttons")),
+        )
     }
 }

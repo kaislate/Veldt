@@ -1,5 +1,6 @@
 // Copyright (c) 2026 kaislate
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Ported from Veldt Wisp (ui/components/HillsWave.kt), GPL-3.0-or-later, same author.
 
 package com.kaislate.veldtplayer.ui.components
 
@@ -107,7 +108,12 @@ fun DrawScope.drawHills(
     }
 }
 
-/** Standalone animated hills (the pill's "now playing" indicator). */
+/**
+ * Standalone animated hills (the pill's "now playing" indicator).
+ *
+ * [isLight] is forwarded to [drawWave] so the wisptrail family picks its light-ground colour
+ * and blend mode (see `WaveColorMode`); the default `false` keeps the original dark-ground look.
+ */
 @Composable
 fun HillsWave(
     isPlaying: Boolean,
@@ -115,7 +121,8 @@ fun HillsWave(
     modifier: Modifier = Modifier,
     vibrant: Boolean = false,
     waveColors: List<Color> = emptyList(),
-    waveStyle: String = "hills"
+    waveStyle: String = "hills",
+    isLight: Boolean = false,
 ) {
     val infinite = rememberInfiniteTransition(label = "hills")
     // 10 full cycles per loop: layer speed multipliers (1.0/1.7/2.3) all land on a
@@ -148,7 +155,8 @@ fun HillsWave(
             vibrant = vibrant,
             waveColors = waveColors,
             taperStartPx = size.width * 0.08f,
-            taperEndPx = size.width * 0.08f
+            taperEndPx = size.width * 0.08f,
+            isLight = isLight
         )
     }
 }

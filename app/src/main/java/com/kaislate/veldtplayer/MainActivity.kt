@@ -3,6 +3,7 @@
 
 package com.kaislate.veldtplayer
 
+import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -14,11 +15,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.settings.ThemeMode
+import com.kaislate.veldtplayer.ui.nav.NowPlayingDeepLink
 import com.kaislate.veldtplayer.ui.nav.VeldtNavHost
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.VeldtTheme
@@ -53,6 +57,21 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mediaStoreWatcher.sync()
+    }
+
+    /**
+     * How many times this activity has been asked to open now-playing
+     * ([NowPlayingDeepLink], sent by the built-in pill's card). A counter, not a flag, so two
+     * requests in a row are two distinct values and the nav host's effect re-fires for the
+     * second; the nav host acts on any value above zero.
+     */
+    private var openNowPlayingRequests by mutableIntStateOf(0)
+
+    /** The pill's deep link arriving at an activity that already exists (SINGLE_TOP). */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (NowPlayingDeepLink.isRequest(intent)) openNowPlayingRequests++
     }
     /**
      * **[enableEdgeToEdge] is what makes six screens' worth of inset work do anything below
@@ -112,6 +131,12 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
         super.onCreate(savedInstanceState)
+        // Only on a FRESH create: a recreate (rotation, theme change) re-delivers the same
+        // launch intent, and honouring it again would yank a user who had since navigated
+        // away back to now-playing.
+        if (savedInstanceState == null && NowPlayingDeepLink.isRequest(intent)) {
+            openNowPlayingRequests++
+        }
         setContent {
             // SYSTEM until the first DataStore emission, never a hardcoded LIGHT or DARK — a
             // literal here would flash the wrong theme on every cold start, for everyone whose
@@ -119,7 +144,9 @@ class MainActivity : ComponentActivity() {
             val mode by settingsRepository.themeMode.collectAsStateWithLifecycle(ThemeMode.SYSTEM)
             VeldtTheme(mode) {
                 SyncSystemBarsWithTheme()
-                Surface(Modifier.fillMaxSize()) { VeldtNavHost() }
+                Surface(Modifier.fillMaxSize()) {
+                    VeldtNavHost(openNowPlayingRequest = openNowPlayingRequests)
+                }
             }
         }
     }
