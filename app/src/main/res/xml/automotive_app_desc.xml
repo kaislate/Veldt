@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Declares Veldt to Android Auto as a media app (0.9.2 spec §6). Referenced by the
+     com.google.android.gms.car.application meta-data in the manifest. -->
+<automotiveApp>
+    <uses name="media" />
+</automotiveApp>

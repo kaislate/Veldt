@@ -37,10 +37,19 @@ import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import com.kaislate.veldtplayer.playback.scrobble.ListenClock
 import com.kaislate.veldtplayer.playback.scrobble.Scheduler
 import com.kaislate.veldtplayer.playback.scrobble.Scrobbler
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService.LibraryParams
+import androidx.media3.session.SessionError
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.MoreExecutors
 import com.google.common.util.concurrent.SettableFuture
 import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.data.playlist.PlaylistRepository
+import com.kaislate.veldtplayer.playback.browse.BrowseSessionBridge
+import com.kaislate.veldtplayer.playback.browse.BrowseTree
+import com.kaislate.veldtplayer.playback.browse.LibraryBrowseCatalog
 import com.kaislate.veldtplayer.playback.queue.QueueRestore
 import com.kaislate.veldtplayer.playback.queue.QueueResumption
 import com.kaislate.veldtplayer.playback.queue.QueueSaveScheduler
@@ -68,8 +77,12 @@ import javax.inject.Inject
 /**
  * Media3 MediaLibraryService: hosts the ExoPlayer and publishes a
  * MediaLibrarySession. Media3 auto-manages the media notification and the
- * mediaPlayback foreground service. The browsable library tree is empty in
- * P1.1 (default callback) — it is filled in P1.2.
+ * mediaPlayback foreground service.
+ *
+ * Since 0.9.2 it also keeps the queue across process death (spec §3: saved on disk, restored
+ * paused in [onCreate], offered to the system for resumption) and serves the Android Auto /
+ * Assistant browse tree (spec §6) — [LibraryCallback] delegates the latter to
+ * [BrowseSessionBridge], over the pure [BrowseTree].
  */
 @AndroidEntryPoint
 class PlaybackService : MediaLibraryService() {
@@ -119,6 +132,9 @@ class PlaybackService : MediaLibraryService() {
      */
     @Inject lateinit var library: Lazy<MusicRepository>
 
+    /** The browse tree's playlists (spec §6). [Lazy] for the same reason as [library]. */
+    @Inject lateinit var playlists: Lazy<PlaylistRepository>
+
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
@@ -135,6 +151,11 @@ class PlaybackService : MediaLibraryService() {
     private var queueWriter: ExecutorService? = null
     private var queueScope: CoroutineScope? = null
 
+    // ---- browse tree (spec §6) ----
+    /** Background scope for browse requests and the catalog's warm library; see [BrowseSessionBridge]. */
+    private var browseScope: CoroutineScope? = null
+    private var browse: BrowseSessionBridge? = null
+
     /**
      * The restore's outcome: the queue put on the player, or null when there was nothing to put.
      * Completes exactly once — from the restore coroutine, or from [onDestroy] if the service dies
@@ -144,11 +165,12 @@ class PlaybackService : MediaLibraryService() {
     private val restored: SettableFuture<SavedQueue?> = SettableFuture.create()
 
     /**
-     * The newest queue this service knows: the restored one, then every save's snapshot. Main
-     * thread only. What resumption falls back to when the player is empty, and null — no file, an
-     * emptied queue — is what makes it opt out (spec §3).
+     * The newest queue this service knows: the restored one, then every save's snapshot. Written
+     * on the main thread only; @Volatile because the browse tree's Recent node reads it from a
+     * background thread. What resumption falls back to when the player is empty, and null — no
+     * file, an emptied queue — is what makes it opt out (spec §3).
      */
-    private var latestQueue: SavedQueue? = null
+    @Volatile private var latestQueue: SavedQueue? = null
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -236,6 +258,26 @@ class PlaybackService : MediaLibraryService() {
         }
 
         startQueueRestore(exo)
+
+        // Nothing here touches the library until a controller browses: the catalog's flow is
+        // cold, and the repositories are Lazy until then.
+        val browseWork = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        browseScope = browseWork
+        val repo = library
+        val lists = playlists
+        browse = BrowseSessionBridge(
+            context = this,
+            tree = BrowseTree(
+                LibraryBrowseCatalog(
+                    repo = { repo.get() },
+                    playlistRepo = { lists.get() },
+                    scope = browseWork,
+                    recentQueue = { latestQueue },
+                ),
+            ),
+            playableUri = { song -> repo.get().playableUri(song) },
+            scope = browseWork,
+        )
 
         // Last: the bus adapter above is already publishing, so the pill's first read is real.
         pillController.start()
@@ -326,6 +368,8 @@ class PlaybackService : MediaLibraryService() {
         queueSaver?.release()
         queueTriggers?.let { player?.removeListener(it) }
         queueScope?.cancel()
+        // Pending browse futures complete exceptionally (see BrowseSessionBridge.future).
+        browseScope?.cancel()
         queueWriter?.shutdown()
         // Anything still waiting on the restore gets "nothing" rather than a future that never
         // completes (a no-op if the restore already finished).
@@ -363,6 +407,8 @@ class PlaybackService : MediaLibraryService() {
         queueTriggers = null
         queueWriter = null
         queueScope = null
+        browseScope = null
+        browse = null
         super.onDestroy()
     }
 
@@ -419,6 +465,80 @@ class PlaybackService : MediaLibraryService() {
             ).resume()
             return Futures.transform(queue, { it.toResumption() }, main)
         }
+
+        // ---- spec §6: the browse tree, delegated whole to BrowseSessionBridge ----
+
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> =
+            browse?.libraryRoot(browser, params) ?: gone()
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
+            browse?.children(browser, parentId, page, pageSize, params) ?: gone()
+
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> =
+            browse?.item(browser, mediaId) ?: gone()
+
+        override fun onSearch(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<Void>> =
+            browse?.search(session, browser, query, params) ?: gone()
+
+        override fun onGetSearchResult(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
+            browse?.searchResult(browser, query, page, pageSize, params) ?: gone()
+
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+        ): ListenableFuture<MutableList<MediaItem>> {
+            val bridge = browse ?: return Futures.immediateFuture(mediaItems)
+            return Futures.transform(
+                bridge.addMediaItems(mediaItems),
+                { it.toMutableList() },
+                MoreExecutors.directExecutor(),
+            )
+        }
+
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val bridge = browse ?: return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs),
+            )
+            return bridge.setMediaItems(mediaItems, startIndex, startPositionMs)
+        }
+
+        /** A browse request reaching a service already torn down. */
+        private fun <T : Any> gone(): ListenableFuture<LibraryResult<T>> =
+            Futures.immediateFuture(LibraryResult.ofError<T>(SessionError.ERROR_UNKNOWN))
     }
 
     private companion object {

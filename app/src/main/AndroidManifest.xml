@@ -92,6 +92,19 @@
             </intent-filter>
         </receiver>
 
+        <!-- Browse-item artwork for Android Auto (spec §6). NOT exported: a head unit can open a
+             uri only through the per-uri read grant PlaybackService hands out with each item. -->
+        <provider
+            android:name=".playback.browse.BrowseArtProvider"
+            android:authorities="${applicationId}.browseart"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- Android Auto: this app is a media app (spec §6). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <!-- Remove WorkManager's default initializer so our custom
              Configuration.Provider (VeldtApp) drives on-demand init. -->
         <provider
