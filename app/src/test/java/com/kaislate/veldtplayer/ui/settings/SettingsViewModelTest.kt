@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -84,12 +86,44 @@ class SettingsViewModelTest {
     // value; `.first { it == expected }` waits for the real eventual write instead of assuming
     // it already landed.
 
-    @Test fun `the pill mode defaults to built-in and round-trips`() = runTest {
+    /** The switch writes BUILT_IN for on and OFF for off, and nothing else (Step 5 §9). */
+    @Test fun `the pill switch defaults to on and writes built-in or off`() = runTest {
         val vm = viewModel()
-        assertEquals(PillMode.BUILT_IN, vm.pillMode.first())
-        vm.setPillMode(PillMode.OFF)
-        assertEquals(PillMode.OFF, vm.pillMode.first { it == PillMode.OFF })
-        assertEquals(PillMode.OFF, repo.pillMode.first())
+        val initially = vm.pillEnabled.value
+        // Real-time waits, as in the legacy test below: runTest's virtual clock otherwise races
+        // DataStore's own thread.
+        vm.setPillEnabled(false)
+        val whenOff = withContext(Dispatchers.Default) {
+            withTimeoutOrNull(5_000) { repo.pillMode.first { it == PillMode.OFF } } ?: repo.pillMode.first()
+        }
+        vm.setPillEnabled(true)
+        val (whenOn, raw) = withContext(Dispatchers.Default) {
+            val mode = withTimeoutOrNull(5_000) { repo.pillMode.first { it == PillMode.BUILT_IN } }
+                ?: repo.pillMode.first()
+            mode to repo.readRawForTest("pill_mode")
+        }
+        assertEquals(
+            listOf<Any>(true, PillMode.OFF, PillMode.BUILT_IN, "BUILT_IN"),
+            listOf<Any?>(initially, whenOff, whenOn, raw),
+        )
+    }
+
+    /**
+     * A stored legacy USE_WISP shows the switch ON. Starts from OFF so the answer has to come
+     * from the store: the switch reads on before the first read, so starting cold would pass
+     * whatever USE_WISP mapped to. Waits in real time, because DataStore writes on its own thread.
+     */
+    @Test fun `a stored legacy USE_WISP shows the switch on`() = runTest {
+        repo.setPillMode(PillMode.OFF)
+        val vm = viewModel()
+        val before = withContext(Dispatchers.Default) {
+            withTimeoutOrNull(5_000) { vm.pillEnabled.first { !it } }
+        }
+        repo.writeRawPillModeForTest("USE_WISP")
+        val after = withContext(Dispatchers.Default) {
+            withTimeoutOrNull(5_000) { vm.pillEnabled.first { it } } ?: vm.pillEnabled.value
+        }
+        assertEquals(listOf(false, true), listOf(before, after))
     }
 
     @Test fun `force built-in defaults to off and round-trips`() = runTest {

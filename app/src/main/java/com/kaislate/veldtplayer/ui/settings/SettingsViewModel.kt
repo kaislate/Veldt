@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -37,6 +38,8 @@ import javax.inject.Inject
  * permission granted" are read from outside [SettingsRepository] entirely. `AppForeground` has
  * no seam taken here: nothing on this screen depends on Veldt's own foreground state, so it
  * belongs to whichever component actually drives the pill at runtime (a later task), not here.
+ *
+ * [PillAppearanceScreen] uses this view model too, for the pill's appearance values below.
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -102,20 +105,24 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { settingsRepository.setFolderHidden(key, hidden = false) }
     }
 
-    // ---- Built-in pill (P1.5c Task 2). Settings screen "Floating pill" section, spec §4. ----
+    // ---- Built-in pill (P1.5c Task 2; Step 5 §9). The "Floating pill" section. ----
 
-    /** The three-way mode. Defaults to [PillMode.BUILT_IN] (spec §4) before the first read. */
-    val pillMode: StateFlow<PillMode> = settingsRepository.pillMode.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        PillMode.BUILT_IN,
-    )
+    /**
+     * The "Floating pill" switch: on is [PillMode.BUILT_IN], off is [PillMode.OFF]. A stored
+     * legacy `USE_WISP` already reads as [PillMode.BUILT_IN] (see [PillMode.fromStored]), so it
+     * shows as on. On before the first read, matching the default (spec §4).
+     */
+    val pillEnabled: StateFlow<Boolean> = settingsRepository.pillMode
+        .map { it == PillMode.BUILT_IN }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
-    fun setPillMode(mode: PillMode) {
-        viewModelScope.launch { settingsRepository.setPillMode(mode) }
+    fun setPillEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setPillMode(if (enabled) PillMode.BUILT_IN else PillMode.OFF)
+        }
     }
 
-    /** The "use built-in anyway" override; only meaningful while [wispInstalled]. */
+    /** The "Use Veldt's own pill instead" override; only meaningful while [wispInstalled]. */
     val pillForceBuiltIn: StateFlow<Boolean> = settingsRepository.pillForceBuiltIn.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -127,15 +134,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Whether Veldt Wisp is installed right now — drives the settings screen's "Veldt Wisp is
-     * installed, Veldt defers to it" note. [WispPresence.installed] is already a `StateFlow`
-     * kept current by a package-change receiver (Task 2), so this only needs to follow it.
+     * Whether Veldt Wisp is installed right now, which picks the "Floating pill" section's rows.
+     * [WispPresence.installed] is already a `StateFlow` kept current by a package-change
+     * receiver, so it is passed straight through: the section changes while it is open when Wisp
+     * is installed or removed, and its first frame already reads the true value.
      */
-    val wispInstalled: StateFlow<Boolean> = wispPresence.installed.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        false,
-    )
+    val wispInstalled: StateFlow<Boolean> = wispPresence.installed
 
     /**
      * The overlay permission's status for the settings screen's status row.

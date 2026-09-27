@@ -174,11 +174,18 @@ class PillControllerTest {
         assertTrue(rig.window.showing)
     }
 
-    @Test fun `use-Wisp mode never shows`() = runTest {
+    /**
+     * Step 5 §9: the retired "Use Veldt Wisp" choice, still on disk, reads as the switch on. So
+     * without Wisp Veldt now draws the pill, and with Wisp it stands down exactly as before.
+     */
+    @Test fun `a stored legacy USE_WISP shows the pill without Wisp and stands down for it`() = runTest {
         val rig = Rig(this)
-        rig.mode.value = PillMode.USE_WISP
+        rig.mode.value = PillMode.fromStored(PillMode.LEGACY_USE_WISP)
         playingInBackground(rig)
-        assertFalse(rig.window.showing)
+        val withoutWisp = rig.window.showing
+        rig.wisp.value = true
+        runCurrent()
+        assertEquals(listOf(true, false), listOf(withoutWisp, rig.window.showing))
     }
 
     @Test fun `mode OFF never shows, through any playback or foreground change`() = runTest {
@@ -372,7 +379,7 @@ class PillControllerTest {
             listOf(PillMode.BUILT_IN, true, true, true) to PillStandDown.ATTACH_REFUSED,
             listOf(PillMode.BUILT_IN, false, true, true) to PillStandDown.PERMISSION_LOST,
             listOf(PillMode.OFF, false, true, true) to PillStandDown.NONE,
-            listOf(PillMode.USE_WISP, true, true, true) to PillStandDown.NONE,
+            listOf(PillMode.OFF, true, true, true) to PillStandDown.NONE,
         )
         val actual = cases.map { (c, _) ->
             PillStatusRules.standDown(c[0] as PillMode, c[1] as Boolean, c[2] as Boolean, c[3] as Boolean)

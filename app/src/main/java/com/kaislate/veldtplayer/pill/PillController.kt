@@ -232,8 +232,8 @@ class PillController internal constructor(
         )
         val eligible = s != null && PillVisibility.decide(inputs) && !attachRefused
 
-        // A stash only means something while the pill could come back. If it can't (mode off,
-        // deferring to Wisp, permission gone), the "tap to bring it back" notice would lie.
+        // A stash only means something while the pill could come back. If it can't (switched off,
+        // standing down for Wisp, permission gone), the "tap to bring it back" notice would lie.
         val couldShow = s != null && PillVisibility.decide(inputs.copy(appInForeground = false))
         if (!couldShow) unstash()
 

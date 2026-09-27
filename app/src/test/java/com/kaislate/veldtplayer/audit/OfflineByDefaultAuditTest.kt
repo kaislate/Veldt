@@ -6,10 +6,13 @@ package com.kaislate.veldtplayer.audit
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.work.Configuration
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
+import androidx.work.testing.SynchronousExecutor
 import androidx.work.testing.TestListenableWorkerBuilder
+import androidx.work.testing.WorkManagerTestInitHelper
 import androidx.work.workDataOf
 import com.kaislate.veldtplayer.data.account.AccountRepository
 import com.kaislate.veldtplayer.data.account.AccountWriteResult
@@ -87,6 +90,11 @@ import kotlin.coroutines.CoroutineContext
  * real classes directly with the recording client — see each component's own KDoc for that
  * seam already existing (Task 1–3's own work). Invariant 5 (airplane mode) is a device check
  * (N2), not a JVM test, and is out of scope here.
+ *
+ * Settings' "Get Veldt Wisp" (Step 5 spec §9) is deliberately not audited here: it is an
+ * `ACTION_VIEW` of the Releases page that the user starts by tapping it, handed to their browser.
+ * Veldt makes no request of its own, so none of these invariants is touched. Its intent is
+ * asserted in `FloatingPillSectionTest` instead.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -168,6 +176,19 @@ class OfflineByDefaultAuditTest {
 
     @Before fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        // FINDING 13. `SubsonicSyncCoordinator.request` below calls `WorkManager.getInstance`, and
+        // with nothing initialised that is the app's REAL WorkManager: an on-disk WorkDatabase
+        // whose Room invalidation refresh is dispatched onto WorkManager's own `WM.task` threads.
+        // Robolectric closes every SQLite connection when a test ends, so a refresh still queued
+        // there after this test's enqueue ran against a freed connection ("Illegal connection
+        // pointer"), and kotlinx-coroutines-test billed that orphaned throw to the NEXT test's
+        // `runTest`. The test WorkManager runs its task executor synchronously, so every refresh
+        // has finished before the enqueue returns and nothing outlives the test. It also keeps the
+        // enqueued sync from ever running here: it waits on a network constraint no test sets.
+        WorkManagerTestInitHelper.initializeTestWorkManager(
+            context,
+            Configuration.Builder().setExecutor(SynchronousExecutor()).build(),
+        )
         db = Room.inMemoryDatabaseBuilder(context, VeldtDatabase::class.java).allowMainThreadQueries().build()
         accountDao = db.accountDao()
         songDao = db.songDao()

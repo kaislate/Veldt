@@ -15,6 +15,7 @@ import androidx.work.WorkerParameters
 import androidx.work.testing.SynchronousExecutor
 import androidx.work.testing.WorkManagerTestInitHelper
 import com.google.common.util.concurrent.ListenableFuture
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -98,6 +99,23 @@ class ScanSingleFlightTest {
                 .build(),
         )
         wm = WorkManager.getInstance(context)
+    }
+
+    /**
+     * FINDING 13. A [StuckWorker] left RUNNING is not inert once the test ends. WorkManager
+     * awaits it through a `CallbackToFutureAdapter` completer, and when the abandoned completer
+     * is garbage-collected its finalizer fails that future. The failure listener then runs on the
+     * JVM Finalizer thread, inline under [SynchronousExecutor], and writes to this test's
+     * WorkDatabase, whose connections Robolectric has already freed. Room's invalidation refresh
+     * is dispatched the same inline way, so it too runs on the Finalizer thread ("Finalizer @Room
+     * Invalidation Tracker Refresh"), throws "Illegal connection pointer" with no parent to catch
+     * it, and kotlinx-coroutines-test bills the throw to whichever later test next calls
+     * `runTest`. Cancelling the work here resolves the future while the database is still open,
+     * so the finalizer finds it already complete and has nothing to run.
+     */
+    @After
+    fun tearDown() {
+        wm.cancelAllWork().result.get()
     }
 
     private fun scans(): List<WorkInfo> =
