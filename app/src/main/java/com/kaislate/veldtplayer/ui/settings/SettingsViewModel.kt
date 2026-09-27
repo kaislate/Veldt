@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.data.library.FolderExclusion
 import com.kaislate.veldtplayer.data.library.FolderSort
 import com.kaislate.veldtplayer.data.library.VolumeNames
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainMode
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.settings.ThemeMode
 import com.kaislate.veldtplayer.pill.OverlayPermission
@@ -80,6 +81,28 @@ class SettingsViewModel @Inject constructor(
 
     fun setLyricsOnline(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setLyricsOnline(enabled) }
+    }
+
+    /** ReplayGain (0.9.2 spec §5): on, in Auto, by default. */
+    val replayGainMode: StateFlow<ReplayGainMode> = settingsRepository.replayGainMode.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        ReplayGainMode.AUTO,
+    )
+
+    fun setReplayGainMode(mode: ReplayGainMode) {
+        viewModelScope.launch { settingsRepository.setReplayGainMode(mode) }
+    }
+
+    /** The ReplayGain pre-amp, whole dB in −6…+6. */
+    val replayGainPreampDb: StateFlow<Int> = settingsRepository.replayGainPreampDb.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        0,
+    )
+
+    fun setReplayGainPreampDb(db: Int) {
+        viewModelScope.launch { settingsRepository.setReplayGainPreampDb(db) }
     }
 
     /**

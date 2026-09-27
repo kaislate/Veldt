@@ -3,42 +3,89 @@
 
 package com.kaislate.veldtplayer.playback.audio
 
+import android.util.Log
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The ONE owner of the final output gain (0.9.2 spec §4, §5): the sleep timer's fade is applied
- * here and nowhere else. `Player.volume` is never touched, so nothing can compose with this stage
- * by accident — a second owner of the level is exactly the bug "one owner" rules out.
+ * The ONE owner of the final output gain (0.9.2 spec §4, §5). Every sample is multiplied by
+ *
+ *     final = replayGain(item this sample belongs to) × sleepFade
+ *
+ * and nothing else in the app changes the level: `Player.volume` is never touched, so the two
+ * cannot compose by accident — a second owner of the level is exactly the bug "one owner" rules
+ * out. The ReplayGain factor already contains the pre-amp and the peak limit (see
+ * `ReplayGainMath.linearGain`); the fade is in [0, 1], so composing them can only lower the level
+ * and never undoes the clipping prevention.
  *
  * A custom `AudioProcessor` inside `DefaultAudioSink` (see [VeldtRenderersFactory]) rather than
  * `Player.volume`, because a processor sees the PCM itself: it can apply more than unity gain and
  * it knows exactly which samples a change lands on. `AudioTrack.setVolume` can do neither.
  *
- * **Where the gain lands in time.** The processor runs AHEAD of the speaker by whatever the
- * `AudioTrack` has buffered — for 16-bit PCM Media3's default sizing is 250–750 ms. A fade set
- * here is therefore heard up to that much later than it was set. For a 30 s fade that is noise;
- * the one visible consequence is that a sleep-timer pause leaves up to that much faded-to-silence
- * audio queued in the track, which plays (near-silent) for that long when the user next presses
- * play.
+ * ## Which item a sample belongs to — the boundary mechanism (spec §5)
  *
- * **No zipper noise.** The level a caller asks for is reached with a linear ramp across the next
- * buffer (tens of milliseconds) rather than a step, so the timer's ticks — a few per second —
- * never click. [onFlush] snaps instead: a flush is a discontinuity in the stream anyway (a seek,
- * a new stream), and ramping across it would smear the previous context into the new one.
+ * Media3 1.8 gives an `AudioProcessor` no media item, only PCM. What it does give is a strict
+ * protocol, read off the 1.8.0 `DefaultAudioSink` bytecode, that Media3's own encoder-delay
+ * trimming relies on for gapless playback:
  *
- * Threading: [setFade] is called from the main thread; everything else runs on the playback
- * thread, which is why the requested level is `@Volatile` and the applied one is not.
+ * 1. Each new stream's format reaches `AudioSink.configure` when the renderer outputs its FIRST
+ *    sample. `configure` calls every processor's `configure` at once — while the previous
+ *    stream's audio may still be inside the processors — and parks the result as a PENDING
+ *    configuration. `BaseAudioProcessor` keeps a pending format inactive for exactly this reason.
+ * 2. The next `handleBuffer` (the new stream's first buffer) first DRAINS the old configuration
+ *    to its end, then swaps configurations and calls `flush()` on every processor, which is what
+ *    activates a pending format — and only then queues the new buffer.
+ *
+ * So state latched in [onConfigure] and activated in [onFlush] switches exactly between the last
+ * sample of one stream and the first sample of the next: sample-aligned at this processor, gapless
+ * or not. [ItemTaggingAudioRenderer] + [ItemAwareAudioSink] supply the identity: the renderer
+ * tags each stream's `Format` with its media item, the sink reads the tag in `configure` and hands
+ * it to [expectItem] just before the processors are configured. Downstream of here the samples go
+ * straight to the `AudioTrack` in order, so the switch is heard exactly at the boundary too. A seek
+ * or a sink reset is also a `configure`/`flush` pair, so it lands on the right item the same way.
+ *
+ * The gain for an item is looked up in [itemGains] per buffer, not frozen at the boundary: the
+ * lookahead normally has it ready before the transition, and when it does not (the first track
+ * of a fresh queue, a slow server) the correct level arrives a buffer or so later, ramped.
+ *
+ * ## Where the fade lands in time
+ *
+ * The processor runs AHEAD of the speaker by whatever the `AudioTrack` has buffered — for 16-bit
+ * PCM Media3's default sizing is 250–750 ms. A fade set here is therefore heard up to that much
+ * later than it was set. For a 30 s fade that is noise; the one visible consequence is that a
+ * sleep-timer pause leaves up to that much faded-to-silence audio queued in the track, which plays
+ * (near-silent) for that long when the user next presses play.
+ *
+ * **No zipper noise.** A new level (a fade tick, a late or changed ReplayGain value) is reached
+ * with a linear ramp across the next buffer (tens of milliseconds) rather than a step. [onFlush]
+ * snaps instead: a flush is a discontinuity in the stream anyway (a seek, a new stream), and
+ * ramping across it would smear one track's level into the next.
+ *
+ * Threading: [setFade] and [setItemGain] are called from other threads; everything else runs on
+ * the playback thread. What crosses threads is `@Volatile` or a concurrent map.
  */
 @OptIn(UnstableApi::class)
 class GainStage : BaseAudioProcessor() {
 
     /** The sleep timer's requested fade, 1 = untouched, 0 = silent. */
     @Volatile private var fade = 1f
+
+    /** mediaId → the linear ReplayGain factor for it. Absent means unity (0 dB). */
+    private val itemGains = ConcurrentHashMap<String, Float>()
+
+    /** Set by [ItemAwareAudioSink] just before it configures the processors for a new stream. */
+    private var expectedItem: String? = null
+
+    /** The item of the configuration waiting for its [flush] — see the class KDoc. */
+    private var pendingItem: String? = null
+
+    /** The item whose samples are flowing through now. */
+    private var activeItem: String? = null
 
     /** The gain the last processed frame was actually multiplied by — where the next ramp starts. */
     private var applied = 1f
@@ -48,8 +95,23 @@ class GainStage : BaseAudioProcessor() {
         fade = volume.coerceIn(0f, 1f)
     }
 
+    /** The ReplayGain factor for [mediaId], from the next buffer of that item on. */
+    fun setItemGain(mediaId: String, linear: Float) {
+        itemGains[mediaId] = linear
+    }
+
+    /** Forgets every item's gain except [keep]'s: the map holds the lookahead window, not history. */
+    fun retainItemGains(keep: Set<String>) {
+        itemGains.keys.retainAll(keep)
+    }
+
+    /** The stream about to be configured belongs to [mediaId] (null: unknown, so unity). */
+    internal fun expectItem(mediaId: String?) {
+        expectedItem = mediaId
+    }
+
     /** The level the next buffer ramps to. */
-    private fun target(): Float = fade
+    private fun target(): Float = (activeItem?.let { itemGains[it] } ?: 1f) * fade
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
         // DefaultAudioSink converts every PCM input to 16-bit (or to float when float output is
@@ -60,6 +122,7 @@ class GainStage : BaseAudioProcessor() {
         ) {
             throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
         }
+        pendingItem = expectedItem
         return inputAudioFormat
     }
 
@@ -81,19 +144,29 @@ class GainStage : BaseAudioProcessor() {
     }
 
     override fun onFlush() {
+        if (activeItem != pendingItem) {
+            activeItem = pendingItem
+            // One line per stream boundary, never per buffer: what a device check greps for.
+            Log.i(LOG_TAG, "boundary: item=$activeItem gain=${activeItem?.let { itemGains[it] }} fade=$fade")
+        }
         applied = target()
     }
 
     override fun onReset() {
         fade = 1f
         applied = 1f
+        expectedItem = null
+        pendingItem = null
+        activeItem = null
     }
 
     companion object {
-        /** `adb logcat -s VeldtGain` shows the sleep timer's fade trace. */
+        /** `adb logcat -s VeldtGain` shows every boundary, every resolved gain and the sleep
+         *  timer's fade trace. */
         const val LOG_TAG = "VeldtGain"
     }
 }
+
 
 /**
  * The arithmetic of [GainStage], separated so it is plain JVM code over [ByteBuffer]s.

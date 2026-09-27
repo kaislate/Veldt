@@ -13,6 +13,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.kaislate.veldtplayer.data.library.FolderExclusion
 import com.kaislate.veldtplayer.data.library.TrackSort
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainMode
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainPreamp
 import com.kaislate.veldtplayer.pill.PillMode
 import com.kaislate.veldtplayer.pill.util.Constants as PillConstants
 import com.kaislate.veldtplayer.pill.util.IslandPosition
@@ -225,6 +227,44 @@ class SettingsRepository @Inject constructor(
     }
 
     /**
+     * ReplayGain (0.9.2 spec §5), ON by default in [ReplayGainMode.AUTO]. Stored by NAME and
+     * degrading to AUTO for anything unrecognised — [themeMode]'s convention, for its reason.
+     */
+    val replayGainMode: Flow<ReplayGainMode> = context.settingsStore.data.map { prefs ->
+        prefs[REPLAYGAIN_MODE]?.let { raw -> ReplayGainMode.entries.firstOrNull { it.name == raw } }
+            ?: ReplayGainMode.AUTO
+    }
+
+    suspend fun setReplayGainMode(mode: ReplayGainMode) {
+        context.settingsStore.edit { it[REPLAYGAIN_MODE] = mode.name }
+    }
+
+    /**
+     * The ReplayGain pre-amp in whole dB, −6…+6, default 0. A stored value outside the range (a
+     * downgrade, a hand-edited store) is clamped into it rather than discarded: the nearest
+     * setting the user could have chosen is a better guess than resetting their choice to 0.
+     */
+    val replayGainPreampDb: Flow<Int> = context.settingsStore.data.map { prefs ->
+        (prefs[REPLAYGAIN_PREAMP_DB] ?: 0).coerceIn(ReplayGainPreamp.MIN_DB, ReplayGainPreamp.MAX_DB)
+    }
+
+    /** @throws IllegalArgumentException outside −6…+6 — a caller bug. */
+    suspend fun setReplayGainPreampDb(db: Int) {
+        require(db in ReplayGainPreamp.MIN_DB..ReplayGainPreamp.MAX_DB) { "pre-amp out of range: $db" }
+        context.settingsStore.edit { it[REPLAYGAIN_PREAMP_DB] = db }
+    }
+
+    /** Test seam: writes a raw pre-amp so the out-of-range clamp is reachable. */
+    internal suspend fun writeRawReplayGainPreampForTest(raw: Int) {
+        context.settingsStore.edit { it[REPLAYGAIN_PREAMP_DB] = raw }
+    }
+
+    /** Test seam: writes a raw mode name so the unrecognised-value path is reachable. */
+    internal suspend fun writeRawReplayGainModeForTest(raw: String) {
+        context.settingsStore.edit { it[REPLAYGAIN_MODE] = raw }
+    }
+
+    /**
      * The tag-reading "generation" this install's library was last fully re-tagged under (API 29
      * legacy-storage fix). A plain Int, not a name — there is no enum to outlive, it only ever
      * moves forward, and the value itself has no meaning beyond "less than" / "at least" the
@@ -417,6 +457,8 @@ class SettingsRepository @Inject constructor(
         val FOLDER_SORT_DESC = booleanPreferencesKey("folder_sort_desc")
         val METERED_MAX_BITRATE = intPreferencesKey("metered_max_bitrate")
         val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
+        val REPLAYGAIN_MODE = stringPreferencesKey("replaygain_mode")
+        val REPLAYGAIN_PREAMP_DB = intPreferencesKey("replaygain_preamp_db")
         val TAG_SCAN_GENERATION = intPreferencesKey("tag_scan_generation")
         val EXCLUDED_FOLDERS = stringSetPreferencesKey("excluded_folders")
         val VOLUME_NAMES = stringPreferencesKey("volume_names")

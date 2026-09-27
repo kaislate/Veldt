@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.net
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.lyrics.LyricLine
 import com.kaislate.veldtplayer.data.lyrics.Lyrics
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainValues
 import com.kaislate.veldtplayer.di.CryptoRandom
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -65,6 +66,15 @@ sealed interface ScrobbleResult {
     /** The server answered and refused. [error] classifies [code] — see [SubsonicError
      * .meansCredentialsWontWork] for which codes mean "this account's credentials won't work". */
     data class Rejected(val error: SubsonicError, val code: Int) : ScrobbleResult
+}
+
+/** What [SubsonicClient.replayGain] learned. */
+sealed interface ReplayGainLookup {
+    /** The server answered; [values] is null when the song has no ReplayGain. */
+    data class Answered(val values: ReplayGainValues?) : ReplayGainLookup
+
+    /** No usable answer — ask again next time. */
+    data object Unreachable : ReplayGainLookup
 }
 
 /**
@@ -178,6 +188,35 @@ class SubsonicClient @Inject constructor(
             val text = lines.mapNotNull { it.stringOrNull("value") }.joinToString("\n")
             text.takeIf { it.isNotBlank() }?.let { Lyrics.Plain(it) }
         }
+    }
+
+    /**
+     * The OpenSubsonic `replayGain` object of `getSong` for [songId] (0.9.2 spec §5): `trackGain`
+     * / `albumGain` in dB, `trackPeak` / `albumPeak` linear. `baseGain` and `fallbackGain` are
+     * not read — the first describes a codec header gain the decoder already applies, the second
+     * is a server-side guess for untagged files, and "missing tags → no change" is the rule here.
+     *
+     * [ReplayGainLookup.Answered] with null values is a definitive "this song has none" — a plain
+     * Subsonic server, or a file with no tags — and can be cached. [ReplayGainLookup.Unreachable]
+     * (no answer, or a refusal) must not be: the next play should ask again.
+     *
+     * Built on [call], so the formPost-vs-GET choice and credential placement are [buildRequest]'s,
+     * like every other authenticated request here. Never throws.
+     */
+    suspend fun replayGain(creds: SubsonicCredentials, caps: ServerCapabilities, songId: String): ReplayGainLookup {
+        val result = call(creds, "getSong", listOf("id" to songId), caps)
+        val body = (result as? SubsonicResult.Ok)?.body ?: return ReplayGainLookup.Unreachable
+        val gain = (body["song"] as? JsonObject)?.get("replayGain") as? JsonObject
+            ?: return ReplayGainLookup.Answered(null)
+        fun number(key: String): Float? =
+            (gain[key] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toFloatOrNull()?.takeIf { it.isFinite() }
+        val values = ReplayGainValues(
+            trackGainDb = number("trackGain"),
+            trackPeak = number("trackPeak")?.takeIf { it > 0f },
+            albumGainDb = number("albumGain"),
+            albumPeak = number("albumPeak")?.takeIf { it > 0f },
+        )
+        return ReplayGainLookup.Answered(values.takeUnless { it.isEmpty })
     }
 
     private fun JsonObject.booleanOrNull(key: String): Boolean? =

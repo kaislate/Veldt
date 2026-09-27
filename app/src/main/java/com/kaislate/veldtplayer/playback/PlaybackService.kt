@@ -30,8 +30,13 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import com.kaislate.veldtplayer.MainActivity
 import com.kaislate.veldtplayer.R
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainResolver
+import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.playback.audio.GainStage
 import com.kaislate.veldtplayer.playback.audio.VeldtRenderersFactory
+import com.kaislate.veldtplayer.playback.replaygain.ReplayGainCoordinator
+import com.kaislate.veldtplayer.playback.replaygain.ReplayGainSettings
+import kotlinx.coroutines.flow.combine
 import com.kaislate.veldtplayer.playback.sleep.SleepTimer
 import com.kaislate.veldtplayer.playback.sleep.SleepTimerCommands
 import com.kaislate.veldtplayer.playback.sleep.SleepTimerRequest
@@ -96,8 +101,9 @@ import kotlin.math.abs
  * Since 0.9.2 it also keeps the queue across process death (spec §3: saved on disk, restored
  * paused in [onCreate], offered to the system for resumption) and serves the Android Auto /
  * Assistant browse tree (spec §6) — [LibraryCallback] delegates the latter to
- * [BrowseSessionBridge], over the pure [BrowseTree] — and runs the sleep timer (spec §4), whose
- * fade goes through [GainStage], the one owner of the final output gain.
+ * [BrowseSessionBridge], over the pure [BrowseTree] — and runs the sleep timer (spec §4) and
+ * ReplayGain (spec §5), whose fade and per-item gain both go through [GainStage], the one owner of
+ * the final output gain.
  */
 @AndroidEntryPoint
 class PlaybackService : MediaLibraryService() {
@@ -150,6 +156,12 @@ class PlaybackService : MediaLibraryService() {
     /** The browse tree's playlists (spec §6). [Lazy] for the same reason as [library]. */
     @Inject lateinit var playlists: Lazy<PlaylistRepository>
 
+    /** ReplayGain values at play time (spec §5). [Lazy]: nothing resolves until something plays. */
+    @Inject lateinit var replayGainResolver: Lazy<ReplayGainResolver>
+
+    /** The ReplayGain mode and pre-amp (spec §5). [Lazy] for the reason [library] is. */
+    @Inject lateinit var settings: Lazy<SettingsRepository>
+
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
@@ -176,6 +188,8 @@ class PlaybackService : MediaLibraryService() {
     private var gainStage: GainStage? = null
     private var sleepTimer: SleepTimer? = null
     private var sleepListener: Player.Listener? = null
+    private var replayGain: ReplayGainCoordinator? = null
+    private var replayGainScope: CoroutineScope? = null
 
     /** Last state sent as session extras, so a per-minute label change does not resend them. */
     private var publishedSleepState: SleepTimerState = SleepTimerState.Off
@@ -288,6 +302,7 @@ class PlaybackService : MediaLibraryService() {
 
         startQueueRestore(exo)
         startSleepTimer(exo, stage)
+        startReplayGain(exo, stage)
 
         // Nothing here touches the library until a controller browses: the catalog's flow is
         // cold, and the repositories are Lazy until then.
@@ -399,6 +414,27 @@ class PlaybackService : MediaLibraryService() {
         Log.i(GainStage.LOG_TAG, "fade=${"%.3f".format(volume)} at ${SystemClock.elapsedRealtime()}ms")
     }
 
+    /**
+     * Spec §5: ReplayGain for the playing item and the next one, handed to [stage] — the same
+     * owner of the final gain the sleep timer's fade goes through, so the two compose as one
+     * product rather than fighting over a volume.
+     */
+    private fun startReplayGain(exo: ExoPlayer, stage: GainStage) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        replayGainScope = scope
+        val repo = library
+        val resolver = replayGainResolver
+        val prefs = settings.get()
+        replayGain = ReplayGainCoordinator(
+            player = exo,
+            scope = scope,
+            lookupSongs = { refs -> repo.get().findByKeys(refs) },
+            valuesFor = { song -> resolver.get().valuesFor(song) },
+            settings = combine(prefs.replayGainMode, prefs.replayGainPreampDb, ::ReplayGainSettings),
+            stage = stage,
+        ).also { it.start() }
+    }
+
     private fun publishSleepTimer(status: SleepTimerStatus) {
         val s = session ?: return
         if (status.state != publishedSleepState) {
@@ -477,6 +513,8 @@ class PlaybackService : MediaLibraryService() {
         // The timer is not persisted (spec §4): it simply stops with the service.
         sleepListener?.let { player?.removeListener(it) }
         sleepTimer?.release()
+        replayGain?.release()
+        replayGainScope?.cancel()
         busAdapter?.detach()
         // Detach first, then clear: the adapter can push during teardown, and a push landing
         // after the reset would refill the bus with the state this is meant to drop.
@@ -514,6 +552,8 @@ class PlaybackService : MediaLibraryService() {
         browse = null
         sleepTimer = null
         sleepListener = null
+        replayGain = null
+        replayGainScope = null
         gainStage = null
         super.onDestroy()
     }

@@ -34,6 +34,8 @@ import com.kaislate.veldtplayer.data.lyrics.LrclibClient
 import com.kaislate.veldtplayer.data.lyrics.LrclibProvider
 import com.kaislate.veldtplayer.data.lyrics.ServerLyricsProvider
 import com.kaislate.veldtplayer.data.net.ScrobbleResult
+import com.kaislate.veldtplayer.data.replaygain.LocalReplayGainReader
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainResolver
 import com.kaislate.veldtplayer.data.net.SubsonicClient
 import com.kaislate.veldtplayer.data.scrobble.QueuedScrobble
 import com.kaislate.veldtplayer.data.scrobble.ScrobbleFlusher
@@ -356,6 +358,12 @@ class OfflineByDefaultAuditTest {
         // lrclib, OFF
         assertEquals(null, lrclibProvider(enabled = false).lyricsFor(song))
 
+        // ReplayGain (0.9.2 spec §5): a server track whose account does not exist, and a local
+        // track, whose values come from its own file
+        val replayGain = ReplayGainResolver(LocalReplayGainReader(), client, sources)
+        assertEquals(null, replayGain.valuesFor(song))
+        assertEquals(null, replayGain.valuesFor(localSongEntity().toDomain()))
+
         // scrobbler: an eligible-looking track whose source does not exist
         val flusher = ScrobbleFlusher(queue, client, sources)
         val bot = scrobbler(sources, flusher)
@@ -427,6 +435,7 @@ class OfflineByDefaultAuditTest {
             durationMs = 200_000L, dateModifiedSec = 0L, hasEmbeddedArt = false,
         ).toDomain()
         ServerLyricsProvider(client, sources).lyricsFor(song)
+        ReplayGainResolver(LocalReplayGainReader(), client, sources).valuesFor(song)
         scrobbler(sources, flusher).also {
             it.onMediaItemTransition(track, 240_000L, isPlaying = false)
             it.onIsPlayingChanged(true)
@@ -437,7 +446,7 @@ class OfflineByDefaultAuditTest {
 
         assertEquals(
             "expected exactly these Subsonic endpoints, got ${recorder.requests.map { it.url }}",
-            setOf("getOpenSubsonicExtensions", "getAlbumList2", "getCoverArt", "getLyricsBySongId", "scrobble"),
+            setOf("getOpenSubsonicExtensions", "getAlbumList2", "getCoverArt", "getLyricsBySongId", "getSong", "scrobble"),
             recorder.requests.map { endpointOf(it.url) }.toSet(),
         )
         assertEquals(

@@ -5,6 +5,7 @@ package com.kaislate.veldtplayer.data.settings
 
 import androidx.test.core.app.ApplicationProvider
 import com.kaislate.veldtplayer.data.library.TrackSort
+import com.kaislate.veldtplayer.data.replaygain.ReplayGainMode
 import com.kaislate.veldtplayer.pill.PillMode
 import com.kaislate.veldtplayer.pill.util.Constants as PillConstants
 import com.kaislate.veldtplayer.pill.util.IslandPosition
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -201,6 +203,49 @@ class SettingsRepositoryTest {
         repo.setLyricsOnline(true)
         repo.setLyricsOnline(false)
         assertEquals(false, repo.lyricsOnline.first())
+    }
+
+    // ---- ReplayGain (0.9.2 spec §5): on in Auto by default, pre-amp 0 in −6…+6. ----
+
+    @Test fun `ReplayGain defaults to Auto with a 0 dB pre-amp`() = runTest {
+        assertEquals(
+            listOf<Any?>(ReplayGainMode.AUTO, 0),
+            listOf<Any?>(repo.replayGainMode.first(), repo.replayGainPreampDb.first()),
+        )
+    }
+
+    /** Both halves of the on-disk contract, as for the settings above: the key strings and the
+     *  wire formats (the mode by NAME, the pre-amp as an Int). */
+    @Test fun `ReplayGain round-trips by name and as an Int under their own keys`() = runTest {
+        repo.setReplayGainMode(ReplayGainMode.ALBUM)
+        repo.setReplayGainPreampDb(-4)
+        assertEquals(
+            listOf<Any?>(ReplayGainMode.ALBUM, "ALBUM", -4, -4),
+            listOf<Any?>(
+                repo.replayGainMode.first(), repo.readRawForTest("replaygain_mode"),
+                repo.replayGainPreampDb.first(), repo.readRawIntForTest("replaygain_preamp_db"),
+            ),
+        )
+    }
+
+    @Test fun `an unrecognised ReplayGain mode reads as Auto`() = runTest {
+        repo.writeRawReplayGainModeForTest("LOUDER")
+        assertEquals(ReplayGainMode.AUTO, repo.replayGainMode.first())
+    }
+
+    @Test fun `a stored pre-amp outside the range is clamped into it`() = runTest {
+        repo.writeRawReplayGainPreampForTest(11)
+        assertEquals(6, repo.replayGainPreampDb.first())
+        repo.writeRawReplayGainPreampForTest(-40)
+        assertEquals(-6, repo.replayGainPreampDb.first())
+    }
+
+    @Test fun `setting a pre-amp outside the range is a caller bug`() = runTest {
+        repo.setReplayGainPreampDb(6)
+        repo.setReplayGainPreampDb(-6)
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { repo.setReplayGainPreampDb(7) } }
+        assertThrows(IllegalArgumentException::class.java) { runBlocking { repo.setReplayGainPreampDb(-7) } }
+        assertEquals(-6, repo.replayGainPreampDb.first())
     }
 
     // ---- Tag scan generation (API 29 legacy-storage fix). Plain Int, defaults to 0. ----
