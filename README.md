@@ -84,6 +84,19 @@ and original lyrics.</sub>
   the server, plus an opt-in online lookup (LRCLIB) that is off by default.
 - **Scrobbling.** Plays are scrobbled to the server, with an offline queue that retries
   when the server is unreachable.
+- **Queue restore.** The queue, track, position, shuffle and repeat come back paused after
+  a restart or update, and headphones, the car or Android's media controls can resume it.
+- **Sleep timer.** Presets, end of track or a custom time, with a 30-second fade-out.
+- **ReplayGain.** Loudness evened out from local tags and the server's values; Auto mode
+  uses album gain for albums played in order. Boosts never clip.
+- **Android Auto and Assistant.** A browsable library (Recent, Playlists, Albums, Artists,
+  Songs), search and voice requests.
+- **Widget.** A home-screen now-playing widget in three sizes, tinted from the artwork.
+
+## Support
+
+Veldt is free and has no ads or tracking. If you'd like to support its development, you can
+on [Liberapay](https://liberapay.com/kaislate). Settings → About → Support Veldt has the same link.
 
 ## Requirements
 
