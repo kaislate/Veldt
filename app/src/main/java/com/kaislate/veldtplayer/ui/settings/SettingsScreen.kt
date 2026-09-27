@@ -3,6 +3,9 @@
 
 package com.kaislate.veldtplayer.ui.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings as AndroidSettings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -31,19 +34,27 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.BuildConfig
 import com.kaislate.veldtplayer.data.settings.ThemeMode
+import com.kaislate.veldtplayer.pill.PillMode
+import com.kaislate.veldtplayer.pill.util.IslandPosition
 import com.kaislate.veldtplayer.ui.browse.SIDE_MARGIN
 import com.kaislate.veldtplayer.ui.browse.SectionLabel
 
@@ -65,7 +76,32 @@ fun SettingsScreen(
     val mode by vm.themeMode.collectAsStateWithLifecycle()
     val meteredCap by vm.meteredMaxBitRate.collectAsStateWithLifecycle()
     val lyricsOnline by vm.lyricsOnline.collectAsStateWithLifecycle()
+    val pillMode by vm.pillMode.collectAsStateWithLifecycle()
+    val pillForceBuiltIn by vm.pillForceBuiltIn.collectAsStateWithLifecycle()
+    val wispInstalled by vm.wispInstalled.collectAsStateWithLifecycle()
+    val overlayGranted by vm.overlayPermissionGranted.collectAsStateWithLifecycle()
+    val pillAnchor by vm.pillAnchor.collectAsStateWithLifecycle()
+    val pillWidthDp by vm.pillWidthDp.collectAsStateWithLifecycle()
+    val pillWaveStyle by vm.pillWaveStyle.collectAsStateWithLifecycle()
+    val pillWaveColor by vm.pillWaveColor.collectAsStateWithLifecycle()
+    val pillArtCrossfade by vm.pillArtCrossfade.collectAsStateWithLifecycle()
+    val pillHideDelayMs by vm.pillHideDelayMs.collectAsStateWithLifecycle()
+    val pillTransportButtons by vm.pillTransportButtons.collectAsStateWithLifecycle()
     val direction = LocalLayoutDirection.current
+    val context = LocalContext.current
+
+    // The overlay permission has no changed-broadcast (OverlayPermission's KDoc) — re-read it
+    // on ON_RESUME, the same pattern PermissionGate uses for the audio permission: it catches
+    // both the user granting it from the ACTION_MANAGE_OVERLAY_PERMISSION screen this section
+    // launches, and the system revoking it for an unused app while Veldt was backgrounded.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) vm.refreshOverlayPermissionStatus()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     Column(
         modifier = modifier
@@ -127,6 +163,130 @@ fun SettingsScreen(
             checked = lyricsOnline,
             onCheckedChange = vm::setLyricsOnline,
         )
+
+        SectionLabel("Floating pill")
+        ThemeOptionRow(
+            label = "Built-in",
+            selected = pillMode == PillMode.BUILT_IN,
+            onSelect = { vm.setPillMode(PillMode.BUILT_IN) },
+        )
+        ThemeOptionRow(
+            label = "Use Veldt Wisp",
+            selected = pillMode == PillMode.USE_WISP,
+            onSelect = { vm.setPillMode(PillMode.USE_WISP) },
+        )
+        ThemeOptionRow(
+            label = "Off",
+            selected = pillMode == PillMode.OFF,
+            onSelect = { vm.setPillMode(PillMode.OFF) },
+        )
+
+        if (pillMode == PillMode.BUILT_IN) {
+            OverlayPermissionRow(
+                granted = overlayGranted,
+                onGrant = {
+                    context.startActivity(
+                        Intent(
+                            AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${context.packageName}"),
+                        ),
+                    )
+                },
+            )
+
+            if (wispInstalled) {
+                Text(
+                    "Veldt Wisp is installed — Veldt defers to it, so its own pill shows instead " +
+                        "of Veldt's.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = SIDE_MARGIN, vertical = 4.dp),
+                )
+                SwitchRow(
+                    label = "Use built-in anyway",
+                    explanation = "Shows Veldt's own pill even though Veldt Wisp is installed. " +
+                        "Disable Veldt Wisp's pill for Veldt's session to avoid seeing two.",
+                    checked = pillForceBuiltIn,
+                    onCheckedChange = vm::setPillForceBuiltIn,
+                )
+            }
+
+            RadioGroup(
+                caption = "Anchor",
+                options = listOf(
+                    IslandPosition.TOP_LEFT to "Top left",
+                    IslandPosition.TOP_CENTER to "Top center",
+                    IslandPosition.TOP_RIGHT to "Top right",
+                    IslandPosition.BOTTOM_LEFT to "Bottom left",
+                    IslandPosition.BOTTOM_CENTER to "Bottom center",
+                    IslandPosition.BOTTOM_RIGHT to "Bottom right",
+                ),
+                selected = pillAnchor,
+                onSelect = vm::setPillAnchor,
+            )
+
+            RadioGroup(
+                caption = "Width",
+                options = listOf(120 to "Narrow", 160 to "Default", 200 to "Wide", 240 to "Extra wide"),
+                selected = pillWidthDp,
+                onSelect = vm::setPillWidthDp,
+            )
+
+            RadioGroup(
+                caption = "Wave style",
+                options = listOf(
+                    "wisptrail" to "Wisptrail",
+                    "mercury" to "Mercury",
+                    "silk" to "Silk",
+                    "sparks" to "Sparks",
+                    "aurora" to "Aurora",
+                ),
+                selected = pillWaveStyle,
+                onSelect = vm::setPillWaveStyle,
+            )
+
+            RadioGroup(
+                caption = "Wave colour",
+                options = listOf(
+                    "accent-light" to "Accent, lightened",
+                    "auto" to "Automatic",
+                    "white" to "White",
+                ),
+                selected = pillWaveColor,
+                onSelect = vm::setPillWaveColor,
+            )
+
+            SwitchRow(
+                label = "Album art crossfade",
+                explanation = "Fades between album art instead of cutting when the track changes.",
+                checked = pillArtCrossfade,
+                onCheckedChange = vm::setPillArtCrossfade,
+            )
+
+            RadioGroup(
+                caption = "Hide delay after pause",
+                options = listOf(
+                    10_000L to "10 seconds",
+                    15_000L to "15 seconds",
+                    25_000L to "25 seconds",
+                    45_000L to "45 seconds",
+                ),
+                selected = pillHideDelayMs,
+                onSelect = vm::setPillHideDelayMs,
+            )
+
+            RadioGroup(
+                caption = "Transport buttons",
+                options = listOf(
+                    "off" to "None",
+                    "play" to "Play/pause",
+                    "play-next" to "Play/pause and next",
+                    "prev-play-next" to "Previous, play/pause and next",
+                ),
+                selected = pillTransportButtons,
+                onSelect = vm::setPillTransportButtons,
+            )
+        }
 
         SectionLabel("Servers")
         SettingsLinkRow(
@@ -240,6 +400,64 @@ private fun SwitchRow(
         }
         Spacer(Modifier.width(16.dp))
         Switch(checked = checked, onCheckedChange = null)
+    }
+}
+
+/**
+ * A caption followed by one [ThemeOptionRow] per option — the same shape as the streaming
+ * quality list above, generalised so the pill's several discrete appearance choices (anchor,
+ * width, wave style, wave colour, hide delay, transport buttons) do not each repeat it.
+ */
+@Composable
+private fun <T> RadioGroup(
+    caption: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        caption,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier.padding(horizontal = SIDE_MARGIN, vertical = 4.dp),
+    )
+    options.forEach { (value, label) ->
+        ThemeOptionRow(label = label, selected = selected == value, onSelect = { onSelect(value) })
+    }
+}
+
+/**
+ * The overlay permission's status, and — only while it is missing — the button that sends the
+ * user to `ACTION_MANAGE_OVERLAY_PERMISSION` to grant it (spec §3/§4).
+ *
+ * Once granted there is nothing left to do here, so the button disappears rather than staying
+ * present and disabled: a permission the user already granted is not a decision the row is
+ * still asking them to make.
+ */
+@Composable
+private fun OverlayPermissionRow(
+    granted: Boolean,
+    onGrant: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = SIDE_MARGIN, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Overlay permission", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                if (granted) "Granted" else "Needed to show the pill over other apps",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!granted) {
+            TextButton(onClick = onGrant) { Text("Grant") }
+        }
     }
 }
 
