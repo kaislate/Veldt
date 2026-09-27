@@ -22,4 +22,18 @@ class PlaybackMapperTest {
 
     @Test fun idle_isIdle() =
         assertEquals(PlayState.IDLE, PlaybackMapper.playState(1, false))
+
+    // The restored queue (spec §3): loaded, unprepared, no error — playable with one tap.
+    @Test fun idleLoadedWithoutError_isPaused() =
+        assertEquals(PlayState.PAUSED, PlaybackMapper.playState(1, false, loadedWithoutError = true))
+
+    // The skip-on bound / a network pause: the error is what keeps it IDLE (isStalled).
+    @Test fun idleWithError_staysIdle() =
+        assertEquals(PlayState.IDLE, PlaybackMapper.playState(1, false, loadedWithoutError = false))
+
+    @Test fun loadedWithoutError_changesNothingButIdle() {
+        assertEquals(PlayState.PLAYING, PlaybackMapper.playState(3, true, loadedWithoutError = true))
+        assertEquals(PlayState.BUFFERING, PlaybackMapper.playState(2, true, loadedWithoutError = true))
+        assertEquals(PlayState.ENDED, PlaybackMapper.playState(4, false, loadedWithoutError = true))
+    }
 }

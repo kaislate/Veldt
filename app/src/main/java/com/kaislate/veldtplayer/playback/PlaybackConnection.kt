@@ -31,6 +31,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -100,6 +102,12 @@ class PlaybackConnection @Inject constructor(
 
     private val _queue = MutableStateFlow<List<Song>>(emptyList())
     val queue: StateFlow<List<Song>> = _queue.asStateFlow()
+
+    /** The session mediaIds [_queue] describes, index for index. Written only by [setQueue]. */
+    private var queueIds: List<String> = emptyList()
+
+    /** The timeline a [hydrateIfNeeded] lookup is in flight for, or null. */
+    private var hydrating: List<String>? = null
 
     private val _nowPlaying = MutableStateFlow(NowPlayingState.EMPTY)
     val nowPlaying: StateFlow<NowPlayingState> = _nowPlaying.asStateFlow()
@@ -240,7 +248,7 @@ class PlaybackConnection @Inject constructor(
     fun playFrom(songs: List<Song>, index: Int) {
         val plan = QueueBuilder.build(songs, index)
         if (plan.songs.isEmpty()) return
-        _queue.value = plan.songs
+        setQueue(plan.songs)
         // A new queue is a fresh start: without this, a counter left high by a previous
         // all-undecodable queue would suppress skip-on for the next one.
         consecutiveErrors = 0
@@ -262,7 +270,7 @@ class PlaybackConnection @Inject constructor(
     @MainThread
     fun addToQueue(songs: List<Song>) {
         val plan = QueueBuilder.append(_queue.value, songs) ?: return
-        _queue.value = plan.songs
+        setQueue(plan.songs)
         if (plan.startPlayback) {
             // A fresh queue, so the same reset playFrom does: a counter left high by a previous
             // all-undecodable queue would otherwise suppress skip-on for this one.
@@ -273,9 +281,9 @@ class PlaybackConnection @Inject constructor(
                 c.play()
             }
         } else {
-            // Appended at the END rather than at an index computed from _queue, which the
-            // publish() TODO already notes can lag the controller's real timeline. addMediaItems
-            // with no index cannot be out of range; an index taken from a stale queue can.
+            // Appended at the END rather than at an index computed from _queue, which can lag the
+            // controller's real timeline until hydrateIfNeeded catches up. addMediaItems with no
+            // index cannot be out of range; an index taken from a stale queue can.
             withController { c -> c.addMediaItems(songs.map(::toMediaItem)) }
         }
     }
@@ -362,6 +370,58 @@ class PlaybackConnection @Inject constructor(
      *  is built by [sessionMediaItem], which is where its contents are asserted. */
     private fun toMediaItem(song: Song): MediaItem = sessionMediaItem(song, repo.playableUri(song))
 
+    /** Replaces [_queue] with a queue whose session mediaIds are [ids], and abandons any hydration
+     *  in flight: what this connection just queued is newer than whatever it was hydrating. */
+    @MainThread
+    private fun setQueue(songs: List<Song>, ids: List<String> = songs.map(SessionMediaId::of)) {
+        hydrating = null
+        queueIds = ids
+        _queue.value = songs
+    }
+
+    /**
+     * Makes [_queue] describe the controller's timeline when something other than this connection
+     * filled it: the restored queue (spec §3) — which is already on the player when the app
+     * connects, so the mini-player shows the restored track at launch — and whatever a car or
+     * another controller plays through the browse tree (spec §6).
+     *
+     * The comparison is by session mediaId against [queueIds], never against `Song.id`: a mediaId
+     * is `sourceId:externalId` (see [SessionMediaId]) precisely so it still names the right row
+     * after a destructive migration has renumbered every surrogate. The lookup itself is
+     * [MusicRepository.findByKeys], one table read, and [QueueHydration] keeps the result
+     * index-aligned with the timeline even for an item that has no row.
+     *
+     * [hydrating] makes an event burst start one lookup instead of one per event, and lets a
+     * lookup that finishes after the queue changed again discard itself.
+     */
+    @MainThread
+    private fun hydrateIfNeeded(c: MediaController) {
+        val items = (0 until c.mediaItemCount).map(c::getMediaItemAt)
+        val ids = items.map { it.mediaId }
+        if (ids == queueIds || ids == hydrating) return
+        hydrating = ids
+        val infos = items.map { item ->
+            val meta = item.mediaMetadata
+            SessionItemInfo(
+                mediaId = item.mediaId,
+                title = meta.title?.toString().orEmpty(),
+                artist = meta.artist?.toString().orEmpty(),
+                album = meta.albumTitle?.toString().orEmpty(),
+                durationMs = meta.durationMs ?: 0L,
+                art = meta.artworkUri?.let(VeldtArtUri::parse),
+            )
+        }
+        scope.launch {
+            val refs = infos.mapNotNull { SessionMediaId.parse(it.mediaId) }
+            val found = withContext(Dispatchers.IO) {
+                runCatching { repo.findByKeys(refs) }.getOrDefault(emptyMap())
+            }
+            if (hydrating != ids) return@launch
+            setQueue(QueueHydration.hydrate(infos, found), ids)
+            publish()
+        }
+    }
+
     @MainThread
     private fun publish() {
         val c = controller ?: return
@@ -372,25 +432,19 @@ class PlaybackConnection @Inject constructor(
             // pause is not left starting from an old count.
             resumeCoordinator.onReady()
         }
-        // TODO(p1.4): the current Song is resolved by indexing _queue, which only this
-        //  connection ever fills. Playback started OUTSIDE it — session restore via
-        //  MediaSession.Callback.onPlaybackResumption, a real browse tree, Android Auto —
-        //  leaves _queue empty, so nowPlaying stays EMPTY and the mini-player renders blank
-        //  while audio plays. Fix by hydrating _queue from c.currentTimeline / media IDs.
-        //  Filing this here, not against the mini-player task: the symptom shows up there
-        //  but the cause is this line.
-        //
-        //  N0 made "hydrating from media IDs" concrete. A mediaId is `sourceId:externalId`
-        //  (see sessionMediaItem), so hydration is: split at the FIRST ':' — exact, because
-        //  SourceRegistry bans ':' in a source id — then look the pair up as the natural key
-        //  `(sourceId, externalId)`, which is the songs table's unique index. Note what this
-        //  deliberately is NOT: the surrogate Song.id is absent from the mediaId precisely so
-        //  that a restored session still resolves after a destructive migration has renumbered
-        //  every row. Do not "simplify" the hydration by putting the surrogate back in.
+        // The current Song is _queue indexed by the player's index, so _queue must describe the
+        // player's queue even when this connection did not put it there — see hydrateIfNeeded.
+        // Until a hydration lands, `song` is whatever _queue held (EMPTY on a cold start), for one
+        // database read's worth of time.
+        hydrateIfNeeded(c)
         val song = _queue.value.getOrNull(c.currentMediaItemIndex)
         _nowPlaying.value = NowPlayingState.from(
             song = song,
-            playState = PlaybackMapper.playState(c.playbackState, c.playWhenReady),
+            playState = PlaybackMapper.playState(
+                c.playbackState,
+                c.playWhenReady,
+                loadedWithoutError = c.mediaItemCount > 0 && c.playerError == null,
+            ),
             playerDurationMs = c.duration,
             shuffle = c.shuffleModeEnabled,
             repeat = RepeatModes.fromPlayer(c.repeatMode),

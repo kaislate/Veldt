@@ -37,12 +37,32 @@ import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import com.kaislate.veldtplayer.playback.scrobble.ListenClock
 import com.kaislate.veldtplayer.playback.scrobble.Scheduler
 import com.kaislate.veldtplayer.playback.scrobble.Scrobbler
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import com.google.common.util.concurrent.SettableFuture
+import com.kaislate.veldtplayer.data.library.MusicRepository
+import com.kaislate.veldtplayer.playback.queue.QueueRestore
+import com.kaislate.veldtplayer.playback.queue.QueueResumption
+import com.kaislate.veldtplayer.playback.queue.QueueSaveScheduler
+import com.kaislate.veldtplayer.playback.queue.QueueSaveTriggers
+import com.kaislate.veldtplayer.playback.queue.QueueStore
+import com.kaislate.veldtplayer.playback.queue.SavedQueue
+import com.kaislate.veldtplayer.playback.queue.applyTo
+import com.kaislate.veldtplayer.playback.queue.snapshotOf
+import com.kaislate.veldtplayer.playback.queue.toResumption
+import androidx.core.content.ContextCompat
 import dagger.Lazy
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 /**
@@ -92,6 +112,13 @@ class PlaybackService : MediaLibraryService() {
      */
     @Inject lateinit var pillController: PillController
 
+    /**
+     * What a restored queue is checked against (spec §3): a saved track whose row is gone is
+     * dropped. [Lazy] for the reason [remoteArt] is — `MusicRepository` reaches the Room database
+     * and the settings DataStore, and nothing needs either until the restore coroutine runs.
+     */
+    @Inject lateinit var library: Lazy<MusicRepository>
+
     private var player: ExoPlayer? = null
     private var session: MediaLibrarySession? = null
     private var busAdapter: PlayerBusAdapter? = null
@@ -99,6 +126,29 @@ class PlaybackService : MediaLibraryService() {
     private var scrobbler: Scrobbler? = null
     private var scrobblerListener: Player.Listener? = null
     private var scrobblerScope: CoroutineScope? = null
+
+    // ---- queue persistence (spec §3) ----
+    private var queueStore: QueueStore? = null
+    private var queueSaver: QueueSaveScheduler? = null
+    private var queueTriggers: Player.Listener? = null
+    /** One thread, so saves land in the order they were taken and the last one wins. */
+    private var queueWriter: ExecutorService? = null
+    private var queueScope: CoroutineScope? = null
+
+    /**
+     * The restore's outcome: the queue put on the player, or null when there was nothing to put.
+     * Completes exactly once — from the restore coroutine, or from [onDestroy] if the service dies
+     * first — because [LibraryCallback.onPlaybackResumption] may be waiting on it: a Bluetooth
+     * "play" that cold-starts the service arrives while the restore is still reading the database.
+     */
+    private val restored: SettableFuture<SavedQueue?> = SettableFuture.create()
+
+    /**
+     * The newest queue this service knows: the restored one, then every save's snapshot. Main
+     * thread only. What resumption falls back to when the player is empty, and null — no file, an
+     * emptied queue — is what makes it opt out (spec §3).
+     */
+    private var latestQueue: SavedQueue? = null
 
     @OptIn(UnstableApi::class)
     override fun onCreate() {
@@ -185,16 +235,101 @@ class PlaybackService : MediaLibraryService() {
             exo.addListener(it)
         }
 
+        startQueueRestore(exo)
+
         // Last: the bus adapter above is already publishing, so the pill's first read is real.
         pillController.start()
+    }
+
+    /**
+     * Spec §3: put the saved queue back on the player, PAUSED and NOT prepared, then start saving.
+     *
+     * Asynchronous because checking the saved tracks still exist is a database read, and
+     * `onCreate` is on the main thread. Until it finishes the player is empty, which is why:
+     * - saving is not armed until it finishes — a save of the still-empty player would delete the
+     *   very file being restored;
+     * - the restored queue is only applied if the player is STILL empty. A controller that got in
+     *   first (the app's own `playFrom` during the first frames, or Media3 applying
+     *   [LibraryCallback.onPlaybackResumption]'s result) has said what should play, and a restore
+     *   landing on top of it would replace the user's choice with yesterday's.
+     */
+    private fun startQueueRestore(exo: ExoPlayer) {
+        val store = QueueStore(File(filesDir, QUEUE_DIR))
+        queueStore = store
+        queueWriter = Executors.newSingleThreadExecutor()
+        val saver = QueueSaveScheduler(
+            scheduler = HandlerScheduler(Handler(Looper.getMainLooper())),
+            save = { persistQueue(waitForWrite = false) },
+        )
+        queueSaver = saver
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        queueScope = scope
+        scope.launch {
+            val saved = withContext(Dispatchers.IO) { loadRestorableQueue(store) }
+            val applied = saved != null && exo.mediaItemCount == 0
+            if (applied) saved!!.applyTo(exo)
+            latestQueue = saved
+            restored.set(saved)
+            QueueSaveTriggers(saver).also {
+                queueTriggers = it
+                exo.addListener(it)
+            }
+            // Whatever got onto the player while the restore ran produced its events before the
+            // triggers were listening; catch up on them once.
+            if (!applied && exo.mediaItemCount > 0) saver.requestSave()
+            saver.setPlaying(exo.isPlaying)
+        }
+    }
+
+    /** The saved queue, with tracks that no longer resolve dropped — see [QueueRestore]. */
+    private suspend fun loadRestorableQueue(store: QueueStore): SavedQueue? {
+        val saved = store.read() ?: return null
+        val repo = library.get()
+        // A database that cannot be read is NOT "every track is gone": null restores as saved.
+        val rows = runCatching { repo.findByKeys(QueueRestore.refsOf(saved)) }.getOrNull()
+        return QueueRestore.restorable(saved, rows, repo::playableUri)
+    }
+
+    /**
+     * Snapshots the player (main thread — the player's thread) and writes it on [queueWriter].
+     * [waitForWrite] blocks, bounded, until that write is done: for [onDestroy], where the process
+     * may be gone the moment this returns. Waiting on the same single-thread executor, rather than
+     * writing inline, is what keeps an older save still queued there from landing AFTER this one.
+     *
+     * A no-op until the restore has finished — see [startQueueRestore].
+     */
+    private fun persistQueue(waitForWrite: Boolean) {
+        if (!restored.isDone) return
+        val exo = player ?: return
+        val store = queueStore ?: return
+        val writer = queueWriter ?: return
+        val snapshot = snapshotOf(exo)
+        latestQueue = snapshot
+        val write = runCatching { writer.submit { store.write(snapshot) } }.getOrNull() ?: return
+        if (waitForWrite) runCatching { write.get(FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
         session
 
+    /** Spec §3: swiping the app away is a save trigger — the process may not live to the next. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        persistQueue(waitForWrite = true)
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         // FIRST (plan Review Focus 5): removes the overlay window. See [pillController].
         pillController.release()
+        // The final save, while the player still holds the queue; then nothing more is scheduled.
+        persistQueue(waitForWrite = true)
+        queueSaver?.release()
+        queueTriggers?.let { player?.removeListener(it) }
+        queueScope?.cancel()
+        queueWriter?.shutdown()
+        // Anything still waiting on the restore gets "nothing" rather than a future that never
+        // completes (a no-op if the restore already finished).
+        restored.set(null)
         busAdapter?.detach()
         // Detach first, then clear: the adapter can push during teardown, and a push landing
         // after the reset would refill the bus with the state this is meant to drop.
@@ -223,6 +358,11 @@ class PlaybackService : MediaLibraryService() {
         scrobbler = null
         scrobblerListener = null
         scrobblerScope = null
+        queueStore = null
+        queueSaver = null
+        queueTriggers = null
+        queueWriter = null
+        queueScope = null
         super.onDestroy()
     }
 
@@ -251,9 +391,44 @@ class PlaybackService : MediaLibraryService() {
         )
     }
 
-    /** Minimal callback; browse tree arrives in P1.2. Default player-command
-     *  handling (play/pause/seek/next/prev) is inherited. */
-    private inner class LibraryCallback : MediaLibrarySession.Callback
+    /** Default player-command handling (play/pause/seek/next/prev) is inherited. */
+    private inner class LibraryCallback : MediaLibrarySession.Callback {
+
+        /**
+         * Spec §3's system resumption: what Media3 1.8.0 asks for when a "play" reaches a player
+         * with no current item — a Bluetooth or headset button, the resume card, a car starting
+         * cold — and, for System UI's resume card, when it asks the session for its "recent" item.
+         *
+         * Media3 only offers resumption at all when the app declares
+         * `androidx.media3.session.MediaButtonReceiver` for `MEDIA_BUTTON` (1.8.0's
+         * `MediaSessionLegacyStub.canResumePlaybackOnStart` is exactly "a receiver was found");
+         * see the manifest.
+         *
+         * Which queue answers, and the opt-out when there is none, is [QueueResumption]'s.
+         */
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val main = ContextCompat.getMainExecutor(this@PlaybackService)
+            val queue = QueueResumption(
+                restored = restored,
+                live = { player?.let(::snapshotOf) },
+                latest = { latestQueue },
+                executor = main,
+            ).resume()
+            return Futures.transform(queue, { it.toResumption() }, main)
+        }
+    }
+
+    private companion object {
+        /** `filesDir/playback/queue.json` (spec §3). */
+        const val QUEUE_DIR = "playback"
+
+        /** How long [onDestroy]/[onTaskRemoved] wait for the final queue write. A write of the
+         *  capped queue is a few hundred KB at most; this only bounds a stuck disk. */
+        const val FLUSH_TIMEOUT_MS = 2_000L
+    }
 }
 
 /**

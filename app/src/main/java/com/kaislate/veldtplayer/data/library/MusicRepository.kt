@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import com.kaislate.veldtplayer.data.library.scan.LibraryScanWorker
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.di.LocalLibrary
+import com.kaislate.veldtplayer.playback.TrackRef
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -186,6 +187,28 @@ class MusicRepository internal constructor(
         return songs().map { all ->
             LibraryDerivations.sortArtistTracks(all.filter { LibraryKeys.artistKey(it) == wanted })
         }
+    }
+
+    /**
+     * The library rows [refs] name, keyed by the ref — only those that still exist AND whose source
+     * is still registered. A ref missing from the result is a track that no longer resolves: its
+     * file was deleted and rescanned away, or its account was removed.
+     *
+     * Reads the WHOLE table, hidden folders included, on purpose. This answers "does this track
+     * still exist" for a restored queue and for a session's items coming back to the app, and a
+     * track the user hid is still a track they were playing; hiding a folder is a view filter
+     * (see [visible]), not a deletion. One table read rather than one query per ref, because the
+     * callers ask about a whole queue at once.
+     */
+    suspend fun findByKeys(refs: Collection<TrackRef>): Map<TrackRef, Song> {
+        if (refs.isEmpty()) return emptyMap()
+        val wanted = refs.toHashSet()
+        val found = HashMap<TrackRef, Song>()
+        for (row in songDao.getAllSongs()) {
+            val ref = TrackRef(row.sourceId, row.externalId)
+            if (ref in wanted && registry.byId(row.sourceId) != null) found[ref] = row.toDomain()
+        }
+        return found
     }
 
     /** Trigger a background rescan (unique WorkManager job). Non-suspend: just enqueues. */
