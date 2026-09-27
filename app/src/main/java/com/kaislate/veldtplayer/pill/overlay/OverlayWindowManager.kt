@@ -486,7 +486,10 @@ class OverlayWindowManager @Inject constructor(
         // then throw a SecurityException from deep inside the window manager.
         if (!overlayPermission.isGranted()) {
             Log.d("Overlay", "showIsland: overlay permission not held, staying hidden")
-            _showFailure.value = ShowFailure("overlay permission not granted")
+            // Deliberately NOT a ShowFailure: Android refused nothing — the permission is
+            // simply off, which Settings already reports with its grant row (and the
+            // controller as PERMISSION_LOST). Publishing it here would make Settings say
+            // "Android refused…" and point the user away from the fix.
             return
         }
         Log.d("Overlay", "showIsland: attaching the pill window")

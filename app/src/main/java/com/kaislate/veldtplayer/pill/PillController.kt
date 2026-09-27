@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -108,6 +109,10 @@ class PillController internal constructor(
     private var refusalReported = false
     private var stashed = false
 
+    /** Permission-poll wake-ups so far. A test hook: none may happen while the pill is hidden. */
+    internal var pollTicks = 0
+        private set
+
     /** Whether the user has the pill stashed (swiped away). For tests and logs. */
     val isStashed: Boolean get() = stashed
 
@@ -159,10 +164,17 @@ class PillController internal constructor(
                 stateMachine.onPlaybackChanged(state)
             }
         }
+        // The permission poll runs ONLY while the pill is on screen: collectLatest cancels the
+        // loop the moment the machine leaves Pill, so a hidden pill costs no wake-ups at all.
         scope.launch {
-            while (true) {
-                delay(permissionPollMs)
-                if (stateMachine.state.value == IslandState.Pill) reevaluate()
+            stateMachine.state.collectLatest { state ->
+                if (state == IslandState.Pill) {
+                    while (true) {
+                        delay(permissionPollMs)
+                        pollTicks++
+                        reevaluate()
+                    }
+                }
             }
         }
     }

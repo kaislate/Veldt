@@ -1,5 +1,6 @@
 // Copyright (c) 2026 kaislate
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Ported from Veldt Wisp (ui/components/HillsWave.kt), GPL-3.0-or-later, same author.
 
 package com.kaislate.veldtplayer.ui.components
 

@@ -227,6 +227,25 @@ class PillControllerTest {
         assertEquals(PillStandDown.NONE, rig.status.standDown.value)
     }
 
+    @Test fun `the permission poll ticks only while the pill is on screen`() = runTest {
+        val rig = Rig(this)
+        rig.controller.start()
+        rig.playback.value = PlaybackState.STATE_PLAYING
+        runCurrent()
+        // Hidden (Veldt in the foreground) for a minute: not one wake-up.
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(0, rig.controller.pollTicks)
+
+        rig.foreground.value = false; runCurrent()
+        advanceTimeBy(3 * PillController.PERMISSION_POLL_MS + 1); runCurrent()
+        assertEquals(3, rig.controller.pollTicks)
+
+        // Hidden again: the loop is cancelled, the count stops.
+        rig.foreground.value = true; runCurrent()
+        advanceTimeBy(60_000); runCurrent()
+        assertEquals(3, rig.controller.pollTicks)
+    }
+
     @Test fun `a permission never granted is not reported as lost`() = runTest {
         val rig = Rig(this)
         rig.permission.granted = false

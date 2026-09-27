@@ -5,6 +5,7 @@ package com.kaislate.veldtplayer.pill
 
 import androidx.annotation.MainThread
 import com.kaislate.veldtplayer.playback.PlaybackConnection
+import dagger.Lazy
 import javax.inject.Inject
 
 /**
@@ -25,12 +26,20 @@ interface PillCommands {
     @MainThread fun seekTo(positionMs: Long)
 }
 
-/** The real [PillCommands]: straight through to [PlaybackConnection]. */
+/**
+ * The real [PillCommands]: straight through to [PlaybackConnection].
+ *
+ * [Lazy], because this is built with the playback service (it reaches the service through
+ * `OverlayWindowManager`), and the service also starts WITHOUT the app — a media button, or
+ * playback resumption after boot. Resolving the connection eagerly there would build an
+ * in-process `MediaController` nobody asked for; this way it exists only once the user taps a
+ * pill or card control.
+ */
 class ConnectionPillCommands @Inject constructor(
-    private val connection: PlaybackConnection,
+    private val connection: Lazy<PlaybackConnection>,
 ) : PillCommands {
-    override fun togglePlayPause() = connection.toggle()
-    override fun next() = connection.next()
-    override fun previous() = connection.previous()
-    override fun seekTo(positionMs: Long) = connection.seekTo(positionMs)
+    override fun togglePlayPause() = connection.get().toggle()
+    override fun next() = connection.get().next()
+    override fun previous() = connection.get().previous()
+    override fun seekTo(positionMs: Long) = connection.get().seekTo(positionMs)
 }
