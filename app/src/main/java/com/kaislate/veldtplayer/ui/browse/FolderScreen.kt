@@ -22,13 +22,16 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,8 +46,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.kaislate.veldtplayer.data.library.FolderNode
 import com.kaislate.veldtplayer.data.library.TrackSort
+import com.kaislate.veldtplayer.data.settings.MAX_VOLUME_NAME
 import com.kaislate.veldtplayer.ui.components.ArtPlaceholder
 import com.kaislate.veldtplayer.ui.components.SongRow
+import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.neutralPalette
 
 /**
@@ -92,6 +97,26 @@ fun FolderScreen(
     // the moment a scan lands — and a menu anchored to a row that no longer exists simply does not
     // recompose, which is the correct outcome and the reason this is a key.
     var openMenuKey by remember { mutableStateOf<String?>(null) }
+
+    // The volume row whose rename dialog is open. Screen state, like the menu above, so a tree
+    // emission mid-edit does not close the dialog under the user's typing.
+    var renaming by remember { mutableStateOf<FolderRowItem?>(null) }
+    renaming?.let { row ->
+        val volume = row.renameableVolume
+        if (volume != null) {
+            VolumeRenameDialog(
+                // Pre-filled only with the user's own name. A default label is shown as the
+                // placeholder instead, so saving without typing cannot store "SD card" as a name.
+                initial = if (row.renamed) row.label else "",
+                placeholder = row.label,
+                onSave = { name ->
+                    renaming = null
+                    vm.renameVolume(volume, name)
+                },
+                onDismiss = { renaming = null },
+            )
+        }
+    }
 
     when {
         // The same three-way distinction every other browse surface draws. Claiming "no folders"
@@ -192,27 +217,23 @@ fun FolderScreen(
                 // screen slides them in against the rows already there. Without it the list jumps,
                 // and the jump is indistinguishable from the user having mis-tapped.
                 items(listing.folders, key = { it.node.key }) { row ->
-                    Box(Modifier.animateItem()) {
-                        FolderRow(
-                            item = row,
-                            palette = palette,
-                            onClick = { onOpenFolder(row.node.key) },
-                            // The interaction that makes a deep tree tolerable: every verb the
-                            // header offers, without entering the folder first.
-                            onLongClick = { openMenuKey = row.node.key },
-                        )
-                        FolderVerbMenu(
-                            expanded = openMenuKey == row.node.key,
-                            node = row.node,
-                            includePlay = true,
-                            onDismiss = { openMenuKey = null },
-                            onVerb = { verb, scope ->
-                                runFolderVerb(vm, state, row.node, row.label, verb, scope) {
-                                    pendingAddition = it
-                                }
-                            },
-                        )
-                    }
+                    FolderListEntry(
+                        item = row,
+                        palette = palette,
+                        menuOpen = openMenuKey == row.node.key,
+                        onOpen = { onOpenFolder(row.node.key) },
+                        onOpenMenu = { openMenuKey = row.node.key },
+                        onDismissMenu = { openMenuKey = null },
+                        onVerb = { verb, scope ->
+                            runFolderVerb(vm, state, row.node, row.label, verb, scope) {
+                                pendingAddition = it
+                            }
+                        },
+                        onSetHidden = vm::setFolderHidden,
+                        onRename = { renaming = row },
+                        onResetName = { volume -> vm.renameVolume(volume, null) },
+                        modifier = Modifier.animateItem(),
+                    )
                 }
                 itemsIndexed(listing.tracks, key = { _, song -> song.id }) { index, song ->
                     // SongRow verbatim, as AlbumDetailScreen and SongsScreen use it — that is what
@@ -237,7 +258,7 @@ fun FolderScreen(
  * **The primary button is the DEEP one** ([FolderScope.WITH_SUBFOLDERS]) — owner decision,
  * 2026-08-13. It is drawn whenever the subtree holds anything, which is always: a node exists only
  * because a song mapped into it or into a descendant. The direct-only verbs live in the overflow
- * and are drawn only where the two scopes differ; see [FolderVerbMenu].
+ * and are drawn only where the two scopes differ; see [FolderVerbItems].
  *
  * The old rule — play drawn only when `listing.tracks` is non-empty — is gone with the shallow
  * primary it belonged to. Under it, a parent of six album folders offered no play button at all,
@@ -303,15 +324,17 @@ private fun FolderHeader(
                         IconButton(onClick = { overflow = true }) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "More folder actions")
                         }
-                        FolderVerbMenu(
-                            expanded = overflow,
-                            node = node,
-                            // The header already carries play and shuffle as buttons; repeating
-                            // them one tap deeper is a menu item that competes with itself.
-                            includePlay = false,
-                            onDismiss = { overflow = false },
-                            onVerb = { verb, scope -> onVerb(node, verb, scope) },
-                        )
+                        DropdownMenu(expanded = overflow, onDismissRequest = { overflow = false }) {
+                            FolderVerbItems(
+                                node = node,
+                                // The header already carries play and shuffle as buttons;
+                                // repeating them one tap deeper is a menu item that competes
+                                // with itself.
+                                includePlay = false,
+                                onDismiss = { overflow = false },
+                                onVerb = { verb, scope -> onVerb(node, verb, scope) },
+                            )
+                        }
                     }
                 }
                 SortMenu(
@@ -358,6 +381,151 @@ private fun runFolderVerb(
 }
 
 /**
+ * One directory row and its long-press menu, exactly as the list draws them.
+ *
+ * A composable of its own so `FolderRowTest` can long-press the same thing the screen does,
+ * rather than a re-assembly of it that could drift. The menu's open state stays with the screen
+ * (see `openMenuKey` there), because it has to outlive the row object a tree emission replaces.
+ *
+ * The long press is the interaction that makes a deep tree tolerable: every verb the header
+ * offers, without entering the folder first — plus the verbs the header does not have, which are
+ * things done to a folder from OUTSIDE it: hiding it from the library, and, on a volume row,
+ * renaming the volume.
+ */
+@Composable
+internal fun FolderListEntry(
+    item: FolderRowItem,
+    palette: DominantColors,
+    menuOpen: Boolean,
+    onOpen: () -> Unit,
+    onOpenMenu: () -> Unit,
+    onDismissMenu: () -> Unit,
+    onVerb: (FolderVerb, FolderScope) -> Unit,
+    onSetHidden: (key: String, hidden: Boolean) -> Unit,
+    onRename: () -> Unit,
+    onResetName: (volume: String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier) {
+        FolderRow(item = item, palette = palette, onClick = onOpen, onLongClick = onOpenMenu)
+        DropdownMenu(expanded = menuOpen, onDismissRequest = onDismissMenu) {
+            FolderVerbItems(
+                node = item.node,
+                includePlay = true,
+                onDismiss = onDismissMenu,
+                onVerb = onVerb,
+            )
+            LibraryItems(item = item, onDismiss = onDismissMenu, onSetHidden = onSetHidden)
+            VolumeItems(
+                item = item,
+                onDismiss = onDismissMenu,
+                onRename = onRename,
+                onResetName = onResetName,
+            )
+        }
+    }
+}
+
+/**
+ * "Rename…" and, only while the volume carries a name of the user's, "Reset name" (Step 5 spec §5).
+ * Volume rows only: a directory's name is the directory's, and renaming it is a file manager's job.
+ */
+@Composable
+private fun VolumeItems(
+    item: FolderRowItem,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onResetName: (volume: String) -> Unit,
+) {
+    val volume = item.renameableVolume ?: return
+    HorizontalDivider()
+    DropdownMenuItem(
+        text = { Text("Rename…") },
+        onClick = {
+            onDismiss()
+            onRename()
+        },
+    )
+    if (item.renamed) {
+        DropdownMenuItem(
+            text = { Text("Reset name") },
+            onClick = {
+                onDismiss()
+                onResetName(volume)
+            },
+        )
+    }
+}
+
+/**
+ * The volume rename dialog (Step 5 spec §5): one field, at most [MAX_VOLUME_NAME] characters.
+ *
+ * **The length rule is enforced by refusing the keystroke, not by disabling Save.** A disabled
+ * button draws its label alpha-dimmed, which this app's text tones never are, and a Save that
+ * silently does nothing is worse. The counter says why typing stopped.
+ *
+ * **Blank means reset.** [onSave] receives the text as typed; `SettingsRepository.setVolumeName`
+ * trims it and treats blank as "use the default", so there is one rule, in one place.
+ */
+@Composable
+internal fun VolumeRenameDialog(
+    initial: String,
+    placeholder: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial.take(MAX_VOLUME_NAME)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename storage") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { if (it.length <= MAX_VOLUME_NAME) text = it },
+                singleLine = true,
+                placeholder = { Text(placeholder) },
+                supportingText = {
+                    Text("${text.length}/$MAX_VOLUME_NAME · Leave blank for the default name")
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * "Hide from library" / "Show in library" (Step 5 spec §4).
+ *
+ * Exactly one of the two, or neither. A row hidden only because a folder ABOVE it is hidden gets
+ * neither: "Show" there would have to un-hide a different folder than the one pressed, and "Hide"
+ * would change nothing the user can see. Such a row still says `Hidden`; the folder that did the
+ * hiding is above it, where its own menu — or the Settings list — can show it.
+ */
+@Composable
+private fun LibraryItems(
+    item: FolderRowItem,
+    onDismiss: () -> Unit,
+    onSetHidden: (key: String, hidden: Boolean) -> Unit,
+) {
+    val key = item.exclusionKey ?: return
+    val hide = when {
+        item.hiddenHere -> false
+        !item.node.hidden -> true
+        else -> return
+    }
+    HorizontalDivider()
+    DropdownMenuItem(
+        text = { Text(if (hide) "Hide from library" else "Show in library") },
+        onClick = {
+            onDismiss()
+            onSetHidden(key, hide)
+        },
+    )
+}
+
+/**
  * Every verb a folder offers, at both scopes — the header's overflow and a row's long press.
  *
  * **A direct-only item is drawn only where it would differ from the deep one.** A leaf folder's two
@@ -369,8 +537,7 @@ private fun runFolderVerb(
  * [includePlay] is false for the header, which already draws play and shuffle as buttons.
  */
 @Composable
-private fun FolderVerbMenu(
-    expanded: Boolean,
+private fun FolderVerbItems(
     node: FolderNode,
     includePlay: Boolean,
     onDismiss: () -> Unit,
@@ -378,38 +545,36 @@ private fun FolderVerbMenu(
 ) {
     // The subtree is strictly larger than the direct list exactly when both are non-trivial.
     val shallowDiffers = node.children.isNotEmpty() && node.songs.isNotEmpty()
-    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        if (includePlay) {
-            FolderVerbItem("Play", FolderVerb.PLAY, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb)
-            FolderVerbItem(
-                "Shuffle", FolderVerb.SHUFFLE, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
-            )
-        }
+    if (includePlay) {
+        FolderVerbItem("Play", FolderVerb.PLAY, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb)
         FolderVerbItem(
-            "Add to queue", FolderVerb.QUEUE, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+            "Shuffle", FolderVerb.SHUFFLE, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
         )
-        // "Add to playlist", not "add folder" — the entries are a SNAPSHOT and the wording is the
-        // only thing that says so. See PlaylistAdditions.ofFolder.
+    }
+    FolderVerbItem(
+        "Add to queue", FolderVerb.QUEUE, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+    )
+    // "Add to playlist", not "add folder" — the entries are a SNAPSHOT and the wording is the
+    // only thing that says so. See PlaylistAdditions.ofFolder.
+    FolderVerbItem(
+        "Add to playlist", FolderVerb.PLAYLIST, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+    )
+    if (shallowDiffers) {
+        HorizontalDivider()
+        // Drawn for BOTH menus, including the header's — this is the brief's "play this folder
+        // only", which is the header's secondary action and has no button of its own.
         FolderVerbItem(
-            "Add to playlist", FolderVerb.PLAYLIST, FolderScope.WITH_SUBFOLDERS, onDismiss, onVerb,
+            "Play this folder only", FolderVerb.PLAY, FolderScope.THIS_FOLDER,
+            onDismiss, onVerb,
         )
-        if (shallowDiffers) {
-            HorizontalDivider()
-            // Drawn for BOTH menus, including the header's — this is the brief's "play this folder
-            // only", which is the header's secondary action and has no button of its own.
-            FolderVerbItem(
-                "Play this folder only", FolderVerb.PLAY, FolderScope.THIS_FOLDER,
-                onDismiss, onVerb,
-            )
-            FolderVerbItem(
-                "Queue this folder only", FolderVerb.QUEUE, FolderScope.THIS_FOLDER,
-                onDismiss, onVerb,
-            )
-            FolderVerbItem(
-                "Add this folder only to playlist", FolderVerb.PLAYLIST, FolderScope.THIS_FOLDER,
-                onDismiss, onVerb,
-            )
-        }
+        FolderVerbItem(
+            "Queue this folder only", FolderVerb.QUEUE, FolderScope.THIS_FOLDER,
+            onDismiss, onVerb,
+        )
+        FolderVerbItem(
+            "Add this folder only to playlist", FolderVerb.PLAYLIST, FolderScope.THIS_FOLDER,
+            onDismiss, onVerb,
+        )
     }
 }
 

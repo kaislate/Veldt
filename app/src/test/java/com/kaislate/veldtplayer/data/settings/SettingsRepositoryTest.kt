@@ -371,4 +371,105 @@ class SettingsRepositoryTest {
             listOf<Any?>(repo.pillTransportButtons.first(), repo.readRawForTest("pill_transport_buttons")),
         )
     }
+
+    // ---- Hidden folders (Step 5 spec §4) ----
+
+    @Test fun `no folder is hidden by default`() = runTest {
+        assertEquals(emptySet<String>(), repo.excludedFolders.first())
+    }
+
+    /**
+     * Asserted on the RAW set under the literal key `excluded_folders`, for the reason the folder
+     * sort's key test records: a key renamed on both sides stays green through the flow and un-hides
+     * every user's folders on upgrade. The keys themselves are stored verbatim — a folder key is
+     * byte-exact and a normalising write would hide a different folder.
+     */
+    @Test fun `hidden folders are stored as a set under their own key, and showing one removes it`() =
+        runTest {
+            repo.setFolderHidden("1234-5678:BACKUP/Downloads", hidden = true)
+            repo.setFolderHidden("external_primary:Music/ A", hidden = true)
+            val both = repo.readRawStringSetForTest("excluded_folders")
+            repo.setFolderHidden("1234-5678:BACKUP/Downloads", hidden = false)
+            val one = repo.readRawStringSetForTest("excluded_folders")
+            repo.setFolderHidden("external_primary:Music/ A", hidden = false)
+            assertEquals(
+                listOf(
+                    setOf("1234-5678:BACKUP/Downloads", "external_primary:Music/ A"),
+                    setOf("external_primary:Music/ A"),
+                    null,
+                    emptySet<String>(),
+                ),
+                listOf(both, one, repo.readRawStringSetForTest("excluded_folders"), repo.excludedFolders.first()),
+            )
+        }
+
+    /**
+     * The synthetic keys are not folders and hiding one is a caller bug. Showing is never refused,
+     * though: a stored key this build cannot read still has to be removable from Settings.
+     */
+    @Test fun `a non-folder key cannot be hidden, but any stored key can be shown`() = runTest {
+        val refused = runCatching { repo.setFolderHidden("\u0000unfiled", hidden = true) }
+        repo.setFolderHidden("\u0000unfiled", hidden = false)
+        assertEquals(
+            listOf<Any?>(IllegalArgumentException::class.java, emptySet<String>()),
+            listOf<Any?>(refused.exceptionOrNull()?.javaClass, repo.excludedFolders.first()),
+        )
+    }
+
+    // ---- Volume names (Step 5 spec §5) ----
+
+    @Test fun `no volume is named by default`() = runTest {
+        assertEquals(emptyMap<String, String>(), repo.volumeNames.first())
+    }
+
+    /**
+     * The wire format, asserted RAW under the literal key `volume_names`: one JSON object, names
+     * trimmed, and a second volume's name added beside the first rather than replacing it. Then a
+     * blank name resets ONE volume and leaves the other, and resetting the last removes the key.
+     */
+    @Test fun `names are stored as one JSON object under their own key, trimmed, per volume`() =
+        runTest {
+            repo.setVolumeName("1234-5678", "  Band card ")
+            repo.setVolumeName("external_primary", "Phone")
+            val both = repo.readRawForTest("volume_names")
+            repo.setVolumeName("external_primary", "   ")
+            val one = repo.readRawForTest("volume_names")
+            val oneMap = repo.volumeNames.first()
+            repo.setVolumeName("1234-5678", null)
+            assertEquals(
+                listOf<Any?>(
+                    """{"1234-5678":"Band card","external_primary":"Phone"}""",
+                    """{"1234-5678":"Band card"}""",
+                    mapOf("1234-5678" to "Band card"),
+                    null,
+                ),
+                listOf<Any?>(both, one, oneMap, repo.readRawForTest("volume_names")),
+            )
+        }
+
+    /** 40 characters is allowed; 41 is a caller bug and writes nothing. */
+    @Test fun `a name longer than forty characters is refused and not stored`() = runTest {
+        val forty = "x".repeat(40)
+        repo.setVolumeName("1234-5678", forty)
+        val refused = runCatching { repo.setVolumeName("1234-5678", "y".repeat(41)) }
+        assertEquals(
+            listOf<Any?>(IllegalArgumentException::class.java, mapOf("1234-5678" to forty)),
+            listOf<Any?>(refused.exceptionOrNull()?.javaClass, repo.volumeNames.first()),
+        )
+    }
+
+    /** A corrupt or foreign value degrades to no names — the Folders tab must still draw. */
+    @Test fun `an unreadable stored value reads as no names, and a partly readable one keeps what it can`() =
+        runTest {
+            repo.writeRawVolumeNamesForTest("not json")
+            val garbage = repo.volumeNames.first()
+            repo.writeRawVolumeNamesForTest("""["a","b"]""")
+            val array = repo.volumeNames.first()
+            repo.writeRawVolumeNamesForTest("""{"1234-5678":"Band card","x":3,"y":{"z":1}}""")
+            val partial = repo.volumeNames.first()
+            assertEquals(
+                listOf(emptyMap(), emptyMap(), mapOf("1234-5678" to "Band card")),
+                listOf(garbage, array, partial),
+            )
+        }
 }

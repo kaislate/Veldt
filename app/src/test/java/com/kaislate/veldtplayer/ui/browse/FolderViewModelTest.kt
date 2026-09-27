@@ -193,6 +193,9 @@ class FolderViewModelTest {
         // Before anything else: `state` is stateIn(viewModelScope, WhileSubscribed) and is live
         // from construction, holding flows over the DataStore this test's context owns.
         vm?.viewModelScope?.cancel()
+        // A folder left hidden would filter the library of whichever suite runs next in this JVM,
+        // and not every suite that builds a MusicRepository clears the store first.
+        runBlocking { settings.clearForTest() }
         Dispatchers.resetMain()
     }
 
@@ -224,6 +227,7 @@ class FolderViewModelTest {
             SourceRegistry(emptySet()),
             localSource,
             context,
+            settings,
         )
         return FolderViewModel(
             repo = repo,
@@ -835,6 +839,189 @@ class FolderViewModelTest {
                 "asserting nothing at all",
             beforeRows.first().node,
             afterRows.first().node,
+        )
+    }
+
+    // ------------------------------------------------------ hide from library (Step 5 spec §4)
+
+    /**
+     * A hidden folder is still LISTED, still opens, and still lists its tracks — the Folders tab is
+     * where it stays playable — and its row knows it was hidden itself, so its menu can show it.
+     * The child below it is marked hidden too but was not hidden itself; the sibling that shares
+     * its prefix is neither.
+     */
+    @Test fun `a hidden folder stays listed and browsable, marked, with its menu state`() = runTest {
+        settings.setFolderHidden("external_primary:Music/Beck", hidden = true)
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3", title = "Loser"),
+            row("external_primary:Music/Beck/Odelay/b.mp3", title = "Devils Haircut"),
+            row("external_primary:Music/Beckett/c.mp3", title = "Waiting"),
+        )
+        val state = vm.settled()
+
+        fun rows(key: String?) = vm.listing(state, key).folders.map {
+            listOf(it.label, it.node.hidden, it.exclusionKey, it.hiddenHere)
+        }
+        assertEquals(
+            listOf(
+                listOf(
+                    listOf("Beck", true, BECK, true),
+                    listOf("Beckett", false, "external_primary:Music/Beckett", false),
+                ),
+                listOf(listOf("Odelay", true, "external_primary:Music/Beck/Odelay", false)),
+                listOf("Loser"),
+            ),
+            listOf(rows(null), rows(BECK), vm.listing(state, BECK).tracks.map { it.title }),
+        )
+    }
+
+    /**
+     * A volume row hides its whole VOLUME, not the directory elision stopped at — the row is
+     * labelled `SanDisk Ultra`, so that is what "Hide" has to mean. The Unfiled bucket's row is not
+     * a folder and offers nothing to hide.
+     */
+    @Test fun `a volume row hides its volume, and the unfiled row hides nothing`() = runTest {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+            row("1234-5678:Music/Portishead/c.mp3"),
+            row("1234-5678:Music/Tricky/d.mp3"),
+            unlocatedRow(),
+        )
+
+        assertEquals(
+            listOf(
+                "Internal storage" to "external_primary",
+                "SanDisk Ultra" to "1234-5678",
+                "Unfiled" to null,
+            ),
+            vm.listing(vm.settled(), null).folders.map { it.label to it.exclusionKey },
+        )
+    }
+
+    /** The view model's own verb, end to end: hide, then show, each landing in the open state. */
+    @Test fun `the hide verb marks the folder and the show verb unmarks it`() = runTest {
+        val vm = viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+        )
+        vm.settled()
+
+        // The stored set and the tree's marks arrive through two collections of the same store, so
+        // each wait is on BOTH having landed; the assertion below then pins every value.
+        fun beckHidden(state: FolderUiState) =
+            vm.listing(state, BECK).node?.hidden == true
+        vm.setFolderHidden(BECK, hidden = true)
+        val hidden = vm.state.first { BECK in it.excluded && beckHidden(it) }
+        vm.setFolderHidden(BECK, hidden = false)
+        val shown = vm.state.first { it.excluded.isEmpty() && !beckHidden(it) }
+
+        fun marks(state: FolderUiState) =
+            vm.listing(state, null).folders.map { listOf(it.node.key, it.node.hidden, it.hiddenHere) }
+        assertEquals(
+            listOf(
+                listOf(listOf(BECK, true, true), listOf("external_primary:Music/Radiohead", false, false)),
+                listOf(listOf(BECK, false, false), listOf("external_primary:Music/Radiohead", false, false)),
+            ),
+            listOf(marks(hidden), marks(shown)),
+        )
+    }
+
+    // ------------------------------------------------------------ volume rename (Step 5 spec §5)
+
+    /**
+     * A two-volume library. The card holds `Music/` AND `BACKUP/`, the owner's real card shape,
+     * so it does not elide: its display root IS the volume root, whose listing's subject is the
+     * volume's label. A nested album gives a breadcrumb to read.
+     */
+    private fun twoVolumes(): FolderViewModel {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        return viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+            row("1234-5678:Music/Portishead/Dummy/c.mp3"),
+            row("1234-5678:BACKUP/Downloads/d.mp3"),
+            unlocatedRow(),
+        )
+    }
+
+    /** Every surface of the folder tab that names a volume, from one state. */
+    private fun FolderViewModel.namedSurfaces(state: FolderUiState): List<Any> {
+        val card = listing(state, "1234-5678:Music/Portishead/Dummy")
+        val cardRoot = listing(state, "1234-5678")
+        return listOf(
+            listing(state, null).folders.map { listOf(it.label, it.renameableVolume, it.renamed) },
+            card.crumbs.map { it.label },
+            // The playlist sheet's subject for the card's own display root — the header's
+            // "Add to playlist" names it this way.
+            cardRoot.subject,
+        )
+    }
+
+    /**
+     * A name reaches every surface that names the volume — the volume row, the breadcrumb of a
+     * folder on it, and the subject the add-to-playlist sheet is headed with — and the other volume
+     * keeps its default. The Unfiled row is not a volume: nothing to rename.
+     */
+    @Test fun `a volume's name reaches its row, its breadcrumbs and the playlist subject`() = runTest {
+        settings.setVolumeName("1234-5678", "Band card")
+        val vm = twoVolumes()
+        assertEquals(
+            listOf(
+                listOf(
+                    listOf("Band card", "1234-5678", true),
+                    listOf("Internal storage", "external_primary", false),
+                    listOf("Unfiled", null, false),
+                ),
+                listOf("Band card", "Music", "Portishead", "Dummy"),
+                "Band card",
+            ),
+            vm.namedSurfaces(vm.settled()),
+        )
+    }
+
+    /**
+     * **A rename re-emits the open listing — no restart.** The view model is ALREADY collecting
+     * when the name changes, and the new state it emits carries the new label on every surface;
+     * then a reset (the repository's null) brings the platform's own description back. The waits
+     * are on the row label; the assertion then pins every surface of each state.
+     */
+    @Test fun `renaming and resetting update the open folder tab in place`() = runTest {
+        val vm = twoVolumes()
+        val before = vm.settled()
+
+        fun cardRow(state: FolderUiState) =
+            vm.listing(state, null).folders.firstOrNull { it.node.volume == "1234-5678" }?.label
+        vm.renameVolume("1234-5678", "  Band card  ")
+        val renamed = vm.state.first { cardRow(it) == "Band card" }
+        vm.renameVolume("1234-5678", null)
+        val reset = vm.state.first { cardRow(it) == "SanDisk Ultra" }
+
+        val defaults = listOf(
+            listOf(
+                listOf("Internal storage", "external_primary", false),
+                listOf("SanDisk Ultra", "1234-5678", false),
+                listOf("Unfiled", null, false),
+            ),
+            listOf("SanDisk Ultra", "Music", "Portishead", "Dummy"),
+            "SanDisk Ultra",
+        )
+        assertEquals(
+            listOf(
+                defaults,
+                listOf(
+                    listOf(
+                        listOf("Band card", "1234-5678", true),
+                        listOf("Internal storage", "external_primary", false),
+                        listOf("Unfiled", null, false),
+                    ),
+                    listOf("Band card", "Music", "Portishead", "Dummy"),
+                    "Band card",
+                ),
+                defaults,
+            ),
+            listOf(vm.namedSurfaces(before), vm.namedSurfaces(renamed), vm.namedSurfaces(reset)),
         )
     }
 }

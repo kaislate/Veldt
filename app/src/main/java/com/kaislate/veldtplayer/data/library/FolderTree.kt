@@ -33,6 +33,12 @@ data class FolderNode(
     val deepSongCount: Int,
     val deepDurationMs: Long,
     val deepFolderCount: Int,
+    /**
+     * Hidden from the library (Step 5 spec §4): this folder, or one above it, is excluded. The
+     * folder stays in the tree and stays playable here — this is a MARK, not a filter — because
+     * the Folders tab is where the user goes to see, and undo, what they have hidden.
+     */
+    val hidden: Boolean = false,
 )
 
 /**
@@ -68,7 +74,14 @@ object FolderTree {
         val songs = ArrayList<Song>()
     }
 
-    fun build(songs: List<Song>): List<FolderNode> {
+    /**
+     * [hidden] marks each folder it covers; it removes nothing. It is asked with the folder's
+     * volume and segments rather than with a finished node because the node does not exist yet.
+     */
+    fun build(
+        songs: List<Song>,
+        hidden: (volume: String, segments: List<String>) -> Boolean = { _, _ -> false },
+    ): List<FolderNode> {
         val volumes = LinkedHashMap<String, Builder>()
         val unfiled = ArrayList<Song>()
 
@@ -85,7 +98,7 @@ object FolderTree {
         }
 
         val roots = ArrayList<FolderNode>(volumes.size + 1)
-        volumes.values.mapTo(roots) { freeze(it) }
+        volumes.values.mapTo(roots) { freeze(it, hidden) }
         if (unfiled.isNotEmpty()) {
             roots += FolderNode(
                 key = UNFILED_KEY, volume = UNFILED_KEY, segments = emptyList(),
@@ -99,8 +112,11 @@ object FolderTree {
     }
 
     /** Bottom-up, so every aggregate is computed exactly once. */
-    private fun freeze(b: Builder): FolderNode {
-        val children = b.children.values.map { freeze(it) }
+    private fun freeze(
+        b: Builder,
+        hidden: (volume: String, segments: List<String>) -> Boolean,
+    ): FolderNode {
+        val children = b.children.values.map { freeze(it, hidden) }
         return FolderNode(
             key = folderKey(b.volume, b.segments),
             volume = b.volume,
@@ -111,6 +127,7 @@ object FolderTree {
             deepSongCount = b.songs.size + children.sumOf { it.deepSongCount },
             deepDurationMs = b.songs.sumOf { it.durationMs } + children.sumOf { it.deepDurationMs },
             deepFolderCount = children.size + children.sumOf { it.deepFolderCount },
+            hidden = hidden(b.volume, b.segments),
         )
     }
 

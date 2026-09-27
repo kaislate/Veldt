@@ -181,6 +181,7 @@ class FolderVerbsTest {
             SourceRegistry(emptySet()),
             localSource,
             context,
+            settings,
         )
         connection = PlaybackConnection(context, repo, NetworkReturn.NONE)
         return FolderViewModel(
