@@ -3,6 +3,31 @@
 All notable changes to Veldt. Versions follow `major.minor.patch`; the version code is
 `major*10000 + minor*100 + patch`.
 
+## 0.9.2 — 2026-09-27 (public beta)
+
+### Added
+- **Your queue comes back.** After Veldt is closed, the phone restarts or the app updates,
+  the last queue returns paused at the same track and position, with shuffle and repeat.
+  Pressing play on headphones, in the car or on Android's media controls picks it up.
+- **Sleep timer:** 15, 30, 45 or 60 minutes, the end of the current track, or a custom
+  time, from the moon button on now playing. The last 30 seconds fade out; add 10 minutes
+  or cancel from the sheet or the notification.
+- **ReplayGain** evens out loudness between songs using their tags, from local files and
+  your server. Auto mode (the default) uses album gain for an album played in order and
+  track gain otherwise, and never lets a boost clip. Settings → Playback has Off / Track /
+  Album / Auto and a pre-amp.
+- **Android Auto and Assistant:** browse Recent, Playlists, Albums, Artists and Songs in
+  the car, search, and ask for music by voice.
+- **Home-screen widget** in three sizes, with the cover, title and controls, tinted from
+  the artwork.
+- **Support Veldt** in Settings → About.
+
+### Fixed
+- Lyrics that are only a web link (a download-site watermark in some files) no longer show;
+  Veldt looks for real lyrics instead.
+- After a server rejects a password, fixing the username or a successful sync now lifts the
+  block and sends the plays that were waiting, instead of needing a new password.
+
 ## 0.9.1 — 2026-09-27 (public beta)
 
 ### Changed
