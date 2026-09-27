@@ -14,12 +14,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.text.TextLayoutResult
 import com.kaislate.veldtplayer.data.library.FolderNode
@@ -56,6 +60,8 @@ class FolderRowTest {
 
     private val verbs = ArrayList<Pair<FolderVerb, FolderScope>>()
     private val hides = ArrayList<Pair<String, Boolean>>()
+    private val renames = ArrayList<String?>()
+    private val resets = ArrayList<String>()
 
     @Composable
     private fun Entry(item: FolderRowItem) {
@@ -69,6 +75,8 @@ class FolderRowTest {
             onDismissMenu = { open = false },
             onVerb = { verb, scope -> verbs += verb to scope },
             onSetHidden = { key, hidden -> hides += key to hidden },
+            onRename = { renames += item.renameableVolume },
+            onResetName = { resets += it },
             modifier = Modifier.testTag("row"),
         )
     }
@@ -116,6 +124,7 @@ class FolderRowTest {
                     item = FolderRowItem(node("v:Music/B", "B"), "Records", "v:Music/B", false),
                     palette = neutralPalette(), menuOpen = false, onOpen = {}, onOpenMenu = {},
                     onDismissMenu = {}, onVerb = { _, _ -> }, onSetHidden = { _, _ -> },
+                    onRename = {}, onResetName = {},
                 )
             }
         }
@@ -205,5 +214,87 @@ class FolderRowTest {
         compose.onNodeWithText("Add to playlist").assertExists()
         compose.onNodeWithText("Hide from library").assertDoesNotExist()
         compose.onNodeWithText("Show in library").assertDoesNotExist()
+    }
+
+    // ---- volume rename (Step 5 spec §5) ----------------------------------------------
+
+    private fun volumeRow(renamed: Boolean) = FolderRowItem(
+        node = node("1234-5678:Music", "Music"),
+        label = if (renamed) "Band card" else "SD card",
+        exclusionKey = "1234-5678",
+        renameableVolume = "1234-5678",
+        renamed = renamed,
+    )
+
+    /** "Rename…" on a volume row; no "Reset name" until there is a name to reset. */
+    @Test fun `a volume row offers rename, and reset only once renamed`() {
+        show { Entry(volumeRow(renamed = false)) }
+        openMenu()
+        compose.onNodeWithText("Add to playlist").assertExists()
+        compose.onNodeWithText("Hide from library").assertExists()
+        compose.onNodeWithText("Reset name").assertDoesNotExist()
+        compose.onNodeWithText("Rename…").performClick()
+        assertEquals(listOf<String?>("1234-5678"), renames)
+    }
+
+    @Test fun `a renamed volume row offers reset, which resets that volume`() {
+        show { Entry(volumeRow(renamed = true)) }
+        openMenu()
+        compose.onNodeWithText("Rename…").assertExists()
+        compose.onNodeWithText("Reset name").performClick()
+        assertEquals(listOf("1234-5678"), resets)
+    }
+
+    /** A directory row is not a volume: no rename, whatever its label. */
+    @Test fun `a directory row offers no rename`() {
+        show { Entry(FolderRowItem(node("v:Music/A", "A"), "A", "v:Music/A")) }
+        openMenu()
+        compose.onNodeWithText("Rename…").assertDoesNotExist()
+        compose.onNodeWithText("Reset name").assertDoesNotExist()
+    }
+
+    // ---- the rename dialog ------------------------------------------------------------
+
+    private fun field() = compose.onNode(hasSetTextAction())
+
+    private fun fieldText(): String =
+        field().fetchSemanticsNode().config[SemanticsProperties.EditableText].text
+
+    /**
+     * The dialog hands over what was typed and nothing else (the repository trims), starting from
+     * the stored name — and a keystroke past forty characters is refused rather than Save being
+     * disabled, so the field holds exactly forty.
+     */
+    @Test fun `the rename dialog starts from the stored name and stops at forty characters`() {
+        val saved = ArrayList<String>()
+        show {
+            VolumeRenameDialog(
+                initial = "Band card", placeholder = "Band card",
+                onSave = { saved += it }, onDismiss = {},
+            )
+        }
+        val before = fieldText()
+        field().performTextClearance()
+        field().performTextInput("x".repeat(40))
+        field().performTextInput("y")
+        val capped = fieldText()
+        compose.onNodeWithText("Save").performClick()
+        assertEquals(
+            listOf<Any>("Band card", "x".repeat(40), listOf("x".repeat(40))),
+            listOf<Any>(before, capped, saved),
+        )
+    }
+
+    /** Saving an empty field hands over blank, which the repository reads as "reset". */
+    @Test fun `saving a blank field hands over blank`() {
+        val saved = ArrayList<String>()
+        show {
+            VolumeRenameDialog(
+                initial = "", placeholder = "SD card", onSave = { saved += it }, onDismiss = {},
+            )
+        }
+        field().performTextInput("   ")
+        compose.onNodeWithText("Save").performClick()
+        assertEquals(listOf("   "), saved)
     }
 }

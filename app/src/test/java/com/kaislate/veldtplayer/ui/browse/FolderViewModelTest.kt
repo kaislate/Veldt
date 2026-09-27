@@ -927,4 +927,101 @@ class FolderViewModelTest {
             listOf(marks(hidden), marks(shown)),
         )
     }
+
+    // ------------------------------------------------------------ volume rename (Step 5 spec §5)
+
+    /**
+     * A two-volume library. The card holds `Music/` AND `BACKUP/`, the owner's real card shape,
+     * so it does not elide: its display root IS the volume root, whose listing's subject is the
+     * volume's label. A nested album gives a breadcrumb to read.
+     */
+    private fun twoVolumes(): FolderViewModel {
+        addCard(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        return viewModel(
+            row("external_primary:Music/Beck/a.mp3"),
+            row("external_primary:Music/Radiohead/b.mp3"),
+            row("1234-5678:Music/Portishead/Dummy/c.mp3"),
+            row("1234-5678:BACKUP/Downloads/d.mp3"),
+            unlocatedRow(),
+        )
+    }
+
+    /** Every surface of the folder tab that names a volume, from one state. */
+    private fun FolderViewModel.namedSurfaces(state: FolderUiState): List<Any> {
+        val card = listing(state, "1234-5678:Music/Portishead/Dummy")
+        val cardRoot = listing(state, "1234-5678")
+        return listOf(
+            listing(state, null).folders.map { listOf(it.label, it.renameableVolume, it.renamed) },
+            card.crumbs.map { it.label },
+            // The playlist sheet's subject for the card's own display root — the header's
+            // "Add to playlist" names it this way.
+            cardRoot.subject,
+        )
+    }
+
+    /**
+     * A name reaches every surface that names the volume — the volume row, the breadcrumb of a
+     * folder on it, and the subject the add-to-playlist sheet is headed with — and the other volume
+     * keeps its default. The Unfiled row is not a volume: nothing to rename.
+     */
+    @Test fun `a volume's name reaches its row, its breadcrumbs and the playlist subject`() = runTest {
+        settings.setVolumeName("1234-5678", "Band card")
+        val vm = twoVolumes()
+        assertEquals(
+            listOf(
+                listOf(
+                    listOf("Band card", "1234-5678", true),
+                    listOf("Internal storage", "external_primary", false),
+                    listOf("Unfiled", null, false),
+                ),
+                listOf("Band card", "Music", "Portishead", "Dummy"),
+                "Band card",
+            ),
+            vm.namedSurfaces(vm.settled()),
+        )
+    }
+
+    /**
+     * **A rename re-emits the open listing — no restart.** The view model is ALREADY collecting
+     * when the name changes, and the new state it emits carries the new label on every surface;
+     * then a reset (the repository's null) brings the platform's own description back. The waits
+     * are on the row label; the assertion then pins every surface of each state.
+     */
+    @Test fun `renaming and resetting update the open folder tab in place`() = runTest {
+        val vm = twoVolumes()
+        val before = vm.settled()
+
+        fun cardRow(state: FolderUiState) =
+            vm.listing(state, null).folders.firstOrNull { it.node.volume == "1234-5678" }?.label
+        vm.renameVolume("1234-5678", "  Band card  ")
+        val renamed = vm.state.first { cardRow(it) == "Band card" }
+        vm.renameVolume("1234-5678", null)
+        val reset = vm.state.first { cardRow(it) == "SanDisk Ultra" }
+
+        val defaults = listOf(
+            listOf(
+                listOf("Internal storage", "external_primary", false),
+                listOf("SanDisk Ultra", "1234-5678", false),
+                listOf("Unfiled", null, false),
+            ),
+            listOf("SanDisk Ultra", "Music", "Portishead", "Dummy"),
+            "SanDisk Ultra",
+        )
+        assertEquals(
+            listOf(
+                defaults,
+                listOf(
+                    listOf(
+                        listOf("Band card", "1234-5678", true),
+                        listOf("Internal storage", "external_primary", false),
+                        listOf("Unfiled", null, false),
+                    ),
+                    listOf("Band card", "Music", "Portishead", "Dummy"),
+                    "Band card",
+                ),
+                defaults,
+            ),
+            listOf(vm.namedSurfaces(before), vm.namedSurfaces(renamed), vm.namedSurfaces(reset)),
+        )
+    }
 }

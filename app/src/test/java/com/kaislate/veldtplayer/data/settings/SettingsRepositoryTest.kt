@@ -415,4 +415,61 @@ class SettingsRepositoryTest {
             listOf<Any?>(refused.exceptionOrNull()?.javaClass, repo.excludedFolders.first()),
         )
     }
+
+    // ---- Volume names (Step 5 spec §5) ----
+
+    @Test fun `no volume is named by default`() = runTest {
+        assertEquals(emptyMap<String, String>(), repo.volumeNames.first())
+    }
+
+    /**
+     * The wire format, asserted RAW under the literal key `volume_names`: one JSON object, names
+     * trimmed, and a second volume's name added beside the first rather than replacing it. Then a
+     * blank name resets ONE volume and leaves the other, and resetting the last removes the key.
+     */
+    @Test fun `names are stored as one JSON object under their own key, trimmed, per volume`() =
+        runTest {
+            repo.setVolumeName("1234-5678", "  Band card ")
+            repo.setVolumeName("external_primary", "Phone")
+            val both = repo.readRawForTest("volume_names")
+            repo.setVolumeName("external_primary", "   ")
+            val one = repo.readRawForTest("volume_names")
+            val oneMap = repo.volumeNames.first()
+            repo.setVolumeName("1234-5678", null)
+            assertEquals(
+                listOf<Any?>(
+                    """{"1234-5678":"Band card","external_primary":"Phone"}""",
+                    """{"1234-5678":"Band card"}""",
+                    mapOf("1234-5678" to "Band card"),
+                    null,
+                ),
+                listOf<Any?>(both, one, oneMap, repo.readRawForTest("volume_names")),
+            )
+        }
+
+    /** 40 characters is allowed; 41 is a caller bug and writes nothing. */
+    @Test fun `a name longer than forty characters is refused and not stored`() = runTest {
+        val forty = "x".repeat(40)
+        repo.setVolumeName("1234-5678", forty)
+        val refused = runCatching { repo.setVolumeName("1234-5678", "y".repeat(41)) }
+        assertEquals(
+            listOf<Any?>(IllegalArgumentException::class.java, mapOf("1234-5678" to forty)),
+            listOf<Any?>(refused.exceptionOrNull()?.javaClass, repo.volumeNames.first()),
+        )
+    }
+
+    /** A corrupt or foreign value degrades to no names — the Folders tab must still draw. */
+    @Test fun `an unreadable stored value reads as no names, and a partly readable one keeps what it can`() =
+        runTest {
+            repo.writeRawVolumeNamesForTest("not json")
+            val garbage = repo.volumeNames.first()
+            repo.writeRawVolumeNamesForTest("""["a","b"]""")
+            val array = repo.volumeNames.first()
+            repo.writeRawVolumeNamesForTest("""{"1234-5678":"Band card","x":3,"y":{"z":1}}""")
+            val partial = repo.volumeNames.first()
+            assertEquals(
+                listOf(emptyMap(), emptyMap(), mapOf("1234-5678" to "Band card")),
+                listOf(garbage, array, partial),
+            )
+        }
 }

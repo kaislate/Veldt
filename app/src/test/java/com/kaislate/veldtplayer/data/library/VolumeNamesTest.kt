@@ -70,7 +70,7 @@ class VolumeNamesTest {
     }
 
     @Test fun `the Unfiled bucket is labelled Unfiled`() {
-        assertEquals("Unfiled", names.label(UNFILED_KEY))
+        assertEquals("Unfiled", names.label(UNFILED_KEY, emptyMap()))
     }
 
     /**
@@ -89,7 +89,7 @@ class VolumeNamesTest {
         assertEquals(
             "the StorageManager lookup was consulted before the primary branch",
             "Internal storage",
-            names.label(VOLUME_PRIMARY),
+            names.label(VOLUME_PRIMARY, emptyMap()),
         )
     }
 
@@ -98,7 +98,7 @@ class VolumeNamesTest {
      * assert a physical card that may not exist, on the one path that exists to say "I don't know".
      */
     @Test fun `an unrecognised mount is labelled Other storage`() {
-        assertEquals("Other storage", names.label(VOLUME_UNKNOWN))
+        assertEquals("Other storage", names.label(VOLUME_UNKNOWN, emptyMap()))
     }
 
     /**
@@ -113,7 +113,7 @@ class VolumeNamesTest {
         assertEquals(
             "the StorageManager lookup was not consulted, or did not match on the volume name",
             "SanDisk Ultra",
-            names.label("1234-5678"),
+            names.label("1234-5678", emptyMap()),
         )
     }
 
@@ -128,6 +128,40 @@ class VolumeNamesTest {
      */
     @Test fun `an unmatched non-primary volume degrades to SD card`() {
         addVolume(fsUuid = "1234-5678", description = "SanDisk Ultra")
-        assertEquals("SD card", names.label("aaaa-bbbb"))
+        assertEquals("SD card", names.label("aaaa-bbbb", emptyMap()))
+    }
+
+    // ---- The user's own names (Step 5 spec §5) ----
+
+    /**
+     * A name wins over EVERY default: over `Internal storage`, over the platform's description of
+     * a mounted card, and over the `SD card` fallback for a card that is not inserted — the last is
+     * the "unmounted volumes keep their stored names" rule, since nothing but the stored map knows
+     * that volume. Volumes without a name keep their defaults, and the Unfiled bucket is not a
+     * volume and cannot be renamed.
+     */
+    @Test fun `a stored name wins over every default, and only for its own volume`() {
+        addPrimaryVolume(description = "Internal shared storage (OEM)")
+        addVolume(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        val stored = mapOf(
+            VOLUME_PRIMARY to "Phone",
+            "1234-5678" to "Band card",
+            "aaaa-bbbb" to "Archive card",
+            UNFILED_KEY to "Not a volume",
+        )
+        assertEquals(
+            listOf("Phone", "Band card", "Archive card", "Unfiled", "Other storage", "SD card"),
+            listOf(VOLUME_PRIMARY, "1234-5678", "aaaa-bbbb", UNFILED_KEY, VOLUME_UNKNOWN, "cccc-dddd")
+                .map { names.label(it, stored) },
+        )
+    }
+
+    /** Resetting is removing the entry; the default comes back, platform lookup and all. */
+    @Test fun `without its stored name a volume reads by its default again`() {
+        addVolume(fsUuid = "1234-5678", description = "SanDisk Ultra")
+        assertEquals(
+            listOf("Band card", "SanDisk Ultra"),
+            listOf(mapOf("1234-5678" to "Band card"), emptyMap()).map { names.label("1234-5678", it) },
+        )
     }
 }

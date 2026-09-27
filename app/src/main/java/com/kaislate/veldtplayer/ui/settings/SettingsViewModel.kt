@@ -21,7 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -82,17 +82,21 @@ class SettingsViewModel @Inject constructor(
     /**
      * The "Library" section's hidden folders (Step 5 spec §4), each named the way the Folders tab
      * names it — volume label first, then the path — and in the order a person would scan for one.
+     * The volume's label includes the user's own name for it, so a renamed card reads by that name
+     * here too, including a card that is not inserted.
      *
      * Read from the STORED keys, not from the folder tree: a hidden folder that has since been
      * deleted, or sits on a card that is not inserted, is still hidden and still has to be
      * removable from here, and the tree no longer has a node for it.
      */
-    val hiddenFolders: StateFlow<List<HiddenFolder>> = settingsRepository.excludedFolders
-        .map { keys ->
-            keys.map { HiddenFolder(it, FolderExclusion.describe(it, volumeNames::label)) }
-                .sortedWith(compareBy(FolderSort.NATURAL) { it.label })
-        }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val hiddenFolders: StateFlow<List<HiddenFolder>> = combine(
+        settingsRepository.excludedFolders,
+        settingsRepository.volumeNames,
+    ) { keys, names ->
+        keys.map { key ->
+            HiddenFolder(key, FolderExclusion.describe(key) { volumeNames.label(it, names) })
+        }.sortedWith(compareBy(FolderSort.NATURAL) { it.label })
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun showFolder(key: String) {
         viewModelScope.launch { settingsRepository.setFolderHidden(key, hidden = false) }

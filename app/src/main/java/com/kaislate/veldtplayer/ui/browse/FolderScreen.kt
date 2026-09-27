@@ -22,13 +22,16 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,6 +46,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.kaislate.veldtplayer.data.library.FolderNode
 import com.kaislate.veldtplayer.data.library.TrackSort
+import com.kaislate.veldtplayer.data.settings.MAX_VOLUME_NAME
 import com.kaislate.veldtplayer.ui.components.ArtPlaceholder
 import com.kaislate.veldtplayer.ui.components.SongRow
 import com.kaislate.veldtplayer.ui.theme.DominantColors
@@ -93,6 +97,26 @@ fun FolderScreen(
     // the moment a scan lands — and a menu anchored to a row that no longer exists simply does not
     // recompose, which is the correct outcome and the reason this is a key.
     var openMenuKey by remember { mutableStateOf<String?>(null) }
+
+    // The volume row whose rename dialog is open. Screen state, like the menu above, so a tree
+    // emission mid-edit does not close the dialog under the user's typing.
+    var renaming by remember { mutableStateOf<FolderRowItem?>(null) }
+    renaming?.let { row ->
+        val volume = row.renameableVolume
+        if (volume != null) {
+            VolumeRenameDialog(
+                // Pre-filled only with the user's own name. A default label is shown as the
+                // placeholder instead, so saving without typing cannot store "SD card" as a name.
+                initial = if (row.renamed) row.label else "",
+                placeholder = row.label,
+                onSave = { name ->
+                    renaming = null
+                    vm.renameVolume(volume, name)
+                },
+                onDismiss = { renaming = null },
+            )
+        }
+    }
 
     when {
         // The same three-way distinction every other browse surface draws. Claiming "no folders"
@@ -206,6 +230,8 @@ fun FolderScreen(
                             }
                         },
                         onSetHidden = vm::setFolderHidden,
+                        onRename = { renaming = row },
+                        onResetName = { volume -> vm.renameVolume(volume, null) },
                         modifier = Modifier.animateItem(),
                     )
                 }
@@ -362,8 +388,9 @@ private fun runFolderVerb(
  * (see `openMenuKey` there), because it has to outlive the row object a tree emission replaces.
  *
  * The long press is the interaction that makes a deep tree tolerable: every verb the header
- * offers, without entering the folder first — plus the one verb the header does not have, hiding
- * the folder from the library, which is a thing done to a folder from OUTSIDE it.
+ * offers, without entering the folder first — plus the verbs the header does not have, which are
+ * things done to a folder from OUTSIDE it: hiding it from the library, and, on a volume row,
+ * renaming the volume.
  */
 @Composable
 internal fun FolderListEntry(
@@ -375,6 +402,8 @@ internal fun FolderListEntry(
     onDismissMenu: () -> Unit,
     onVerb: (FolderVerb, FolderScope) -> Unit,
     onSetHidden: (key: String, hidden: Boolean) -> Unit,
+    onRename: () -> Unit,
+    onResetName: (volume: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Box(modifier) {
@@ -387,8 +416,83 @@ internal fun FolderListEntry(
                 onVerb = onVerb,
             )
             LibraryItems(item = item, onDismiss = onDismissMenu, onSetHidden = onSetHidden)
+            VolumeItems(
+                item = item,
+                onDismiss = onDismissMenu,
+                onRename = onRename,
+                onResetName = onResetName,
+            )
         }
     }
+}
+
+/**
+ * "Rename…" and, only while the volume carries a name of the user's, "Reset name" (Step 5 spec §5).
+ * Volume rows only: a directory's name is the directory's, and renaming it is a file manager's job.
+ */
+@Composable
+private fun VolumeItems(
+    item: FolderRowItem,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
+    onResetName: (volume: String) -> Unit,
+) {
+    val volume = item.renameableVolume ?: return
+    HorizontalDivider()
+    DropdownMenuItem(
+        text = { Text("Rename…") },
+        onClick = {
+            onDismiss()
+            onRename()
+        },
+    )
+    if (item.renamed) {
+        DropdownMenuItem(
+            text = { Text("Reset name") },
+            onClick = {
+                onDismiss()
+                onResetName(volume)
+            },
+        )
+    }
+}
+
+/**
+ * The volume rename dialog (Step 5 spec §5): one field, at most [MAX_VOLUME_NAME] characters.
+ *
+ * **The length rule is enforced by refusing the keystroke, not by disabling Save.** A disabled
+ * button draws its label alpha-dimmed, which this app's text tones never are, and a Save that
+ * silently does nothing is worse. The counter says why typing stopped.
+ *
+ * **Blank means reset.** [onSave] receives the text as typed; `SettingsRepository.setVolumeName`
+ * trims it and treats blank as "use the default", so there is one rule, in one place.
+ */
+@Composable
+internal fun VolumeRenameDialog(
+    initial: String,
+    placeholder: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial.take(MAX_VOLUME_NAME)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename storage") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { if (it.length <= MAX_VOLUME_NAME) text = it },
+                singleLine = true,
+                placeholder = { Text(placeholder) },
+                supportingText = {
+                    Text("${text.length}/$MAX_VOLUME_NAME · Leave blank for the default name")
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /**

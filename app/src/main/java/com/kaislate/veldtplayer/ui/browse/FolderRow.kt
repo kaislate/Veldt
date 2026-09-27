@@ -57,8 +57,8 @@ private const val MOSAIC_ALBUMS = 4
  * fail contrast on some. The row stays fully tappable: a hidden folder is still browsable and
  * playable here, which is the point of marking rather than removing it.
  *
- * **[onLongClick] is where a folder reaches its verbs** — play, shuffle, queue, playlist, and
- * hiding it from the library — without the user entering it first. Null keeps the row on a plain `clickable`, for the reason `SongRow`
+ * **[onLongClick] is where a folder reaches its verbs** — play, shuffle, queue, playlist, hiding it
+ * from the library, and on a volume row renaming the volume — without the user entering it first. Null keeps the row on a plain `clickable`, for the reason `SongRow`
  * records: `combinedClickable` with a null handler still consumes the gesture.
  *
  * **Not shown, deliberately:** file size and bitrate (not indexed, and file-manager concerns), the

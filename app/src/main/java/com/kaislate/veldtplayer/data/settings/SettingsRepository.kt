@@ -20,6 +20,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +31,18 @@ import javax.inject.Singleton
 enum class ThemeMode { LIGHT, DARK, SYSTEM }
 
 private val Context.settingsStore by preferencesDataStore(name = "veldt-settings")
+
+/** The longest name a volume can be given (Step 5 spec §5). */
+const val MAX_VOLUME_NAME = 40
+
+/** Every entry that is a string → string pair; anything else is dropped, not guessed at. */
+private fun decodeVolumeNames(raw: String?): Map<String, String> {
+    val obj = raw?.let { runCatching { Json.parseToJsonElement(it) }.getOrNull() }
+        as? JsonObject ?: return emptyMap()
+    return obj.mapNotNull { (volume, value) ->
+        (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { volume to it }
+    }.toMap()
+}
 
 /**
  * The app's preference store, including the built-in pill's settings (P1.5c).
@@ -109,6 +125,50 @@ class SettingsRepository @Inject constructor(
             val now = if (hidden) was + key else was - key
             if (now.isEmpty()) prefs.remove(EXCLUDED_FOLDERS) else prefs[EXCLUDED_FOLDERS] = now
         }
+    }
+
+    /**
+     * The user's names for storage volumes (Step 5 spec §5), MediaStore volume name → display name.
+     * `VolumeNames.label` consults these first; nothing else names a volume.
+     *
+     * Stored as one JSON object string — the encoding this repo already reads and writes elsewhere
+     * (`LrclibCache`) — rather than a set of `volume<NUL>name` pairs, which would need its own
+     * escaping rules and a parser that does not yet exist. Anything unreadable reads as NO names:
+     * a corrupt store must degrade to the default labels, never stop the Folders tab from drawing.
+     *
+     * Keyed by volume name, which for a card is its filesystem UUID, so the name follows the card
+     * across remounts and survives a card that is not inserted right now.
+     */
+    val volumeNames: Flow<Map<String, String>> = context.settingsStore.data.map { prefs ->
+        decodeVolumeNames(prefs[VOLUME_NAMES])
+    }
+
+    /**
+     * Name [volume] [name], trimmed; a blank [name] (or null) removes the name, so the default
+     * label returns. Removing the last name removes the preference.
+     *
+     * @throws IllegalArgumentException for a trimmed name longer than [MAX_VOLUME_NAME] — the
+     *   rename dialog cannot produce one, so it is a caller bug.
+     */
+    suspend fun setVolumeName(volume: String, name: String?) {
+        val trimmed = name?.trim().orEmpty()
+        require(trimmed.length <= MAX_VOLUME_NAME) { "volume name longer than $MAX_VOLUME_NAME" }
+        context.settingsStore.edit { prefs ->
+            val was = decodeVolumeNames(prefs[VOLUME_NAMES])
+            val now = if (trimmed.isEmpty()) was - volume else was + (volume to trimmed)
+            if (now.isEmpty()) {
+                prefs.remove(VOLUME_NAMES)
+            } else {
+                prefs[VOLUME_NAMES] = buildJsonObject {
+                    now.forEach { (v, n) -> put(v, JsonPrimitive(n)) }
+                }.toString()
+            }
+        }
+    }
+
+    /** Test seam: writes a raw string under the volume-names key, so the corrupt path is reachable. */
+    internal suspend fun writeRawVolumeNamesForTest(raw: String) {
+        context.settingsStore.edit { it[VOLUME_NAMES] = raw }
     }
 
     /**
@@ -359,6 +419,7 @@ class SettingsRepository @Inject constructor(
         val LYRICS_ONLINE = booleanPreferencesKey("lyrics_online")
         val TAG_SCAN_GENERATION = intPreferencesKey("tag_scan_generation")
         val EXCLUDED_FOLDERS = stringSetPreferencesKey("excluded_folders")
+        val VOLUME_NAMES = stringPreferencesKey("volume_names")
 
         /** Every value [meteredMaxBitRate] can hold. 0 is original quality. */
         val METERED_CAPS: Set<Int> = setOf(0, 320, 192, 128)

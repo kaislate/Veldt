@@ -234,4 +234,20 @@ class SettingsViewModelTest {
             listOf(listed, after),
         )
     }
+
+    /**
+     * The list follows a volume's name (Step 5 spec §5), for a card that is not inserted — its name
+     * lives only in the store — and follows it LIVE, from one open collection.
+     */
+    @Test fun `the hidden list names a volume by its stored name, and follows a rename`() = runTest {
+        repo.setFolderHidden("aaaa-bbbb:BACKUP/Downloads", hidden = true)
+        val vm = viewModel()
+        val before = vm.hiddenFolders.first { it.isNotEmpty() }
+        repo.setVolumeName("aaaa-bbbb", "Archive card")
+        val after = vm.hiddenFolders.first { it.singleOrNull()?.label?.startsWith("Archive") == true }
+        assertEquals(
+            listOf("SD card › BACKUP › Downloads", "Archive card › BACKUP › Downloads"),
+            listOf(before.single().label, after.single().label),
+        )
+    }
 }

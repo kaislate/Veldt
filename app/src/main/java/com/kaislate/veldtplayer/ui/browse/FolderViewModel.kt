@@ -63,6 +63,12 @@ data class FolderUiState(
      * from here, or is hidden only because a folder above it is.
      */
     val excluded: Set<String> = emptySet(),
+    /**
+     * The user's volume names (Step 5 spec §5). Held HERE, in the value the listing is derived
+     * from, so a rename changes the state and the screen's `remember(state, key)` re-derives the
+     * labels — see [VolumeNames.label] for why the names are passed rather than looked up.
+     */
+    val volumeNames: Map<String, String> = emptyMap(),
 ) {
     /**
      * The library has songs, and not one of them has a derivable location.
@@ -90,12 +96,18 @@ data class FolderUiState(
  * [hiddenHere] says [exclusionKey] is itself hidden, so the menu can offer "Show in library". A row
  * that is [FolderNode.hidden] only because a folder ABOVE it is hidden offers neither verb: showing
  * it would need un-hiding that ancestor, which is a different folder from the one pressed.
+ *
+ * [renameableVolume] is the MediaStore volume a VOLUME row stands for, which its menu can rename
+ * (Step 5 spec §5); null on every directory row and on the Unfiled bucket. [renamed] says the
+ * volume carries a name of the user's, so "Reset name" has something to reset.
  */
 data class FolderRowItem(
     val node: FolderNode,
     val label: String,
     val exclusionKey: String? = null,
     val hiddenHere: Boolean = false,
+    val renameableVolume: String? = null,
+    val renamed: Boolean = false,
 )
 
 /** One breadcrumb segment. A null [route] is inert — the current folder, or an elided ancestor. */
@@ -171,14 +183,16 @@ class FolderViewModel @Inject constructor(
         settings.folderSort,
         settings.folderSortDescending,
         repo.scanning(),
-        settings.excludedFolders,
-    ) { tree, sort, descending, scanning, excluded ->
+        // Paired because `combine` is typed up to five flows; both are settings the menus read.
+        combine(settings.excludedFolders, settings.volumeNames, ::Pair),
+    ) { tree, sort, descending, scanning, (excluded, volumeNames) ->
         FolderUiState(
             roots = FolderTree.elideRoots(tree),
             sort = sort,
             descending = descending,
             scanning = scanning,
             excluded = excluded,
+            volumeNames = volumeNames,
         )
     }.stateIn(
         viewModelScope,
@@ -212,14 +226,21 @@ class FolderViewModel @Inject constructor(
         val volumeRows = node.key == DEVICE_KEY
         val folders = FolderSort.folders(node.children).map { child ->
             val exclusionKey = exclusionKey(child, volumeRows)
+            val volume = child.volume.takeIf { volumeRows && child.key != UNFILED_KEY }
             FolderRowItem(
                 node = child,
-                label = rowLabel(child, volumeRows),
+                label = rowLabel(child, volumeRows, state.volumeNames),
                 exclusionKey = exclusionKey,
                 hiddenHere = exclusionKey != null && exclusionKey in state.excluded,
+                renameableVolume = volume,
+                renamed = volume != null && volume in state.volumeNames,
             )
         }
-        val crumbs = if (volumeRows) listOf(FolderCrumb(DEVICE_LABEL, null)) else crumbs(node, roots)
+        val crumbs = if (volumeRows) {
+            listOf(FolderCrumb(DEVICE_LABEL, null))
+        } else {
+            crumbs(node, roots, state.volumeNames)
+        }
         return FolderListing(
             node = node,
             crumbs = crumbs,
@@ -245,8 +266,8 @@ class FolderViewModel @Inject constructor(
      * card. `FolderViewModelTest` pins it with a two-volume fixture, which is the only evidence
      * this behaviour will ever have: no device on this fleet has a card.
      */
-    private fun rowLabel(node: FolderNode, volumeRow: Boolean): String =
-        if (volumeRow) volumeNames.label(node.volume) else node.name
+    private fun rowLabel(node: FolderNode, volumeRow: Boolean, names: Map<String, String>): String =
+        if (volumeRow) volumeNames.label(node.volume, names) else node.name
 
     /** What hiding this row hides. See [FolderRowItem.exclusionKey]. */
     private fun exclusionKey(node: FolderNode, volumeRow: Boolean): String? = when {
@@ -268,13 +289,21 @@ class FolderViewModel @Inject constructor(
      * one-row screen the design exists to skip, and it is not on the back stack to be popped to, so
      * the pop-or-navigate fallback would GROW the stack rather than shrink it.
      */
-    private fun crumbs(node: FolderNode, roots: List<FolderRoot>): List<FolderCrumb> {
+    private fun crumbs(
+        node: FolderNode,
+        roots: List<FolderRoot>,
+        names: Map<String, String>,
+    ): List<FolderCrumb> {
         val displayDepth = roots.firstOrNull { it.displayRoot.volume == node.volume }
             ?.displayRoot?.segments?.size ?: 0
         val single = roots.size == 1
         return (0..node.segments.size).map { depth ->
             FolderCrumb(
-                label = if (depth == 0) volumeNames.label(node.volume) else node.segments[depth - 1],
+                label = if (depth == 0) {
+                    volumeNames.label(node.volume, names)
+                } else {
+                    node.segments[depth - 1]
+                },
                 route = when {
                     // The folder the user is looking at.
                     depth == node.segments.size -> null
@@ -362,6 +391,15 @@ class FolderViewModel @Inject constructor(
      */
     fun setFolderHidden(key: String, hidden: Boolean) {
         viewModelScope.launch { settings.setFolderHidden(key, hidden) }
+    }
+
+    /**
+     * Name a volume (Step 5 spec §5); a blank [name] resets it to the default label. [volume] is a
+     * row's [FolderRowItem.renameableVolume]. Trimming and the length rule are the repository's,
+     * so the dialog and any later caller cannot disagree about them.
+     */
+    fun renameVolume(volume: String, name: String?) {
+        viewModelScope.launch { settings.setVolumeName(volume, name) }
     }
 
     /**
