@@ -12,10 +12,8 @@ import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -61,25 +59,27 @@ class BrowseViewModel @Inject constructor(
 
     // ---- Search ---------------------------------------------------------------------
 
-    private val _query = MutableStateFlow("")
-
-    /** The live field text, echoed straight back to the text field the user is typing in. */
-    val query: StateFlow<String> = _query.asStateFlow()
-
-    fun setQuery(value: String) {
-        _query.value = value
-    }
+    /**
+     * The search field's text, held as synchronous Compose state; see [SearchQuery] for why it
+     * is not a flow.
+     *
+     * It lives here, in the activity-scoped view model, so that it outlives the search screen:
+     * opening an album from a result disposes the screen, and coming back must find the query
+     * and its results where they were. The flip side, that a NEW trip to search would also find
+     * them, is handled by the screen, which clears this on a fresh entry.
+     */
+    val search = SearchQuery()
 
     /**
      * The term [answered], [resultAlbums] and [resultArtists] are being computed FOR: the
      * field text, trimmed, once it has stopped changing for [SEARCH_DEBOUNCE_MS].
      *
      * Public rather than private because "nothing matched" is only ever true of a SETTLED
-     * term. A screen that compares this against [query] can tell an empty result set apart
-     * from a query that has not run yet, and so does not flash "No matches for b" at every
-     * fast typist. It is also the term the empty message should quote back.
+     * term. A screen that compares this against the field's text can tell an empty result set
+     * apart from a query that has not run yet, and so does not flash "No matches for b" at
+     * every fast typist. It is also the term the empty message should quote back.
      */
-    val settledQuery: StateFlow<String> = _query
+    val settledQuery: StateFlow<String> = search.text
         .settleSearchTerms()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
