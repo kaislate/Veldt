@@ -1,3 +1,5 @@
+<img src="screenshots/icon.png" width="96" alt="Veldt's icon: a record rising like a sun over green hills" align="right">
+
 # Veldt
 
 **A local + self-hosted music player for Android — with the Veldt Wisp pill built in.**
