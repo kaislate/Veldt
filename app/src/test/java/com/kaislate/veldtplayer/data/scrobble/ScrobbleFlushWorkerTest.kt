@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.scrobble
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import androidx.work.BackoffPolicy
 import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
@@ -26,6 +27,7 @@ import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,18 +129,102 @@ class ScrobbleFlushWorkerTest {
         assertEquals(emptyList<QueuedScrobble>(), queue.forSource(sourceId))
     }
 
-    /** Plan Global Constraint 5: the flush worker never retries itself. An entry left behind by
-     *  an unreachable answer must still yield [ListenableWorker.Result.success] — never `.retry`
-     *  — so nothing here fights WorkManager's own backoff; the next piggyback or a later failure
-     *  is what re-arms delivery, per design spec §5. */
-    @Test fun `the worker still returns success when an entry is left behind unreachable`() = runTest {
+    /** Amendment 2026-09-27 (device measurement): mobile data satisfies `NetworkType.CONNECTED`
+     *  while a LAN/Tailscale-only Navidrome stays unreachable, so an entry left behind unreachable
+     *  on an EARLY attempt (`runAttemptCount` 0..4) must ask WorkManager to retry — not stop
+     *  cold, the original ("always success") design that stranded the entry. */
+    @Test fun `an entry left behind unreachable on attempt 0 asks WorkManager to retry`() = runTest {
         val sourceId = addAccount()
         queue.add(QueuedScrobble(sourceId, "song-1", 1_000L))
         server.enqueue("this is not a subsonic envelope at all")
 
-        val result = worker(flusher()).doWork()
+        val result = builder(flusher()).setRunAttemptCount(0).build().doWork()
 
-        assertEquals(ListenableWorker.Result.success(), result)
+        assertEquals(ListenableWorker.Result.retry(), result)
         assertEquals(1, queue.forSource(sourceId).size)
     }
+
+    /** The bounded part of "bounded retries": at most 6 attempts total, `runAttemptCount` 0..5.
+     *  On the 6th attempt (index 5) the worker must give up — even though still unreachable — and
+     *  return success, so a server that is down for good does not retry forever. */
+    @Test fun `an entry still unreachable on attempt 5 (the 6th attempt) gives up with success`() = runTest {
+        val sourceId = addAccount()
+        queue.add(QueuedScrobble(sourceId, "song-1", 1_000L))
+        server.enqueue("this is not a subsonic envelope at all")
+
+        val result = builder(flusher()).setRunAttemptCount(5).build().doWork()
+
+        assertEquals(ListenableWorker.Result.success(), result)
+        assertEquals(
+            "giving up must not also drop the entry — a later piggyback can still deliver it",
+            1,
+            queue.forSource(sourceId).size,
+        )
+    }
+
+    /** Credential rejection (auth-block, design spec §4/§5) must end the job immediately, on ANY
+     *  attempt — the bounded retry exists for unreachable servers, never for an account that
+     *  needs a new password; retrying that would burn all 6 attempts for nothing. */
+    @Test fun `auth-blocked entries on a later attempt still return success, never retry`() = runTest {
+        val sourceId = addAccount()
+        queue.add(QueuedScrobble(sourceId, "song-1", 1_000L))
+        server.enqueue(failedEnvelope(40, "Wrong username or password"))
+
+        val result = builder(flusher()).setRunAttemptCount(2).build().doWork()
+
+        assertEquals(ListenableWorker.Result.success(), result)
+        assertTrue(queue.isAuthBlocked(sourceId))
+        assertEquals(1, queue.forSource(sourceId).size)
+    }
+
+    /** [FlushOutcome] must be computed across ALL sources ([ScrobbleFlusher.flushAll]), not just
+     *  the first one visited: one source delivering cleanly must not hide another source's
+     *  unreachable backlog from the retry decision. */
+    @Test fun `a mix of one delivered source and one unreachable source still retries`() = runTest {
+        val delivered = addAccount()
+        val other = FakeHttpServer().also { it.start() }
+        try {
+            val stuck = accounts.add("Other", other.baseUrl, "kyle-b", "hunter2").let {
+                (it as? AccountWriteResult.Saved)?.sourceId ?: error("expected Saved, got $it")
+            }
+            queue.add(QueuedScrobble(delivered, "song-a", 1_000L))
+            queue.add(QueuedScrobble(stuck, "song-b", 2_000L))
+            server.enqueue(okEnvelope())
+            other.enqueue("this is not a subsonic envelope at all")
+
+            val result = builder(flusher()).setRunAttemptCount(0).build().doWork()
+
+            assertEquals(ListenableWorker.Result.retry(), result)
+            assertEquals(emptyList<QueuedScrobble>(), queue.forSource(delivered))
+            assertEquals(1, queue.forSource(stuck).size)
+        } finally {
+            other.close()
+        }
+    }
+
+    // -------------------------------------------------------------------------------- enqueue() request
+
+    /** Amendment 2026-09-27: the enqueued request must carry [BackoffPolicy.EXPONENTIAL] starting
+     *  at 30 s — inspected on the built [androidx.work.WorkRequest.workSpec] directly, the same
+     *  object WorkManager itself would schedule from, rather than trusting the builder call was
+     *  written correctly. */
+    @Test fun `the enqueued request carries EXPONENTIAL backoff starting at 30 seconds`() {
+        val request = ScrobbleFlushWorker.buildRequest()
+
+        assertEquals(BackoffPolicy.EXPONENTIAL, request.workSpec.backoffPolicy)
+        assertEquals(TimeUnit.SECONDS.toMillis(30), request.workSpec.backoffDelayDuration)
+    }
+
+    private fun failedEnvelope(code: Int, message: String) =
+        """{"subsonic-response":{"status":"failed","version":"1.16.1","error":{"code":$code,"message":"$message"}}}"""
+
+    private fun builder(flusher: ScrobbleFlusher) =
+        TestListenableWorkerBuilder.from(context, ScrobbleFlushWorker::class.java)
+            .setWorkerFactory(object : WorkerFactory() {
+                override fun createWorker(
+                    appContext: Context,
+                    workerClassName: String,
+                    workerParameters: WorkerParameters,
+                ): ListenableWorker = ScrobbleFlushWorker(appContext, workerParameters, flusher)
+            })
 }
