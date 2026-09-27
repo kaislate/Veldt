@@ -2,9 +2,9 @@
 
 **A local + self-hosted music player for Android — with the Veldt Wisp pill built in.**
 
-> ⚠️ **Early development.** Veldt is being built in phases. The local library, browse,
-> now-playing, playlists, folders, settings, OpenSubsonic servers, lyrics, scrobbling and the
-> built-in pill are in. Treat it as a working preview, not a release.
+> ⚠️ **Public beta.** 0.9.0 is a beta. The local library, browse, now-playing, playlists,
+> folders, settings, OpenSubsonic servers, lyrics, scrobbling and the built-in pill are in.
+> Expect rough edges, and please report them. See [CHANGELOG.md](CHANGELOG.md) for what's in it.
 
 Veldt is the full-player companion to [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp)
 (the standalone One UI-style now-playing pill). Where Veldt Wisp rides *any*
@@ -23,6 +23,28 @@ Like Veldt Wisp, Veldt is **pure Kotlin/Compose with no native code we author**
 (Media3 decodes via the platform `MediaCodec`), so it runs on 32-bit and modern
 arm64 devices alike.
 
+## Screenshots
+
+| Songs | Albums | Artist |
+|:---:|:---:|:---:|
+| <img src="screenshots/songs.png" width="240" alt="Songs tab"> | <img src="screenshots/albums.png" width="240" alt="Albums tab"> | <img src="screenshots/artist.png" width="240" alt="An artist page"> |
+
+| Now playing | Now playing, dark | Synced lyrics |
+|:---:|:---:|:---:|
+| <img src="screenshots/now-playing-light.png" width="240" alt="Now playing in the light theme"> | <img src="screenshots/now-playing-dark.png" width="240" alt="Now playing in the dark theme, coloured by the artwork"> | <img src="screenshots/lyrics.png" width="240" alt="Synced lyrics from an .lrc file"> |
+
+| Search | Folders | Settings |
+|:---:|:---:|:---:|
+| <img src="screenshots/search.png" width="240" alt="Search"> | <img src="screenshots/folders.png" width="240" alt="Folders tab"> | <img src="screenshots/settings.png" width="240" alt="Settings"> |
+
+**The built-in pill**, over the home screen, and expanded into its card:
+
+<img src="screenshots/pill.png" width="220" alt="The floating pill"> &nbsp; <img src="screenshots/pill-card.png" width="420" alt="The pill's expanded card">
+
+<sub>Library screenshots show a Navidrome server's catalogue. The search, folders, lyrics and pill
+shots use a small demo library made for these screenshots: fictional artists, generated artwork
+and original lyrics.</sub>
+
 ## Status — what works today
 
 - **Playback.** A Media3 `PlaybackService` with audio focus, a media notification,
@@ -32,20 +54,25 @@ arm64 devices alike.
 - **Library.** On-device scan via `MediaStore`, augmented with eAlvaTag tag reading,
   stored in Room and kept live by a `MediaStore` observer.
 - **Browse and now-playing.** Songs / albums / artists / search, an album-art
-  backdrop with a palette extracted from the current artwork, and a scrub bar.
+  backdrop with a palette extracted from the current artwork, and a scrub bar. Search
+  opens fresh each time, and its clear button always clears.
 - **Playlists.** Create, reorder, add from browse, and `.m3u` / `.m3u8` import.
   Entries are keyed on a rescan-stable source identity, so a track that moves — or a
   volume that remounts — re-links itself instead of going permanently blank.
-
 - **Folders.** Browse the library as it sits on disk, across internal storage and SD
-  cards, with audiobooks and podcasts included.
+  cards, with audiobooks and podcasts included. Long-press a folder to hide it from the
+  library: its songs leave Songs, Albums, Artists and search, but it stays browsable and
+  playable in Folders, and Settings lists the hidden folders to show again. Long-press a
+  storage volume to rename it.
 - **Settings.** Light / Dark / Follow-system theme, with now-playing colours solved for
-  legible contrast against the artwork actually on screen.
+  legible contrast against the artwork actually on screen. The launch window follows the
+  chosen theme, so Light no longer opens on a dark frame.
 - **Built-in pill.** Veldt Wisp's floating now-playing pill for Veldt's own playback: it
   appears when you leave Veldt while music plays and expands into a card with the artwork,
-  a scrub bar and transport. Settings → Floating pill picks Built-in / Use Veldt Wisp / Off
-  (with Veldt Wisp installed, Veldt defers to it unless told otherwise), plus the anchor,
-  width, wave style and colour, hide delay and pill buttons. Needs "Display over other apps".
+  a scrub bar and transport. Floating pill settings: one switch, with Veldt Wisp detected
+  automatically and a link to get it. The pill's look (anchor, width, wave style and colour,
+  hide delay, buttons) is configurable. Needs "Display over other apps". On Android 13–14
+  the pill no longer blocks taps around it.
 - **Servers.** Add an OpenSubsonic server (tested against Navidrome), test the
   connection, and store the password encrypted with an Android Keystore key. Plain
   `http://` is allowed for LAN and Tailscale setups, with a warning as you type it. The
@@ -60,6 +87,16 @@ arm64 devices alike.
 
 - Android 10+ (API 29)
 
+## Install
+
+0.9.0 is a beta.
+
+- Download the APK from [GitHub Releases](https://github.com/kaislate/Veldt/releases). Beta
+  builds are marked as pre-releases.
+- For updates, add the repo to [Obtainium](https://github.com/ImranR98/Obtainium) and allow
+  pre-releases. Veldt itself never checks for updates: it makes no network requests you
+  haven't set up.
+
 ## Build
 
 ```
@@ -68,7 +105,9 @@ cd Veldt
 ./gradlew assembleDebug
 ```
 
-Requires JDK 17+ and the Android SDK (compileSdk 36).
+Requires JDK 17+ and the Android SDK (compileSdk 36). Release builds are signed
+with a local keystore via an untracked `key.properties`; without it,
+`assembleRelease` produces an unsigned APK.
 
 ## Credits & license
 

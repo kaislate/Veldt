@@ -1,5 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
+import java.util.Properties
+import java.io.FileInputStream
 
 plugins {
     alias(libs.plugins.android.application)
@@ -25,9 +27,28 @@ android {
         applicationId = "com.kaislate.veldtplayer"
         minSdk = 29
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.4.0-p1.4"
+        // major*10000 + minor*100 + patch
+        versionCode = 900
+        versionName = "0.9.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // Release signing, the same mechanism as Veldt Wisp: an untracked key.properties at the
+    // repo root (storeFile, storePassword, keyAlias, keyPassword). Without it, assembleRelease
+    // still succeeds and produces an UNSIGNED APK.
+    val keyProps = Properties().apply {
+        val f = rootProject.file("key.properties")
+        if (f.exists()) FileInputStream(f).use { load(it) }
+    }
+    signingConfigs {
+        create("release") {
+            if (keyProps.isNotEmpty()) {
+                storeFile = rootProject.file(keyProps["storeFile"] as String)
+                storePassword = keyProps["storePassword"] as String
+                keyAlias = keyProps["keyAlias"] as String
+                keyPassword = keyProps["keyPassword"] as String
+            }
+        }
     }
 
     buildTypes {
@@ -38,6 +59,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (keyProps.isNotEmpty()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

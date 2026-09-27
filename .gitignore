@@ -6,7 +6,12 @@
 /build
 /app/build
 /captures
+# Release signing: the keystore and its passwords stay on the build machine.
+# The build falls back to unsigned when they are absent.
 key.properties
+keystore/
+*.jks
+*.keystore
 *.apk
 /docs
 
