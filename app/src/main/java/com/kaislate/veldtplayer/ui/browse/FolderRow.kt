@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.kaislate.veldtplayer.data.library.FolderNode
@@ -46,15 +47,18 @@ private const val MOSAIC_ALBUMS = 4
  * pairing that compiles, reads naturally, and silently draws two identical rows on any phone with
  * an SD card. One value cannot disagree with itself.
  *
- * **What that does NOT buy, stated plainly:** `text = item.label` → `text = item.node.name`, one
- * line below, still compiles and still survives the whole JVM suite. This project has no Compose UI
- * test infrastructure — `androidx.compose.ui:ui-test-junit4` is not in the Gradle cache, so it
- * cannot be added under `--offline` (`find ~/.gradle/caches -iname "*ui-test*"` returns nothing).
- * The collapse above removes the *call-site* form of that mutant; the remaining one is a
- * device-matrix check, and the two-volume fixture it would need does not exist on this fleet.
+ * The collapse above removes the *call-site* form of the `item.node.name` mutant; the in-body form
+ * (`text = item.label` → `text = item.node.name`) is pinned by `FolderRowTest`, which draws a row
+ * whose label and node name differ.
  *
- * **[onLongClick] is where a folder reaches its verbs** — play, shuffle, queue, playlist — without
- * the user entering it first. Null keeps the row on a plain `clickable`, for the reason `SongRow`
+ * **A hidden folder** (Step 5 spec §4) draws its name in the secondary tone and a `Hidden` marker at
+ * the end. The secondary tone is `onSurfaceVariant`, the colour the caption below already uses — a
+ * solved tone, never an alpha-dimmed primary, which would read differently on every background and
+ * fail contrast on some. The row stays fully tappable: a hidden folder is still browsable and
+ * playable here, which is the point of marking rather than removing it.
+ *
+ * **[onLongClick] is where a folder reaches its verbs** — play, shuffle, queue, playlist, hiding it
+ * from the library, and on a volume row renaming the volume — without the user entering it first. Null keeps the row on a plain `clickable`, for the reason `SongRow`
  * records: `combinedClickable` with a null handler still consumes the gesture.
  *
  * **Not shown, deliberately:** file size and bitrate (not indexed, and file-manager concerns), the
@@ -106,6 +110,11 @@ fun FolderRow(
                 // VERBATIM — no case folding, no prettifying. It is a path.
                 text = item.label,
                 style = MaterialTheme.typography.titleMedium,
+                color = if (node.hidden) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    Color.Unspecified
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
@@ -117,8 +126,19 @@ fun FolderRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
+        if (node.hidden) {
+            Text(
+                text = HIDDEN_MARKER,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
     }
 }
+
+/** The word a hidden folder's row carries. One constant, so a test and the row cannot drift. */
+internal const val HIDDEN_MARKER = "Hidden"
 
 /**
  * `3 folders · 42 tracks · 2h 51m`, from the DEEP aggregates.

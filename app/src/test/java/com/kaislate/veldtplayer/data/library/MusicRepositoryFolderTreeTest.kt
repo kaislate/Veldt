@@ -13,6 +13,7 @@ import com.kaislate.veldtplayer.data.library.model.Song
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -91,6 +92,9 @@ class MusicRepositoryFolderTreeTest {
         SourceRegistry(emptySet()),
         localSource,
         ApplicationProvider.getApplicationContext(),
+        // A hidden-folder source that COMPLETES, so the tree flow completes with the script and
+        // toList() can see every emission. No folder is hidden; this suite is about derivation.
+        flowOf(emptySet()),
     )
 
     /** [id] is explicit so two separately-built lists can be EQUAL — see the de-duplication test. */

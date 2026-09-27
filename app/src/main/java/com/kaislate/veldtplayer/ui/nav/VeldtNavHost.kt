@@ -52,6 +52,7 @@ import com.kaislate.veldtplayer.ui.motion.rememberSongArtMorph
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
 import com.kaislate.veldtplayer.ui.settings.NoticesScreen
+import com.kaislate.veldtplayer.ui.settings.PillAppearanceScreen
 import com.kaislate.veldtplayer.ui.settings.SettingsScreen
 import com.kaislate.veldtplayer.ui.settings.accounts.AccountsScreen
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
@@ -487,6 +488,19 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                         launchSingleTop = true
                                     }
                                 },
+                                onOpenPillAppearance = {
+                                    navController.navigate(Destinations.PILL_APPEARANCE) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                contentPadding = padding,
+                            )
+                        }
+                        // Plain `composable` for the same reason settings is one: it is a
+                        // page of settings.
+                        composable(Destinations.PILL_APPEARANCE) {
+                            PillAppearanceScreen(
+                                onBack = { navController.popBackStack() },
                                 contentPadding = padding,
                             )
                         }

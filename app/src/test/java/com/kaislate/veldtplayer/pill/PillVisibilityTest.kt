@@ -43,12 +43,31 @@ class PillVisibilityTest {
 
     // ---- mode ----
 
-    @Test fun `use-wisp mode is never eligible, even with every other gate open`() {
-        assertFalse(PillVisibility.decide(allGatesOpen.copy(mode = PillMode.USE_WISP)))
-    }
-
     @Test fun `off mode is never eligible, even with every other gate open`() {
         assertFalse(PillVisibility.decide(allGatesOpen.copy(mode = PillMode.OFF)))
+    }
+
+    // ---- the stored mode, including the retired USE_WISP (Step 5 §9) ----
+
+    @Test fun `every stored mode string reads as the mode it should`() {
+        val stored = listOf("BUILT_IN", "OFF", PillMode.LEGACY_USE_WISP, null, "NOT_A_MODE")
+        assertEquals(
+            listOf(PillMode.BUILT_IN, PillMode.OFF, PillMode.BUILT_IN, PillMode.BUILT_IN, PillMode.BUILT_IN),
+            stored.map(PillMode::fromStored),
+        )
+    }
+
+    /** The legacy value, from the stored string to the decision: on without Wisp, Wisp's with it. */
+    @Test fun `a stored legacy USE_WISP is eligible without Wisp and stands down for it`() {
+        val legacy = allGatesOpen.copy(mode = PillMode.fromStored(PillMode.LEGACY_USE_WISP))
+        assertEquals(
+            listOf(true, false, true),
+            listOf(
+                PillVisibility.decide(legacy),
+                PillVisibility.decide(legacy.copy(wispInstalled = true)),
+                PillVisibility.decide(legacy.copy(wispInstalled = true, forceBuiltIn = true)),
+            ),
+        )
     }
 
     // ---- Wisp deference and the override ----
@@ -84,15 +103,15 @@ class PillVisibilityTest {
 
     @Test fun `every row of the total table decides as the formula says`() {
         val cases = buildList {
-            // mode: only BUILT_IN can ever be eligible.
+            // mode: only BUILT_IN (the switch on) can ever be eligible. The retired USE_WISP is
+            // not a mode any more; it reads as BUILT_IN before it gets here (tests above).
             add(Case("mode BUILT_IN is eligible", allGatesOpen, true))
-            add(Case("mode USE_WISP is never eligible", allGatesOpen.copy(mode = PillMode.USE_WISP), false))
             add(Case("mode OFF is never eligible", allGatesOpen.copy(mode = PillMode.OFF), false))
 
             // forceBuiltIn x wispInstalled: a 2x2, all four cells.
             add(Case("no Wisp, no override -> eligible", allGatesOpen.copy(wispInstalled = false, forceBuiltIn = false), true))
             add(Case("no Wisp, override -> eligible (override is a no-op)", allGatesOpen.copy(wispInstalled = false, forceBuiltIn = true), true))
-            add(Case("Wisp installed, no override -> defers", allGatesOpen.copy(wispInstalled = true, forceBuiltIn = false), false))
+            add(Case("Wisp installed, no override -> stands down",allGatesOpen.copy(wispInstalled = true, forceBuiltIn = false), false))
             add(Case("Wisp installed, override -> eligible", allGatesOpen.copy(wispInstalled = true, forceBuiltIn = true), true))
 
             // overlayGranted.

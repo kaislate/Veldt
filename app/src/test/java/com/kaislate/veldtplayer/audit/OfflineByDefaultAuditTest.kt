@@ -90,6 +90,11 @@ import kotlin.coroutines.CoroutineContext
  * real classes directly with the recording client — see each component's own KDoc for that
  * seam already existing (Task 1–3's own work). Invariant 5 (airplane mode) is a device check
  * (N2), not a JVM test, and is out of scope here.
+ *
+ * Settings' "Get Veldt Wisp" (Step 5 spec §9) is deliberately not audited here: it is an
+ * `ACTION_VIEW` of the Releases page that the user starts by tapping it, handed to their browser.
+ * Veldt makes no request of its own, so none of these invariants is touched. Its intent is
+ * asserted in `FloatingPillSectionTest` instead.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
