@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -77,6 +78,7 @@ fun MiniPlayer(
     state: NowPlayingState,
     palette: DominantColors,
     progress: () -> Float,
+    onPrevious: () -> Unit,
     onToggle: () -> Unit,
     onNext: () -> Unit,
     onOpen: () -> Unit,
@@ -154,10 +156,27 @@ fun MiniPlayer(
                 )
             }
             // Disabled while stalled, like the full transport: after the error bound engages
-            // the player is IDLE and neither of these would do anything. See isStalled.
+            // the player is IDLE and none of these would do anything. See isStalled.
             //
             // The tint is dimmed EXPLICITLY, via onBgFor: IconButton signals "disabled" by
             // lowering LocalContentColor, which the explicit palette `tint` overrides.
+            //
+            // Three 48 dp targets (previous, play, next — the full transport's order) still fit a
+            // 360 dp screen with room for the labels: 24 dp of row padding + the 48 dp thumbnail
+            // + 20 dp of label padding + 3 × 48 dp = 236 dp, leaving the title ~124 dp to
+            // ellipsize in.
+            //
+            // Previous is the full player's previous, gated exactly as it is there (hasPrevious):
+            // PlaybackConnection.previous is Media3's seekToPreviousMediaItem-style "restart if
+            // past the first few seconds, else go back", so both surfaces behave identically.
+            val canPrevious = state.hasPrevious && !state.isStalled
+            IconButton(onClick = onPrevious, enabled = canPrevious) {
+                Icon(
+                    Icons.Filled.SkipPrevious,
+                    contentDescription = "Previous",
+                    tint = palette.onBgFor(canPrevious),
+                )
+            }
             val canToggle = !state.isStalled
             IconButton(onClick = onToggle, enabled = canToggle) {
                 Icon(

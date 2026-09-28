@@ -88,19 +88,35 @@ internal const val SHEET_SWITCH_DISTANCE = 0.3f
 internal const val SHEET_FLING_DP_PER_S = 400f
 
 /**
- * Where on the travel the player's own content (everything but the cover) starts and finishes
- * fading out. The top half of the travel is the PEEK — the player is still fully itself, only
- * moved — and the fade lives in the part of the travel where the sheet is becoming the
- * mini-player. Finishing at 0.85 rather than 1 means the backdrop is gone before the cover
- * reaches the thumbnail, so what lands is a cover on the mini-player, not a cover on a
- * half-transparent slab.
+ * How far into the travel the player's own content (everything but the cover — the backdrop, the
+ * top row, the title, the scrub bar, the transport, the lyrics pane) is gone. It fades out
+ * linearly from the first pixel of a drag and is fully transparent by 9% of the travel, so for
+ * the rest of the way down only the cover is left, flying over the live app to the mini-player's
+ * thumbnail. A function of the fraction alone, so opening mirrors it exactly: the chrome and the
+ * backdrop come in over the last 9% before fully open.
+ *
+ * The owner's call after the first device round ("the background should fade out almost
+ * instantly to where it is just the albumart"). The first version kept the whole player opaque
+ * through the top half of the travel as a "peek" and faded it over 0.5..0.85; in the hand that
+ * read as a slab of backdrop being dragged around, not as the cover leaving the screen. The
+ * peek survives regardless — what is peeked AT is the live app, and it is now visible sooner.
  */
-private const val CONTENT_FADE_START = 0.5f
-private const val CONTENT_FADE_END = 0.85f
+private const val CONTENT_FADE_END = 0.09f
 
-/** Where the mini-player row starts fading back in. Overlaps the content fade on purpose: the
- *  two cross, so there is no stretch of the travel where neither the player nor the row reads. */
+/**
+ * Where the mini-player row starts fading back in, near the collapsed end. It no longer overlaps
+ * the content fade — between 9% and 70% of the travel the only thing the sheet draws is the
+ * cover, by design, over the app which is fully visible behind it.
+ */
 private const val MINI_FADE_START = 0.7f
+
+/**
+ * Below this fraction the sheet's own snackbar host shows (see [PlayerSheet]). Effectively "at
+ * rest, open": the backdrop is still nearly opaque there, so the scaffold's host under it cannot
+ * be seen; any further down and the sheet is transparent enough that the scaffold's own host
+ * shows through, and a second copy would be a duplicate.
+ */
+private const val SNACKBAR_LIMIT = 0.02f
 
 /**
  * How far the Android 14+ predictive back gesture pulls the sheet down before the user commits,
@@ -150,7 +166,7 @@ internal fun sheetSettleTarget(
 
 /** The player content's alpha at sheet [fraction] (0 = expanded, 1 = collapsed). */
 internal fun sheetContentAlpha(fraction: Float): Float =
-    ((CONTENT_FADE_END - fraction) / (CONTENT_FADE_END - CONTENT_FADE_START)).coerceIn(0f, 1f)
+    (1f - fraction / CONTENT_FADE_END).coerceIn(0f, 1f)
 
 /** The mini-player row's alpha at sheet [fraction] (0 = expanded, 1 = collapsed). */
 internal fun miniPlayerAlpha(fraction: Float): Float =
@@ -393,8 +409,8 @@ fun Modifier.playerSheetHost(sheet: PlayerSheetState): Modifier = onPlaced {
  * the last part of the travel, and dragging it UP opening the sheet with the finger.
  *
  * The draggable is vertical-only and waits for touch slop, so a tap on the row is still a tap
- * (open), the play and next buttons still take their own taps, and a sideways movement never
- * starts it.
+ * (open), the previous, play and next buttons still take their own taps, and a sideways
+ * movement never starts it.
  */
 fun Modifier.miniPlayerOfSheet(sheet: PlayerSheetState): Modifier = this
     .onGloballyPositioned {
@@ -614,11 +630,11 @@ fun PlayerSheet(
         // The scaffold's snackbar host is UNDER this sheet, so "Couldn't play …" — which a play
         // started from a list, and so opening this sheet, is exactly when it tends to appear —
         // would be hidden. A second host on the same state shows it here while the player's
-        // backdrop is fully opaque; past that point the scaffold's own is visible through the
+        // backdrop is (all but) opaque; past that point the scaffold's own is visible through the
         // fading sheet and this one steps aside. Both hosts render the same SnackbarData, so the
         // hand-over is the same snackbar in two places for a frame, not two snackbars.
         val showSnackbar by remember(sheet) {
-            derivedStateOf { sheet.fraction < CONTENT_FADE_START }
+            derivedStateOf { sheet.fraction < SNACKBAR_LIMIT }
         }
         if (showSnackbar) {
             SnackbarHost(
