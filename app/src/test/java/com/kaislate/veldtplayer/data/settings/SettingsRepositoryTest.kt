@@ -36,6 +36,37 @@ class SettingsRepositoryTest {
         runBlocking { repo.clearForTest() }
     }
 
+    // ---- Bottom tabs (Round 2 → D)
+
+    @Test fun `tabs default to nothing stored`() = runTest {
+        assertEquals(StoredTabs(), repo.tabs.first())
+    }
+
+    @Test fun `the tab order, hidden set and start tab round-trip`() = runTest {
+        repo.setTabOrder(listOf("folders", "songs", "albums"))
+        repo.setHiddenTabs(setOf("albums"))
+        repo.setStartTab("folders")
+        assertEquals(
+            StoredTabs(order = listOf("folders", "songs", "albums"), hidden = setOf("albums"), start = "folders"),
+            repo.tabs.first(),
+        )
+    }
+
+    /** Reset restores order and visibility; "Open on" is its own choice and survives. */
+    @Test fun `reset clears order and hidden tabs but keeps the start tab`() = runTest {
+        repo.setTabOrder(listOf("folders", "songs"))
+        repo.setHiddenTabs(setOf("albums"))
+        repo.setStartTab("folders")
+        repo.resetTabs()
+        assertEquals(StoredTabs(start = "folders"), repo.tabs.first())
+    }
+
+    @Test fun `showing every tab removes the hidden preference`() = runTest {
+        repo.setHiddenTabs(setOf("albums"))
+        repo.setHiddenTabs(emptySet())
+        assertEquals(null, repo.readRawStringSetForTest("tab_hidden"))
+    }
+
     @Test fun `the default is follow-system`() = runTest {
         assertEquals(ThemeMode.SYSTEM, repo.themeMode.first())
     }
