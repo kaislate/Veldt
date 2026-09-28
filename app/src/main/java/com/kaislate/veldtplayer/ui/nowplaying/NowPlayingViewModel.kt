@@ -47,6 +47,10 @@ class NowPlayingViewModel @Inject constructor(
     /** The queue behind the current track. Consumed by the P1.4 queue sheet. */
     val queue = connection.queue
 
+    /** "Show the player": one event per list-initiated play. See [PlaybackConnection.playerRequests]
+     *  for exactly which paths emit it and why the rest deliberately do not. */
+    val playerRequests = connection.playerRequests
+
     private val _seed = MutableStateFlow(ArtSeed.NEUTRAL)
 
     /** The TARGET seed for the current track. Theme-INDEPENDENT on purpose: the view model has
@@ -114,7 +118,7 @@ class NowPlayingViewModel @Inject constructor(
     private val lyricsViewers = LyricsViewers(lyricsState::setVisible)
 
     /**
-     * Called when a lyrics surface ([viewer] — the in-place pane or the full-screen route) opens
+     * Called when a lyrics surface ([viewer] — the in-place pane or full-screen lyrics) opens
      * or closes (spec §6): resolution happens only while at least one viewer is visible. Keyed by
      * viewer rather than a bare boolean — see [LyricsViewers] for the navigation overlap that a
      * single flag gets wrong.

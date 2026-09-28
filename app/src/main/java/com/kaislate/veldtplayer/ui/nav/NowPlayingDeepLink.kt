@@ -14,8 +14,9 @@ import com.kaislate.veldtplayer.MainActivity
  * An intent extra rather than a navigation-component deep-link URI: there is exactly one
  * target, nothing outside the app may use it (MainActivity's exported filter is the launcher
  * one and does not see an extra it does not look for), and the nav host already knows how to
- * open now-playing — it only needs to be told when. [MainActivity] turns the extra into a
- * request counter that [VeldtNavHost] acts on.
+ * open now-playing (it expands the player sheet — now-playing is not a destination a URI could
+ * name anyway) — it only needs to be told when. [MainActivity] turns the extra into a request
+ * counter that [VeldtNavHost] acts on.
  */
 object NowPlayingDeepLink {
 
