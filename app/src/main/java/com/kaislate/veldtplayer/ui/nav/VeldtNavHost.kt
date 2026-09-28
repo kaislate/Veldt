@@ -203,6 +203,12 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
             fVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
         }
 
+        // The server tab's pull-to-refresh outcome — "You're offline…", "Couldn't reach
+        // Navidrome." Same host, collected here for the same reason as the two above.
+        LaunchedEffect(Unit) {
+            serverVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
         // The pill's "open Veldt at now-playing" (NowPlayingDeepLink via MainActivity) expands
         // the player sheet. Waits, briefly, for the queue to read as active: on a cold start the
         // controller connects asynchronously, and the sheet refuses to open over nothing (it
