@@ -171,8 +171,10 @@ class SubsonicSyncWorker internal constructor(
          *  for good rather than retrying — matched by `SubsonicSyncWorkerTest`. */
         private const val MAX_ATTEMPTS = 2
 
-        // Fixed wording only (Global Constraint 6): never a server-supplied string.
-        private const val MESSAGE_BAD_CREDENTIALS = "The server rejected the saved password."
-        private const val MESSAGE_UNREACHABLE = "Could not reach the server."
+        // Fixed wording only (Global Constraint 6): never a server-supplied string. Public so the
+        // server tab's pull-to-refresh can tell the two failures apart from what was recorded
+        // (ServerRefresh) without a second channel for the same fact.
+        const val MESSAGE_BAD_CREDENTIALS = "The server rejected the saved password."
+        const val MESSAGE_UNREACHABLE = "Could not reach the server."
     }
 }

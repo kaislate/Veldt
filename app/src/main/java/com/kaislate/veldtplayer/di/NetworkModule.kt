@@ -3,9 +3,12 @@
 
 package com.kaislate.veldtplayer.di
 
+import android.content.Context
+import com.kaislate.veldtplayer.data.net.OnlineCheck
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import okhttp3.OkHttpClient
 import java.security.SecureRandom
@@ -54,4 +57,9 @@ object NetworkModule {
     @Singleton
     @CryptoRandom
     fun provideRandom(): Random = SecureRandom()
+
+    /** The server tab's "can a sync run right now" check. See [OnlineCheck]. */
+    @Provides
+    @Singleton
+    fun provideOnlineCheck(@ApplicationContext context: Context): OnlineCheck = OnlineCheck.of(context)
 }

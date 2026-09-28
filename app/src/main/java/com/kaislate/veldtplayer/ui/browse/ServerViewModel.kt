@@ -15,11 +15,17 @@ import com.kaislate.veldtplayer.data.library.model.Album
 import com.kaislate.veldtplayer.data.library.model.Artist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
+import com.kaislate.veldtplayer.data.net.OnlineCheck
 import com.kaislate.veldtplayer.playback.PlaybackConnection
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -92,6 +98,7 @@ class ServerViewModel @Inject constructor(
     private val repo: MusicRepository,
     private val sync: SubsonicSync,
     private val connection: PlaybackConnection,
+    private val online: OnlineCheck,
 ) : ViewModel() {
 
     val tab: StateFlow<ServerTabState> = serverTabs.state
@@ -149,13 +156,27 @@ class ServerViewModel @Inject constructor(
     val syncing: StateFlow<Boolean> = anySyncRunning()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
+    private val _refreshing = MutableStateFlow(false)
+
     /**
-     * The same question for the pull-to-refresh indicator (round 4), seeded FALSE: an indicator
-     * that spins for a frame every time the tab opens would read as a refresh nobody asked for.
-     * The empty state's seed and this one differ because a wrong guess costs differently.
+     * The pull-to-refresh indicator: on for exactly the life of one [pullToRefresh] — see
+     * [ServerRefresh] for when that ends. Round 4 read the syncs' own running state here, which
+     * counts a sync queued behind its network constraint, and so spun forever offline.
      */
-    val refreshing: StateFlow<Boolean> = anySyncRunning()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+
+    /** One-shot snackbar text from a pull-to-refresh ("You're offline…", "Couldn't reach
+     *  Navidrome."), collected by the nav host into the app's one snackbar host. */
+    val messages: SharedFlow<String> = _messages.asSharedFlow()
+
+    private val refresher = ServerRefresh(
+        isOnline = online::isOnline,
+        request = sync::request,
+        status = sync::status,
+    )
+    private var refreshJob: Job? = null
 
     private fun anySyncRunning(): Flow<Boolean> = sourceIds
         .flatMapLatest { ids ->
@@ -174,14 +195,45 @@ class ServerViewModel @Inject constructor(
         _section.value = section
     }
 
-    /** The empty state's "Sync now" and the tab's pull-to-refresh: every covered account, each
-     *  deduped by its own unique work. */
+    /** The empty state's "Sync now": every covered account, each deduped by its own unique work. */
     fun syncNow() {
-        val state = tab.value as? ServerTabState.Present ?: return
+        coveredAccounts()?.accounts?.forEach { sync.request(it.sourceId) }
+    }
+
+    /**
+     * The tab's pull-to-refresh: sync the covered accounts through [ServerRefresh], with
+     * [refreshing] on for exactly as long as it runs and its message, if any, sent to [messages].
+     * A second pull while one is still running is ignored rather than stacked.
+     */
+    fun pullToRefresh() {
+        if (refreshJob?.isActive == true) return
+        val covered = coveredAccounts() ?: return
+        _refreshing.value = true
+        refreshJob = viewModelScope.launch {
+            try {
+                // A lone account's failure is named by the tab label ("Couldn't reach Navidrome.");
+                // with several, the label may be "Servers", so each account names itself.
+                val message = refresher.refresh(covered.accounts) { account ->
+                    if (covered.total == 1) covered.label else account.displayName
+                }
+                if (message != null) _messages.emit(message)
+            } finally {
+                _refreshing.value = false
+            }
+        }
+    }
+
+    private class Covered(val accounts: List<ServerAccount>, val label: String, val total: Int)
+
+    /** The accounts the view covers now (the chosen chip, or all), with the tab's label. */
+    private fun coveredAccounts(): Covered? {
+        val state = tab.value as? ServerTabState.Present ?: return null
         val chosen = selectedAccount.value
-        state.accounts
-            .filter { chosen == null || it.sourceId == chosen }
-            .forEach { sync.request(it.sourceId) }
+        return Covered(
+            accounts = state.accounts.filter { chosen == null || it.sourceId == chosen },
+            label = state.label,
+            total = state.accounts.size,
+        )
     }
 
     /**

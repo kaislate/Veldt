@@ -123,12 +123,12 @@ fun ServerScreen(
             }
         }
 
-        // Pull to sync the account(s) shown (round 4). The indicator is the sync's own running
-        // state, not a local "pulled" flag, so it stays up exactly as long as the work does and
-        // also shows a sync started elsewhere — on app open, or from Settings.
+        // Pull to sync the account(s) shown (round 4). The indicator follows the PULL, not the
+        // work (round 5): it stops at once offline, when the requested syncs finish, or after
+        // 30 s, with a snackbar saying which — see ServerRefresh.
         PullToRefreshBox(
             isRefreshing = refreshing,
-            onRefresh = vm::syncNow,
+            onRefresh = vm::pullToRefresh,
             modifier = Modifier.weight(1f),
         ) {
             val loaded = songs ?: return@PullToRefreshBox
