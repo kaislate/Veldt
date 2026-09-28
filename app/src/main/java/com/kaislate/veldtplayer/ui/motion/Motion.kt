@@ -15,6 +15,7 @@ import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 
@@ -86,6 +87,19 @@ object Motion {
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = 3_000f,
         visibilityThreshold = SHEET_THRESHOLD,
+    )
+
+    /**
+     * The now-playing cover's POSITION settling after the finger lets go of it — the 2-D twin of
+     * [sheetSettle], same critically damped shape and same stiffness, so the cover and the sheet
+     * it belongs to arrive together. Started from the finger's release velocity (x and y), which
+     * is what makes the hand-off from finger to spring seamless: the cover leaves at the speed the
+     * thumb was moving. Half a pixel is settled.
+     */
+    val sheetCoverSettle: SpringSpec<Offset> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = Spring.StiffnessMedium,
+        visibilityThreshold = Offset(0.5f, 0.5f),
     )
 
     /**

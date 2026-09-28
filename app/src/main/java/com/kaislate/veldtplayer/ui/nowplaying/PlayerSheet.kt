@@ -9,6 +9,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationEndReason
 import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -16,6 +17,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.MutatePriority
 import androidx.compose.foundation.MutatorMutex
 import androidx.compose.foundation.gestures.DragScope
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.DraggableState
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
@@ -43,10 +46,14 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.lerp
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onPlaced
@@ -59,12 +66,25 @@ import com.kaislate.veldtplayer.ui.components.MINI_PLAYER_THUMB_CORNER
 import com.kaislate.veldtplayer.ui.lyrics.LyricsScreen
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** The two places the now-playing sheet rests. */
 internal enum class SheetValue { Expanded, Collapsed }
+
+/** How the now-playing cover is being placed — see [PlayerSheetState]'s KDoc. */
+internal enum class CoverMode {
+    /** On its fixed path from the art slot to the thumbnail, by fraction. */
+    Path,
+
+    /** Under the finger ([heldCoverRect]). */
+    Held,
+
+    /** Let go: centre springing to the target's rest rect, size by fraction. */
+    Settling,
+}
 
 /**
  * How far, as a fraction of the travel, a slow drag must carry the sheet AWAY FROM THE REST IT
@@ -195,6 +215,16 @@ internal fun miniPlayerAlpha(fraction: Float): Float =
  *
  * **Settles are springs started from the release velocity** ([Motion.sheetSettle]), bounded to
  * [0, 1] so a hard fling lands and stops rather than overshooting off the end of the travel.
+ *
+ * **The cover has three modes ([CoverMode]).** On its own ([CoverMode.Path]) it travels a fixed
+ * path from the art slot to the mini-player's thumbnail, by fraction — that is what a tap, the
+ * auto-open, back and the chevron use. Held by a finger ([CoverMode.Held]) it follows the finger
+ * in x and y, pinned at the point the finger grabbed ([heldCoverRect]; round-3 owner feedback: "by
+ * the time i am swiping half way down my thumb is below the album art"). Let go
+ * ([CoverMode.Settling]) its centre springs to the target's rest rect from the finger's release
+ * velocity ([Motion.sheetCoverSettle]) while its size follows the fraction, and it returns to the
+ * path on arrival, where the two coincide. The finger itself is observed by [playerSheetHost]; the
+ * draggable only reports vertical deltas.
  */
 @Stable
 class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : DraggableState {
@@ -262,8 +292,115 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
      */
     internal var artRect by mutableStateOf(Rect.Zero)
 
+    internal var hostWidth by mutableFloatStateOf(0f)
+
     internal var reducedMotion = false
     internal var flingVelocityPx = 0f
+
+    // ---- the finger, as the host's tracker sees it (see playerSheetHost) ----
+
+    /** Whether a pointer is down anywhere in the host right now. Plain: read at drag start only. */
+    internal var fingerPressed = false
+        private set
+
+    /** Where the current pointer went down, and where it is now — plain fields, written on every
+     *  move of every touch in the app; only [finger] is snapshot state, and only while held. */
+    private var fingerDown = Offset.Zero
+    private var fingerNow = Offset.Zero
+
+    /** The finger's velocity when it lifted, px/s — the cover's settle starts from it. */
+    private var fingerReleaseVelocity = Offset.Zero
+
+    /**
+     * The finger while the cover is [CoverMode.Held], mirrored from [fingerNow] only then: it is
+     * read by the cover's layer, and writing it for every scroll of every list in the app would
+     * invalidate that layer for nothing.
+     */
+    private var finger by mutableStateOf(Offset.Zero)
+
+    internal fun onFingerDown(position: Offset) {
+        fingerPressed = true
+        fingerDown = position
+        fingerNow = position
+    }
+
+    internal fun onFingerMove(position: Offset) {
+        fingerNow = position
+        if (coverMode == CoverMode.Held) finger = position
+    }
+
+    internal fun onFingerUp(velocity: Offset) {
+        fingerPressed = false
+        fingerReleaseVelocity = velocity
+    }
+
+    // ---- the cover ----
+
+    internal var coverMode by mutableStateOf(CoverMode.Path)
+        private set
+    private var pin = Offset(0.5f, 0.5f)
+    private var gap = Offset.Zero
+    private var pinFraction = 0f
+
+    /** The cover's centre while [CoverMode.Settling]. */
+    private var coverCenter by mutableStateOf(Offset.Zero)
+
+    private val hostBounds: Rect get() = Rect(0f, 0f, hostWidth, hostHeight)
+
+    /**
+     * Where the cover is drawn right now, in host coordinates — the one answer the flight layer,
+     * the grab and the settle all share, so each hand-over starts exactly where the last left off.
+     * [Rect.Zero] when there is no cover to draw (the lyrics pane is up, or nothing is measured).
+     */
+    internal fun coverRect(): Rect {
+        val from = artRect
+        val to = thumbRect
+        val f = fraction
+        // Before the slot has been measured (the first frame of a drag from the mini-player), the
+        // cover at the collapsed end IS the thumbnail.
+        if (from.isEmpty) return if (!to.isEmpty && f >= 1f) to else Rect.Zero
+        // No landing target known: the cover simply rides with the sheet.
+        if (to.isEmpty) return from.translate(0f, offsetPx)
+        val path = lerp(from, to, f)
+        return when (coverMode) {
+            CoverMode.Path -> path
+            CoverMode.Held -> heldCoverRect(
+                finger = finger,
+                pin = pin,
+                gap = gap,
+                remaining = gapRemaining(f, pinFraction),
+                size = coverSize(from.size, to.size, f),
+                bounds = hostBounds,
+                path = path,
+                fraction = f,
+            )
+            CoverMode.Settling -> {
+                val size = coverSize(from.size, to.size, f)
+                Rect(
+                    coverCenter.x - size.width / 2f,
+                    coverCenter.y - size.height / 2f,
+                    coverCenter.x + size.width / 2f,
+                    coverCenter.y + size.height / 2f,
+                )
+            }
+        }
+    }
+
+    /**
+     * Pins the cover under the finger at the start of a finger drag: the point it grabbed (the
+     * nearest point of the cover to where the finger went DOWN) and the gap left to close. Taken
+     * from [coverRect] as it is at this instant, which is what lets a grab mid-settle re-pin the
+     * cover from wherever it is on screen.
+     */
+    private fun holdCover() {
+        val now = coverRect()
+        if (now.isEmpty) return
+        pin = grabPin(fingerDown, now)
+        gap = pinnedGap(fingerNow, now, pin)
+        pinFraction = fraction
+        finger = fingerNow
+        coverMode = CoverMode.Held
+    }
 
     /**
      * How far the sheet moves between its two rests: expanded (top at 0) to collapsed (top on
@@ -297,6 +434,10 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
         mutex.mutateWith(dragScope, dragPriority) {
             dragging = true
             dragOrigin = target
+            // A pointer is down: this is a finger drag, and the cover goes under it. The
+            // predictive-back peek also drags the sheet, with no pointer in the app at all; it
+            // leaves the cover on its path.
+            if (fingerPressed) holdCover()
             try {
                 block()
             } finally {
@@ -309,7 +450,14 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
     internal suspend fun settle(velocity: Float) {
         val t = travel
         val to = sheetSettleTarget(fraction * t, velocity, t, flingVelocityPx, from = dragOrigin)
-        animateTo(to, velocity = if (t > 0f) velocity / t else 0f)
+        // What of the finger's own speed the cover actually had: none of what the seat blend was
+        // absorbing near the collapsed end.
+        val coverVelocity = if (coverMode == CoverMode.Held) {
+            fingerReleaseVelocity * (1f - seatWeight(fraction))
+        } else {
+            Offset.Zero
+        }
+        animateTo(to, velocity = if (t > 0f) velocity / t else 0f, coverVelocity = coverVelocity)
     }
 
     internal suspend fun expand(fast: Boolean = false) =
@@ -320,7 +468,10 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
     /** No animation at all — for "nothing is playing any more" and the hop to Settings. */
     internal suspend fun snapTo(to: SheetValue) {
         target = to
-        mutex.mutate(MutatePriority.Default) { fraction = restingFraction(to) }
+        mutex.mutate(MutatePriority.Default) {
+            fraction = restingFraction(to)
+            coverMode = CoverMode.Path
+        }
     }
 
     /** Sets the predictive-back peek. Only meaningful inside [drag]. */
@@ -340,24 +491,51 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
         to: SheetValue,
         velocity: Float = 0f,
         spec: AnimationSpec<Float> = Motion.sheetSettle,
+        coverVelocity: Offset = Offset.Zero,
     ) {
         target = to
         val end = restingFraction(to)
         mutex.mutate(MutatePriority.Default) {
             if (reducedMotion) {
                 fraction = end
+                coverMode = CoverMode.Path
                 return@mutate
             }
+            // A cover that is off its path — held by a finger a moment ago, or caught mid-settle
+            // by an earlier one — springs from where it IS to the target's rest rect. One still on
+            // its path just rides the fraction, as it always has.
+            val start = coverRect()
+            val rest = if (to == SheetValue.Expanded) artRect else thumbRect
+            val detached = coverMode != CoverMode.Path && !start.isEmpty && !rest.isEmpty &&
+                !thumbRect.isEmpty && !artRect.isEmpty
+            if (!detached) coverMode = CoverMode.Path
             isSettling = true
             try {
-                val anim = Animatable(fraction).apply { updateBounds(0f, 1f) }
-                val result = anim.animateTo(end, spec, velocity) { fraction = value }
-                // A bound is only ever reached at `end` itself, except when a strong release
-                // velocity AWAY from the target carries the sheet into the other bound first (a
-                // slow-but-not-fling downward release near the threshold). Carry on from rest.
-                if (result.endReason == AnimationEndReason.BoundReached && anim.value != end) {
-                    anim.animateTo(end, spec) { fraction = value }
+                coroutineScope {
+                    if (detached) {
+                        coverCenter = start.center
+                        coverMode = CoverMode.Settling
+                        launch {
+                            Animatable(start.center, Offset.VectorConverter).animateTo(
+                                rest.center,
+                                Motion.sheetCoverSettle,
+                                coverVelocity,
+                            ) { coverCenter = value }
+                        }
+                    }
+                    val anim = Animatable(fraction).apply { updateBounds(0f, 1f) }
+                    val result = anim.animateTo(end, spec, velocity) { fraction = value }
+                    // A bound is only ever reached at `end` itself, except when a strong release
+                    // velocity AWAY from the target carries the sheet into the other bound first
+                    // (a slow-but-not-fling downward release near the threshold). Carry on from
+                    // rest.
+                    if (result.endReason == AnimationEndReason.BoundReached && anim.value != end) {
+                        anim.animateTo(end, spec) { fraction = value }
+                    }
                 }
+                // Arrived: centre on the rest rect, size at the resting fraction — which is the
+                // path's rect there, so handing back to the path changes nothing on screen.
+                coverMode = CoverMode.Path
             } finally {
                 isSettling = false
             }
@@ -398,11 +576,42 @@ fun rememberPlayerSheetState(): PlayerSheetState {
     return sheet
 }
 
-/** Marks the box that holds both the app and the sheet — the coordinate space of all of it. */
-fun Modifier.playerSheetHost(sheet: PlayerSheetState): Modifier = onPlaced {
-    sheet.hostCoords = it
-    sheet.hostHeight = it.size.height.toFloat()
-}
+/**
+ * Marks the box that holds both the app and the sheet — the coordinate space of all of it — and
+ * watches the finger for the cover.
+ *
+ * The finger is observed HERE, on the untranslated host, rather than on the sheet or the
+ * mini-player, for two reasons: the host's local coordinates are the coordinate space the cover
+ * is placed in, so no conversion is needed (the sheet's own box is translated by the drag it is
+ * reporting on), and one observer covers both places a drag can start. Initial pass and never
+ * consumed, like now-playing's own wake watcher: it sees every touch in the app and takes none.
+ * `Modifier.draggable` gives only vertical deltas, which is why this exists at all — the cover
+ * follows the finger sideways too.
+ */
+fun Modifier.playerSheetHost(sheet: PlayerSheetState): Modifier = this
+    .onPlaced {
+        sheet.hostCoords = it
+        sheet.hostWidth = it.size.width.toFloat()
+        sheet.hostHeight = it.size.height.toFloat()
+    }
+    .pointerInput(sheet) {
+        val tracker = VelocityTracker()
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            tracker.resetTracking()
+            tracker.addPosition(down.uptimeMillis, down.position)
+            sheet.onFingerDown(down.position)
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                    .firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                tracker.addPosition(change.uptimeMillis, change.position)
+                sheet.onFingerMove(change.position)
+            }
+            val v = tracker.calculateVelocity()
+            sheet.onFingerUp(Offset(v.x, v.y))
+        }
+    }
 
 /**
  * The mini-player's half of the sheet: where it is (the collapsed rest), its fade back in over
@@ -454,15 +663,14 @@ internal fun Modifier.sheetArtSlot(sheet: PlayerSheetState): Modifier {
 }
 
 /**
- * The cover's flight from its full-screen rect onto the mini-player's thumbnail, driven by the
- * sheet fraction — what replaced the nav-transition shared-element morph.
+ * The cover's flight from its full-screen rect onto the mini-player's thumbnail — what replaced
+ * the nav-transition shared-element morph.
  *
- * Interpolated in HOST coordinates: at fraction `f` the cover should be drawn at
- * `lerp(expandedRect, thumbRect, f)`, while its layout box has been carried to
- * `expandedRect + (0, offsetPx)` by the sheet's translation. The layer maps the one onto the
- * other with a scale and a translation about the top-left corner. Linear in `f` because the spec
- * asks for exactly that ("by drag fraction"), and because the finger is what drives it: an eased
- * mapping would make the cover lag or lead the hand.
+ * WHERE the cover is drawn is [PlayerSheetState.coverRect]: on its fixed path by fraction, under
+ * the finger while held, or springing to a rest after a release (see the state's KDoc). This
+ * layer only maps that rect onto the cover's layout box, which the sheet's translation has
+ * carried to `expandedRect + (0, offsetPx)`: a scale and a translation about the top-left
+ * corner, both in HOST coordinates.
  *
  * The rounding travels too: the clip shape is in the layer's UNSCALED space, so the radius is
  * divided by the scale to land on [landingCorner] on screen — otherwise the 20 dp corner would
@@ -487,11 +695,12 @@ internal fun Modifier.sheetArtFlight(
         if (f > 0f) alpha = 0f
         return@graphicsLayer
     }
-    if (to.isEmpty || f <= 0f) {
+    val landed = sheet.coverRect()
+    if (to.isEmpty || landed.isEmpty || landed == from) {
         shape = RoundedCornerShape(cornerPx)
+        // No thumbnail to land on: the cover rides the sheet's translation untouched.
         return@graphicsLayer
     }
-    val landed = lerp(from, to, f)
     val sx = landed.width / from.width
     val sy = landed.height / from.height
     transformOrigin = TransformOrigin(0f, 0f)
