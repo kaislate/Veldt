@@ -3,9 +3,6 @@
 
 package com.kaislate.veldtplayer.ui.nav
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
@@ -28,7 +25,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
-import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
 
 /** A bottom-bar destination. [enabled] is false for slots not yet implemented. */
@@ -80,8 +76,8 @@ fun rememberNavItems(serverLabel: String?): List<NavItem> = remember(serverLabel
  *
  * [miniPlayer] is a slot for a different reason: it is where the now-playing sheet rests when
  * collapsed, and the caller wires it to that sheet (its fade, its drag, where the cover lands —
- * see `ui/nowplaying/PlayerSheet.kt`). So it sits OUTSIDE the navigation bar's
- * [AnimatedVisibility] and this bar never decides anything about it.
+ * see `ui/nowplaying/PlayerSheet.kt`). This bar never decides anything about it. The navigation
+ * bar below it is always shown: the expanded sheet simply covers it.
  *
  * [modifier] is for the caller's decisions about the whole scaffold — today, taking it out of the
  * accessibility tree while the now-playing sheet covers it.
@@ -91,7 +87,6 @@ fun VeldtScaffold(
     currentRoute: String?,
     items: List<NavItem>,
     snackbarHostState: SnackbarHostState,
-    navigationBarVisible: Boolean,
     onSelect: (String) -> Unit,
     topBar: @Composable () -> Unit,
     miniPlayer: @Composable () -> Unit,
@@ -105,37 +100,28 @@ fun VeldtScaffold(
         bottomBar = {
             Column {
                 miniPlayer()
-                // FADE ONLY — no expand/shrink. Shrinking this bar would drag the mini-player
-                // above it downward, and the mini-player is where the now-playing sheet's cover
-                // lands: a collapse would chase a moving target.
-                AnimatedVisibility(
-                    visible = navigationBarVisible,
-                    enter = fadeIn(Motion.gentle),
-                    exit = fadeOut(Motion.gentle),
+                // Translucent, because screens hand their window insets to a scrollable's
+                // contentPadding rather than clipping themselves above the bar. Content
+                // passing beneath the tint is what gives the bar somewhere to sit.
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        .copy(alpha = CHROME_ALPHA)
                 ) {
-                    // Translucent, because screens hand their window insets to a scrollable's
-                    // contentPadding rather than clipping themselves above the bar. Content
-                    // passing beneath the tint is what gives the bar somewhere to sit.
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
-                            .copy(alpha = CHROME_ALPHA)
-                    ) {
-                        items.forEach { item ->
-                            NavigationBarItem(
-                                selected = currentRoute == item.route,
-                                enabled = item.enabled,
-                                onClick = { onSelect(item.route) },
-                                // null, not the label: the visible Text below is already the
-                                // item's accessible name, and naming the icon too makes
-                                // TalkBack announce "Songs, Songs".
-                                icon = { Icon(item.icon, contentDescription = null) },
-                                // Single line, ellipsised: the server slot's label is a server's
-                                // name and a sixth item narrows every slot. See rememberNavItems.
-                                label = {
-                                    Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                },
-                            )
-                        }
+                    items.forEach { item ->
+                        NavigationBarItem(
+                            selected = currentRoute == item.route,
+                            enabled = item.enabled,
+                            onClick = { onSelect(item.route) },
+                            // null, not the label: the visible Text below is already the
+                            // item's accessible name, and naming the icon too makes
+                            // TalkBack announce "Songs, Songs".
+                            icon = { Icon(item.icon, contentDescription = null) },
+                            // Single line, ellipsised: the server slot's label is a server's
+                            // name and a sixth item narrows every slot. See rememberNavItems.
+                            label = {
+                                Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            },
+                        )
                     }
                 }
             }

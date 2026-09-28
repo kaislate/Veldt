@@ -218,7 +218,6 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                     snackbarHostState = snackbarHostState,
                     // Always shown: the expanded player sheet is drawn OVER the bar (and the
                     // mini-player), so there is nothing to hide it for any more.
-                    navigationBarVisible = true,
                     miniPlayer = {
                         // Every read is INSIDE this slot on purpose. Read at nav-host level they
                         // would invalidate the whole scaffold — including the NavHost — on each
