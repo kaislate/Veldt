@@ -93,6 +93,18 @@ class MusicRepository internal constructor(
      */
     fun songs(): Flow<List<Song>> = visible(allSongs())
 
+    /**
+     * [songs], narrowed to the tracks [sourceIds] contributed — the server tab's library
+     * (player-sheet/server-tab spec, Task B §5).
+     *
+     * Filtered from [songs] rather than queried by source, so it inherits everything [songs]
+     * promises — title order, and the hidden-folder view filter, which today never touches a
+     * server track but is not this method's to second-guess. An empty set is an empty library,
+     * not "everything": a tab with no accounts selected has nothing to show.
+     */
+    fun songsFrom(sourceIds: Set<String>): Flow<List<Song>> =
+        songs().map { all -> all.filter { it.sourceId in sourceIds } }
+
     /** Observe a title/artist/album substring search, without the hidden folders' songs. */
     fun search(term: String): Flow<List<Song>> = visible(
         songDao.observeSearch("%${term.trim()}%").map { rows -> rows.map { it.toDomain() } },

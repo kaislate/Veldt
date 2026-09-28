@@ -16,6 +16,7 @@ import com.kaislate.veldtplayer.data.account.AccountWriteResult
 import com.kaislate.veldtplayer.data.account.KeyProvider
 import com.kaislate.veldtplayer.data.account.SecretBox
 import com.kaislate.veldtplayer.data.account.SecretFiles
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.account.db.AccountEntity
 import com.kaislate.veldtplayer.data.library.SubsonicSources
@@ -80,6 +81,7 @@ class SubsonicSyncWorkerTest {
     private lateinit var server: FakeHttpServer
     private lateinit var client: SubsonicClient
     private lateinit var status: SyncStatusStore
+    private lateinit var serverTypes: ServerTypeStore
     private lateinit var queueDir: File
     private lateinit var queue: ScrobbleQueue
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
@@ -111,6 +113,8 @@ class SubsonicSyncWorkerTest {
         )
         status = SyncStatusStore(context)
         runBlocking { status.clearForTest() }
+        serverTypes = ServerTypeStore(context)
+        runBlocking { serverTypes.clearForTest() }
         queueDir = Files.createTempDirectory("sync-worker-test").toFile()
         queue = ScrobbleQueue(queueDir)
     }
@@ -144,8 +148,10 @@ class SubsonicSyncWorkerTest {
         durationMs = 1_000L, dateModifiedSec = 100L, hasEmbeddedArt = false,
     )
 
-    private fun extensionsJson(names: List<String>) =
-        """{"subsonic-response":{"status":"ok","version":"1.16.1","openSubsonicExtensions":[${
+    private fun extensionsJson(names: List<String>, type: String? = null) =
+        """{"subsonic-response":{"status":"ok","version":"1.16.1",${
+            if (type != null) "\"type\":\"$type\"," else ""
+        }"openSubsonicExtensions":[${
             names.joinToString(",") { """{"name":"$it","versions":[1]}""" }
         }]}}"""
 
@@ -161,12 +167,16 @@ class SubsonicSyncWorkerTest {
 
     /** Serves `getOpenSubsonicExtensions`, `getAlbumList2` (one page) and `getAlbum`, keyed off
      *  the request target regardless of GET/POST placement. */
-    private fun serveCatalog(songsByAlbum: Map<String, List<String>>, extensions: List<String> = emptyList()) {
+    private fun serveCatalog(
+        songsByAlbum: Map<String, List<String>>,
+        extensions: List<String> = emptyList(),
+        type: String? = null,
+    ) {
         server.respond { recorded ->
             val target = recorded.target
             when {
                 "getOpenSubsonicExtensions" in target ->
-                    FakeHttpServer.Canned(200, extensionsJson(extensions).toByteArray(), "application/json")
+                    FakeHttpServer.Canned(200, extensionsJson(extensions, type).toByteArray(), "application/json")
                 "getAlbumList2" in target -> {
                     val offset = Regex("offset=(\\d+)").find(target)?.groupValues?.get(1)?.toIntOrNull() ?: 0
                     val ids = if (offset == 0) songsByAlbum.keys.toList() else emptyList()
@@ -222,7 +232,8 @@ class SubsonicSyncWorkerTest {
                     workerClassName: String,
                     workerParameters: WorkerParameters,
                 ): ListenableWorker = SubsonicSyncWorker(
-                    appContext, workerParameters, client, sources, accounts, accountDao, songDao, status, flusher, now,
+                    appContext, workerParameters, client, sources, accounts, accountDao, songDao, status, flusher,
+                    serverTypes, now,
                 )
             })
             .build()
@@ -259,6 +270,37 @@ class SubsonicSyncWorkerTest {
         assertEquals(ListenableWorker.Result.success(), result)
         val cached = accountDao.get(sourceId)?.capabilities.orEmpty().split(",")
         assertTrue("expected formPost among $cached", "formPost" in cached)
+    }
+
+    /** Server tab (Task B §3): the extensions envelope's `type` is what names the tab. */
+    @Test fun `a sync records the server type from the extensions envelope`() = runTest {
+        val sourceId = addAccount()
+        serveCatalog(mapOf("al1" to listOf("s1")), type = "navidrome")
+
+        worker(sourceId).doWork()
+
+        assertEquals(mapOf(sourceId to "navidrome"), serverTypes.types.first())
+    }
+
+    /** An envelope with no `type` is a plain Subsonic server — recorded as such, not left unknown. */
+    @Test fun `a sync against a server with no type records it as plain`() = runTest {
+        val sourceId = addAccount()
+        serveCatalog(mapOf("al1" to listOf("s1")))
+
+        worker(sourceId).doWork()
+
+        assertEquals(mapOf(sourceId to ServerTypeStore.PLAIN), serverTypes.types.first())
+    }
+
+    /** A server that could not be asked says nothing about what it is: a type learned earlier
+     *  survives. */
+    @Test fun `an unreachable sync keeps the type learned earlier`() = runTest {
+        val sourceId = addAccount(baseUrl = "http://127.0.0.1:1")
+        serverTypes.record(sourceId, "gonic")
+
+        worker(sourceId).doWork()
+
+        assertEquals(mapOf(sourceId to "gonic"), serverTypes.types.first())
     }
 
     /** N3 design spec §5, "piggyback": a successful sync is successful contact with the server,

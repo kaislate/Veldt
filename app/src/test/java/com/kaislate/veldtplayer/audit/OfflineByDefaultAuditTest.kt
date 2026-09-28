@@ -19,6 +19,7 @@ import com.kaislate.veldtplayer.data.account.AccountWriteResult
 import com.kaislate.veldtplayer.data.account.KeyProvider
 import com.kaislate.veldtplayer.data.account.SecretBox
 import com.kaislate.veldtplayer.data.account.SecretFiles
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.art.RemoteArtLoader
 import com.kaislate.veldtplayer.data.library.SubsonicSources
@@ -294,6 +295,7 @@ class OfflineByDefaultAuditTest {
                     workerParameters: WorkerParameters,
                 ): ListenableWorker = SubsonicSyncWorker(
                     appContext, workerParameters, client, sources, accounts, accountDao, songDao, status, flusher,
+                    ServerTypeStore(context),
                 ) { 1_000L }
             })
             .build()
@@ -337,7 +339,7 @@ class OfflineByDefaultAuditTest {
         // WorkManager scheduling is not a request) — the real "zero requests for a nonexistent
         // account" claim is what running the WORKER any such job would actually execute proves,
         // immediately below.
-        SubsonicSyncCoordinator(context, songDao, status, queue).request(ghostId)
+        SubsonicSyncCoordinator(context, songDao, status, queue, ServerTypeStore(context)).request(ghostId)
         assertEquals(
             ListenableWorker.Result.failure(workDataOf(SubsonicSyncWorker.KEY_FAILURE to "gone")),
             syncWorker(ghostId, ScrobbleFlusher(queue, client, sources), sources).doWork(),

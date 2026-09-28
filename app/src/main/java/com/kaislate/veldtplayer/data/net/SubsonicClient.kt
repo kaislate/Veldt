@@ -54,6 +54,23 @@ sealed interface ConnectionOutcome {
     data class Unreachable(val reason: String) : ConnectionOutcome
 }
 
+/**
+ * What [SubsonicClient.serverInfo] learned from one `getOpenSubsonicExtensions` call.
+ *
+ * [serverType] is the envelope's `type` verbatim (`"navidrome"`, `"gonic"`, …), and is only
+ * meaningful when [answered]: null-and-answered is a plain Subsonic server, null-and-unanswered
+ * is "we could not ask".
+ */
+data class ServerInfo(
+    val capabilities: ServerCapabilities,
+    val answered: Boolean,
+    val serverType: String?,
+) {
+    companion object {
+        val UNANSWERED = ServerInfo(ServerCapabilities.BASELINE, answered = false, serverType = null)
+    }
+}
+
 /** What happened when [SubsonicClient.scrobble] told a server about a play-through. */
 sealed interface ScrobbleResult {
 
@@ -126,11 +143,36 @@ class SubsonicClient @Inject constructor(
      * has no extensions" is always a safe belief and an exception here would block adding an
      * account to an older server that works perfectly well.
      */
-    suspend fun capabilities(baseUrl: String): ServerCapabilities {
+    suspend fun capabilities(baseUrl: String): ServerCapabilities = serverInfo(baseUrl).capabilities
+
+    /**
+     * [capabilities], plus what the same `getOpenSubsonicExtensions` envelope says about the
+     * server itself: its `type` (the server tab's label — see
+     * [com.kaislate.veldtplayer.data.account.ServerTypeNames]).
+     *
+     * A sibling rather than a widened [capabilities] so that [probe] and every other caller that
+     * only wants extensions keeps its one-value answer. One request either way — the type rides
+     * on the envelope the extension list already comes in, which every OpenSubsonic response
+     * carries.
+     *
+     * [ServerInfo.answered] is false for every failure [capabilities] folds into BASELINE: a
+     * dead socket says nothing about what KIND of server it is, and must not overwrite a type
+     * learned earlier. An `ok` envelope with no `type` is answered-and-plain — an original
+     * Subsonic server, which is exactly what that absence means.
+     */
+    suspend fun serverInfo(baseUrl: String): ServerInfo {
         val url = SubsonicUrls.rest(baseUrl, "getOpenSubsonicExtensions", emptyList())
-            ?: return ServerCapabilities.BASELINE
-        val ok = call(url) as? SubsonicResult.Ok ?: return ServerCapabilities.BASELINE
-        val list = ok.body["openSubsonicExtensions"] as? JsonArray ?: return ServerCapabilities.BASELINE
+            ?: return ServerInfo.UNANSWERED
+        val ok = call(url) as? SubsonicResult.Ok ?: return ServerInfo.UNANSWERED
+        return ServerInfo(
+            capabilities = parseExtensions(ok.body),
+            answered = true,
+            serverType = ok.body.stringOrNull("type"),
+        )
+    }
+
+    private fun parseExtensions(body: JsonObject): ServerCapabilities {
+        val list = body["openSubsonicExtensions"] as? JsonArray ?: return ServerCapabilities.BASELINE
 
         val parsed = list.mapNotNull { element ->
             val entry = element as? JsonObject ?: return@mapNotNull null

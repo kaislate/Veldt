@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.kaislate.veldtplayer.data.account.Account
 import com.kaislate.veldtplayer.data.account.AccountRepository
 import com.kaislate.veldtplayer.data.account.AccountWriteResult
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
 import com.kaislate.veldtplayer.data.library.sync.SyncStatus
 import com.kaislate.veldtplayer.data.net.ConnectionOutcome
@@ -64,6 +65,7 @@ class AccountsViewModel @Inject constructor(
     private val sync: SubsonicSync,
     private val scrobbleQueue: ScrobbleQueue,
     private val flushScheduler: ScrobbleFlushScheduler,
+    private val serverTypes: ServerTypeStore,
 ) : ViewModel() {
 
     val accounts: StateFlow<List<Account>> = repo.observe()
@@ -83,6 +85,14 @@ class AccountsViewModel @Inject constructor(
 
     private val _save = MutableStateFlow<SaveState>(SaveState.Idle)
     val save: StateFlow<SaveState> = _save.asStateFlow()
+
+    /**
+     * The address and `type` of the last server that answered a Test connection, so [add] can
+     * name the new account's server tab straight away instead of showing the account's display
+     * name until the first sync lands. Keyed on the normalised base url: a test of one address
+     * says nothing about an account saved under another.
+     */
+    private var lastReachable: Pair<String, String?>? = null
 
     fun resetTest() {
         _test.value = TestState.Idle
@@ -106,7 +116,13 @@ class AccountsViewModel @Inject constructor(
         viewModelScope.launch {
             _test.value = when (val outcome = client.probe(base, username, password)) {
                 is ConnectionOutcome.Reachable -> {
+                    lastReachable = base to outcome.serverType
                     if (sourceId != null && isSaved(sourceId, base, username, password)) unblockAndFlush(sourceId)
+                    // The type is a fact about the SERVER, not the credentials, so any successful
+                    // test of the saved address records it — even with a password still unsaved.
+                    if (sourceId != null && savedBaseUrl(sourceId) == base) {
+                        serverTypes.record(sourceId, outcome.serverType)
+                    }
                     TestState.Ok(
                         listOfNotNull(outcome.serverType, outcome.serverVersion).joinToString(" ")
                             .ifBlank { "Connected" }
@@ -140,6 +156,16 @@ class AccountsViewModel @Inject constructor(
         val name = displayName.ifBlank { AccountForm.defaultName(url) }
         viewModelScope.launch {
             val result = repo.add(name, base, username, password)
+            // Before announcing the save, so the tab appears already named. SecretUnavailable
+            // counts: its account row exists, so its tab does too.
+            val newId = when (result) {
+                is AccountWriteResult.Saved -> result.sourceId
+                is AccountWriteResult.SecretUnavailable -> result.sourceId
+                else -> null
+            }
+            lastReachable?.takeIf { it.first == base }?.let { (_, type) ->
+                if (newId != null) serverTypes.record(newId, type)
+            }
             _save.value = saveStateOf(result)
             // A brand new account has never synced; always worth requesting (N2 Task 3, spec
             // §5.4). SecretUnavailable also lands here with no sourceId to sync — nothing to do.
@@ -192,6 +218,9 @@ class AccountsViewModel @Inject constructor(
         scrobbleQueue.setAuthBlocked(sourceId, false)
         if (scrobbleQueue.forSource(sourceId).isNotEmpty()) flushScheduler.enqueue()
     }
+
+    private suspend fun savedBaseUrl(sourceId: String): String? =
+        repo.observe().first().firstOrNull { it.sourceId == sourceId }?.baseUrl
 
     /** Whether ([base], [username], [password]) is exactly what [sourceId] has saved. */
     private suspend fun isSaved(sourceId: String, base: String, username: String, password: String): Boolean {

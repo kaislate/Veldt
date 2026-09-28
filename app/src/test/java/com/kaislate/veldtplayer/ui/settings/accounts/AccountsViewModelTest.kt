@@ -10,6 +10,7 @@ import com.kaislate.veldtplayer.data.account.AccountRepository
 import com.kaislate.veldtplayer.data.account.KeyProvider
 import com.kaislate.veldtplayer.data.account.SecretBox
 import com.kaislate.veldtplayer.data.account.SecretFiles
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
 import com.kaislate.veldtplayer.data.library.sync.SubsonicSync
 import com.kaislate.veldtplayer.data.library.sync.SyncStatus
@@ -100,6 +101,7 @@ class AccountsViewModelTest {
     private lateinit var scrobbleQueueDir: File
     private lateinit var scrobbleQueue: ScrobbleQueue
     private lateinit var flushScheduler: FakeFlushScheduler
+    private lateinit var serverTypes: ServerTypeStore
     private lateinit var vm: AccountsViewModel
     private var key: SecretKey? = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
 
@@ -118,7 +120,11 @@ class AccountsViewModelTest {
         flushScheduler = FakeFlushScheduler()
         // A real client; no test here makes a request, and a fake would only be a way to be
         // wrong about the constructor.
-        vm = AccountsViewModel(repo, SubsonicClient(OkHttpClient(), Random(42)), sync, scrobbleQueue, flushScheduler)
+        serverTypes = ServerTypeStore(ctx)
+        runBlocking { serverTypes.clearForTest() }
+        vm = AccountsViewModel(
+            repo, SubsonicClient(OkHttpClient(), Random(42)), sync, scrobbleQueue, flushScheduler, serverTypes,
+        )
     }
 
     @After fun tearDown() {
@@ -353,6 +359,57 @@ class AccountsViewModelTest {
             vm.test.first { it is TestState.Ok }
 
             assertEquals(listOf<Any?>(true, 0), listOf<Any?>(scrobbleQueue.isAuthBlocked(id), flushScheduler.enqueueCalls))
+        } finally {
+            server.close()
+        }
+    }
+
+    // ------------------------------------------------------ server tab: the type names the tab
+
+    /** The type is a fact about the server, so even a test with an unsaved password records it
+     *  against the account whose address was tested. */
+    @Test fun `a successful test of a saved address records the server type`() = runTest {
+        val server = acceptingServer()
+        try {
+            val id = blockedAccount(url = server.baseUrl)
+
+            vm.testConnection(server.baseUrl, "Kyle", "not-the-saved-one", sourceId = id)
+            vm.test.first { it is TestState.Ok }
+
+            assertEquals(mapOf(id to "navidrome"), serverTypes.types.first())
+        } finally {
+            server.close()
+        }
+    }
+
+    /** Test, then Add: the new account's tab is named before its first sync lands. */
+    @Test fun `adding the address a test just reached records its type for the new account`() = runTest {
+        val server = acceptingServer()
+        try {
+            vm.testConnection(server.baseUrl, "Kyle", "hunter2")
+            vm.test.first { it is TestState.Ok }
+
+            vm.add("Home", server.baseUrl, "Kyle", "hunter2")
+            assertEquals(SaveState.Saved, settledSave())
+
+            val id = repo.observe().first().single().sourceId
+            assertEquals(mapOf(id to "navidrome"), serverTypes.types.first())
+        } finally {
+            server.close()
+        }
+    }
+
+    /** A test of one address says nothing about an account saved under another. */
+    @Test fun `adding a different address than the one tested records no type`() = runTest {
+        val server = acceptingServer()
+        try {
+            vm.testConnection(server.baseUrl, "Kyle", "hunter2")
+            vm.test.first { it is TestState.Ok }
+
+            vm.add("Home", "http://elsewhere:4533", "Kyle", "hunter2")
+            assertEquals(SaveState.Saved, settledSave())
+
+            assertEquals(emptyMap<String, String>(), serverTypes.types.first())
         } finally {
             server.close()
         }
