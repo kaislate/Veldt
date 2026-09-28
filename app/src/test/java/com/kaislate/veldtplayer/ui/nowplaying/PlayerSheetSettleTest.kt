@@ -121,32 +121,63 @@ class PlayerSheetSettleTest {
 
     // ------------------------------------------------------------------------------ fades
 
-    /** The top half of the travel is the peek: the player is still entirely itself there. */
-    @Test fun `player content is fully opaque through the peek and gone before the landing`() {
+    /**
+     * The owner's round-2 call: "the background should fade out almost instantly to where it is
+     * just the albumart". Fully opaque only at rest, falling from the first pixel of travel, and
+     * gone by 10% — well before the cover has gone anywhere much.
+     */
+    @Test fun `player content is gone by a tenth of the travel`() {
         assertEquals(1f, sheetContentAlpha(0f), 0f)
-        assertEquals(1f, sheetContentAlpha(0.5f), 0f)
-        assertEquals(0f, sheetContentAlpha(0.85f), 0f)
+        assertTrue("already fading at 1%", sheetContentAlpha(0.01f) < 1f)
+        val early = sheetContentAlpha(0.045f)
+        assertTrue("was $early", early > 0f && early < 1f)
+        assertEquals(0f, sheetContentAlpha(0.10f), 0f)
+        assertEquals(0f, sheetContentAlpha(0.5f), 0f)
         assertEquals(0f, sheetContentAlpha(1f), 0f)
-        val mid = sheetContentAlpha(0.7f)
-        assertTrue("was $mid", mid > 0f && mid < 1f)
+    }
+
+    /**
+     * Pinned to the spec's "~8-10%" band, and at no less than 8%: a fade any shorter is a cut, and
+     * opening (which mirrors this exactly, being a function of the fraction alone) would pop the
+     * whole player in on the last frame.
+     */
+    @Test fun `the content fade ends inside the 8 to 10 percent band`() {
+        assertTrue(sheetContentAlpha(0.079f) > 0f)
+        assertEquals(0f, sheetContentAlpha(0.10f), 0f)
+    }
+
+    /** Opening mirrors closing: the chrome comes in over the last stretch before fully open, and
+     *  at the same alpha for the same fraction whichever way the sheet is moving. */
+    @Test fun `the fade is monotonic in the fraction, so opening mirrors closing`() {
+        var f = 0f
+        var last = sheetContentAlpha(0f)
+        while (f <= 1f) {
+            val a = sheetContentAlpha(f)
+            assertTrue("rose at $f", a <= last)
+            last = a
+            f += 0.005f
+        }
     }
 
     /** The mini-player row is invisible under an expanded sheet and fully back once landed. */
-    @Test fun `mini-player fades in over the last part of the travel only`() {
+    @Test fun `mini-player fades in near the collapsed end only`() {
         assertEquals(0f, miniPlayerAlpha(0f), 0f)
+        assertEquals(0f, miniPlayerAlpha(0.5f), 0f)
         assertEquals(0f, miniPlayerAlpha(0.7f), 0f)
         assertEquals(1f, miniPlayerAlpha(1f), 0f)
         val mid = miniPlayerAlpha(0.85f)
         assertTrue("was $mid", mid > 0f && mid < 1f)
     }
 
-    /** The two curves cross: there is no stretch of travel where neither the player nor the row
-     *  reads, which would flash the bare library at the moment of landing. */
-    @Test fun `the player and the mini-player are never both invisible`() {
-        var f = 0f
-        while (f <= 1f) {
-            assertTrue("both invisible at $f", sheetContentAlpha(f) + miniPlayerAlpha(f) > 0f)
-            f += 0.01f
+    /**
+     * Between the two fades the sheet draws nothing but the flying cover: no backdrop, no chrome,
+     * no mini-player row. That gap is the design now (the first version's curves crossed), so it
+     * is pinned rather than left to drift back.
+     */
+    @Test fun `mid-travel shows only the cover`() {
+        for (f in listOf(0.1f, 0.3f, 0.5f, 0.69f)) {
+            assertEquals("content at $f", 0f, sheetContentAlpha(f), 0f)
+            assertEquals("mini-player at $f", 0f, miniPlayerAlpha(f), 0f)
         }
     }
 }

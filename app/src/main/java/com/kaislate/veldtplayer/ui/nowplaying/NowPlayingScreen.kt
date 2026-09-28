@@ -317,9 +317,9 @@ private fun rememberAccessibilityActive(): Boolean {
  *   it onto the thumbnail ([sheetArtFlight]). That replaced a nav-transition shared-element morph
  *   whose two ends had to be handed over on exactly the same frame, and which, being a fixed
  *   420 ms transition, could be neither driven by the finger nor interrupted.
- * - **Everything else fades** over the last part of the travel ([sheetContentFade]) — the
- *   backdrop included, so the app underneath shows through and the mini-player row fades in
- *   where the sheet is landing.
+ * - **Everything else fades** almost at once ([sheetContentFade]: gone by 9% of the travel) —
+ *   the backdrop included, so from there on only the cover crosses the live app, and the
+ *   mini-player row fades in near the end where the cover lands. Opening mirrors it.
  *
  * Both are layer-phase reads of the fraction: a drag recomposes nothing here.
  *
