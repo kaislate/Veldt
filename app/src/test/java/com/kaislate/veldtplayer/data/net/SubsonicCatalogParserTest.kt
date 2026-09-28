@@ -83,6 +83,34 @@ class SubsonicCatalogParserTest {
         )
     }
 
+    /** Round 4: the album's artist is every track's owner, whatever each track's credit says. */
+    @Test fun `the album's artist is the album artist of every featured track`() {
+        val body = obj(
+            """{"album":{"id":"al1","artist":"Poppy","song":[
+                {"id":"s1","artist":"Poppy feat. Grimes","displayAlbumArtist":"Someone Else"},
+                {"id":"s2","artist":"Poppy feat. Diplo"}]}}""",
+        )
+        assertEquals(
+            listOf("Poppy feat. Grimes" to "Poppy", "Poppy feat. Diplo" to "Poppy"),
+            SubsonicCatalogParser.songs(body, "a").map { it.artist to it.albumArtist },
+        )
+    }
+
+    /** No album artist: the album's `displayArtist`, then the song's `displayAlbumArtist`. */
+    @Test fun `album-artist fallbacks are displayArtist then the song's displayAlbumArtist`() {
+        val viaDisplayArtist = obj(
+            """{"album":{"id":"al1","displayArtist":"Poppy","song":[{"id":"s1","artist":"Poppy feat. Diplo"}]}}""",
+        )
+        val viaSong = obj(
+            """{"album":{"id":"al1","artist":"","song":[
+                {"id":"s1","artist":"Poppy feat. Diplo","displayAlbumArtist":"Poppy"}]}}""",
+        )
+        assertEquals(
+            listOf("Poppy", "Poppy"),
+            listOf(viaDisplayArtist, viaSong).map { SubsonicCatalogParser.songs(it, "a").single().albumArtist },
+        )
+    }
+
     @Test fun `a song without an id is dropped rather than keyed on nothing`() {
         val body = obj("""{"album":{"id":"al1","song":[{"title":"no id"},{"id":"s2","title":"ok"}]}}""")
         assertEquals(listOf("s2"), SubsonicCatalogParser.songs(body, "a").map { it.externalId })

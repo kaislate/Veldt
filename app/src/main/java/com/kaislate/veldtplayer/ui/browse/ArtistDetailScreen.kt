@@ -39,7 +39,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.kaislate.veldtplayer.data.art.toSongArt
 import com.kaislate.veldtplayer.data.library.DisplayNames
 import com.kaislate.veldtplayer.data.library.LibraryKeys
-import com.kaislate.veldtplayer.data.library.displayArtist
+import com.kaislate.veldtplayer.data.library.displayAlbumArtist
 import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.AlbumCard
 import com.kaislate.veldtplayer.ui.components.ArtImage
@@ -102,7 +102,9 @@ fun ArtistDetailScreen(
         onDismiss = { pendingAddition = null },
     )
 
-    val name = songs.first().displayArtist()
+    // The OWNER's name — album artist, else track artist — because that is what these songs were
+    // grouped under (LibraryKeys.owner). The first song's credit could be "Poppy feat. Grimes".
+    val name = songs.first().displayAlbumArtist()
     // The portrait the Artists row drew, reached by the same order-independent rule, so the
     // two are one image and the morph is continuous rather than a swap.
     val portrait = remember(songs) { songs.coverTrack() }

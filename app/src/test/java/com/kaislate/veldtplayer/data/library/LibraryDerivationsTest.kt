@@ -131,12 +131,70 @@ class LibraryDerivationsTest {
     }
 
     @Test fun `artists counting distinct albums uses the compound album key`() {
-        // Same album title, different artists on an artist's own page must count as two.
+        // Same album title under two owners: two records. Since round 4 an artist is its songs'
+        // OWNER (album artist first), so the second record belongs to "Various", not to X.
         val songs = listOf(
             song(id = 1, title = "A", album = "Split", artist = "X", albumArtist = "X"),
             song(id = 2, title = "B", album = "Split", artist = "X", albumArtist = "Various"),
+            song(id = 3, title = "C", album = "Other", artist = "X", albumArtist = "X"),
         )
-        assertEquals(2, LibraryDerivations.deriveArtists(songs).single().albumCount)
+        assertEquals(
+            mapOf("Various" to 1, "X" to 2),
+            LibraryDerivations.deriveArtists(songs).associate { it.name to it.albumCount },
+        )
+    }
+
+    // --- artists are grouped by owner: album artist, else track artist (round 4) --------
+
+    /** The owner's Navidrome library, measured: three feature credits on "Poppy" records. */
+    private val poppy = listOf(
+        song(id = 1, title = "Anything Like Me", artist = "Poppy", album = "Negative Spaces", albumArtist = "Poppy"),
+        song(id = 2, title = "Crystallized", artist = "Poppy feat. Fernando Garibay", album = "Zig", albumArtist = "Poppy"),
+        song(id = 3, title = "Knockoff", artist = "Poppy feat. Diplo", album = "Single", albumArtist = "Poppy"),
+        song(id = 4, title = "Hard", artist = "Poppy feat. Grimes", album = "Zig", albumArtist = "Poppy"),
+    )
+
+    @Test fun `feature credits fold under the album artist`() {
+        val artists = LibraryDerivations.deriveArtists(poppy)
+        assertEquals(listOf("Poppy" to 4), artists.map { it.name to it.songCount })
+        assertEquals(3, artists.single().albumCount)
+        // The song keeps its own credit; only the grouping moved.
+        assertEquals("Poppy feat. Grimes", poppy.last().artist)
+    }
+
+    @Test fun `a blank or unknown album artist falls back to the track artist`() {
+        val songs = listOf(
+            song(id = 1, title = "A", artist = "Grimes", album = "Visions", albumArtist = null),
+            song(id = 2, title = "B", artist = "Grimes", album = "Art Angels", albumArtist = "  "),
+            song(id = 3, title = "C", artist = "Grimes", album = "Miss Anthropocene", albumArtist = "<unknown>"),
+        )
+        assertEquals(
+            listOf(Triple("Grimes", 3, 3)),
+            LibraryDerivations.deriveArtists(songs).map { Triple(it.name, it.songCount, it.albumCount) },
+        )
+    }
+
+    /** Search's Artists shelf filters the same derived artists, so it offers the one "Poppy" the
+     *  Artists tab lists — never a "Poppy feat. Diplo" that would open onto one song. */
+    @Test fun `search's artist results are the owners, not the credits`() {
+        val artists = LibraryDerivations.deriveArtists(poppy)
+        assertEquals(
+            listOf(listOf("Poppy"), emptyList()),
+            listOf("popp", "diplo").map { term ->
+                com.kaislate.veldtplayer.ui.browse.SearchFilter.artists(artists, term).map { it.name }
+            },
+        )
+    }
+
+    /** The artist row, the song keys the detail screen filters on, and the album owner all agree,
+     *  so opening "Poppy" shows every Poppy record's tracks, features included. */
+    @Test fun `artist, song and album keys agree on the owner`() {
+        val key = LibraryDerivations.deriveArtists(poppy).single().key
+        assertEquals(setOf(key), poppy.map { LibraryKeys.artistKey(it) }.toSet())
+        assertEquals(
+            setOf(key),
+            poppy.map { LibraryKeys.albumKey(it).substringBefore(LibraryKeys.FIELD_SEPARATOR) }.toSet(),
+        )
     }
 
     // --- keys must always be usable as a route segment ----------------------------------

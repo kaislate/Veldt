@@ -58,13 +58,16 @@ object LibraryDerivations {
     /**
      * Artists sort by key, which for an artist IS the folded display name — so unlike
      * [deriveAlbums] this needs no separate comparator to come out alphabetical.
+     *
+     * Grouped by [LibraryKeys.owner] — album artist, else track artist — and NAMED by it too, so
+     * "Poppy feat. Grimes" is a song of the artist "Poppy", not an artist of its own.
      */
     fun deriveArtists(songs: List<Song>): List<Artist> =
         songs.groupBy { LibraryKeys.artistKey(it) }
             .map { (key, rows) ->
                 Artist(
                     key = key,
-                    name = rows.first().artist.trim(),
+                    name = LibraryKeys.owner(rows.first()).trim(),
                     albumCount = rows.map { LibraryKeys.albumKey(it) }.distinct().size,
                     songCount = rows.size,
                 )
