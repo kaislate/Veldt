@@ -33,14 +33,19 @@ import com.kaislate.veldtplayer.ui.theme.backdropText
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 
 /**
- * The full-screen lyrics route (spec §7): the same drifting [ArtBackdrop] as now-playing, and
+ * Full-screen lyrics (spec §7): the same drifting [ArtBackdrop] as now-playing, and
  * [LyricsContent] filling it.
+ *
+ * Not a route any more: it is the second state of the now-playing sheet, cross-faded in over the
+ * player and left by back or by [onBack] (see `PlayerSheet`). It was only ever entered from
+ * now-playing and only ever left back to it, and with now-playing no longer a destination there
+ * was nothing for a route to sit on top of.
  *
  * Shares the activity-scoped [NowPlayingViewModel] the nav host already holds, so it shows the
  * same track, the same palette and the same lyrics state as the pane it was opened from, and
  * registers itself as a lyrics viewer for as long as it is composed ([LyricsVisibleWhile]) —
- * which is what keeps resolution running here even though the now-playing pane below it on the
- * back stack has left composition.
+ * which is what keeps resolution running here even though the player's in-place pane has left
+ * composition behind it.
  *
  * Every glyph here (header included) takes the LYRIC tones, [lyricsBackdropText] against the
  * ANIMATED `palette.bg`: solved at the title band's modelled scrim (`scrimAtText`), with a
@@ -114,8 +119,8 @@ fun LyricsScreen(
                         .padding(horizontal = 56.dp),
                 )
             }
-            // A restored back stack can land here with the queue empty, exactly as it can on
-            // now-playing; the state holder then stays Hidden (no song, nothing to resolve),
+            // The queue can empty while this is up — the sheet collapses itself when it does, but
+            // a frame after; the state holder then stays Hidden (no song, nothing to resolve),
             // which LyricsContent would draw as a spinner that never finishes.
             if (!state.isActive) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {

@@ -308,16 +308,21 @@ private suspend fun LazyListState.centreOn(index: Int, animate: Boolean) {
  * Makes every vertical drag that STARTS inside this element end inside it — the in-place pane's
  * half of Review Focus 1, so scrolling lyrics never collapses now-playing.
  *
- * Why this works against now-playing's root `detectVerticalDragGestures`: on the Main pass,
- * pointer events travel from the innermost node outwards, so this detector (an ancestor of the
- * lyrics list, a descendant of the root) sees each change after the list and before the root.
- * Both detectors measure the same pointer against the same touch slop, so they cross it on the
- * same event; this one consumes that change (`awaitVerticalTouchSlopOrCancellation`'s slop
- * callback consumes, and every later move is consumed below), and the root's slop wait returns
- * null the moment it sees a consumed change — its drag never starts, `onDragEnd` never runs,
- * `onCollapse` is never called. When the list itself is the one that crosses slop (it is
- * scrollable, and `Modifier.scrollable` consumes once it is dragging), it has consumed first and
- * this detector simply cancels too — either way the root sees consumed changes only.
+ * Why this works against the player sheet's `Modifier.draggable` (on the box around
+ * now-playing — see `PlayerSheet`): on the Main pass, pointer events travel from the innermost
+ * node outwards, so this detector (an ancestor of the lyrics list, a descendant of the sheet)
+ * sees each change after the list and before the sheet. Both measure the same pointer against
+ * the same touch slop, so they cross it on the same event; this one consumes that change
+ * (`awaitVerticalTouchSlopOrCancellation`'s slop callback consumes, and every later move is
+ * consumed below), and the draggable's slop wait gives up the moment it sees a consumed change —
+ * the sheet's drag never starts and the sheet never moves. When the list itself is the one that
+ * crosses slop (it is scrollable, and `Modifier.scrollable` consumes once it is dragging), it has
+ * consumed first and this detector simply cancels too — either way the sheet sees consumed
+ * changes only.
+ *
+ * The one exception is deliberate: while the sheet is still SETTLING it grabs on the down
+ * (`startDragImmediately`), before this detector could see any slop, so a pane caught mid-flight
+ * is a handle on the sheet like every other part of it.
  *
  * Below touch slop nothing is consumed, so a tap on a line is still a tap: consuming small
  * movements would trip the clickable's own "a consumed change cancels the press" check.
@@ -329,10 +334,10 @@ fun Modifier.consumeVerticalDrags(): Modifier = pointerInput(Unit) {
 /**
  * Registers the calling surface as a lyrics viewer while [visible] AND its lifecycle is at least
  * STARTED — see [NowPlayingViewModel.setLyricsVisible] and [lyricsClaimActive]. A
- * [DisposableEffect] keyed on that combined answer, so backgrounding the app (the entry drops to
+ * [DisposableEffect] keyed on that combined answer, so backgrounding the app (the lifecycle drops to
  * CREATED while now-playing stays composed) releases the claim and returning re-takes it, and
- * leaving composition (a pop, a navigation away, the pane swapped back to the artwork) always
- * releases it.
+ * leaving composition (the sheet collapsing, the hop between the pane and full-screen lyrics, the
+ * pane swapped back to the artwork) always releases it.
  */
 @Composable
 fun LyricsVisibleWhile(vm: NowPlayingViewModel, visible: Boolean) {

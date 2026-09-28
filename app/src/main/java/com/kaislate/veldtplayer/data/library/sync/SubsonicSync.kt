@@ -10,6 +10,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.scrobble.ScrobbleQueue
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -53,8 +54,8 @@ interface SubsonicSync {
      *  comes from the delete-order this class's KDoc describes, not from this call alone. */
     fun cancel(sourceId: String)
 
-    /** Drop every song [sourceId] contributed, its recorded status, and (N3) any of its scrobbles
-     *  still waiting in the queue. Callers must call this only AFTER the account row itself is
+    /** Drop every song [sourceId] contributed, its recorded status, its recorded server type, and
+     *  (N3) any of its scrobbles still waiting in the queue. Callers must call this only AFTER the account row itself is
      *  gone (see the class KDoc) — calling it first is the exact ordering bug fix round 1 fixed. */
     suspend fun purge(sourceId: String)
 }
@@ -66,6 +67,7 @@ class SubsonicSyncCoordinator @Inject constructor(
     private val songDao: SongDao,
     private val statusStore: SyncStatusStore,
     private val scrobbleQueue: ScrobbleQueue,
+    private val serverTypes: ServerTypeStore,
 ) : SubsonicSync {
 
     override fun request(sourceId: String) {
@@ -95,6 +97,9 @@ class SubsonicSyncCoordinator @Inject constructor(
         // N3: an account being removed must not leave scrobbles queued for an id nothing will
         // ever flush again (design spec §4, "removing an account purges its entries").
         scrobbleQueue.purge(sourceId)
+        // The server tab's label must stop counting an account that is gone — and a type left
+        // behind is exactly the "stale id resurrects a status" case `SyncStatusStore.clear` guards.
+        serverTypes.clear(sourceId)
     }
 
     private fun uniqueWorkName(sourceId: String) = "veldt-sync-$sourceId"

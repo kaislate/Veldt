@@ -6,6 +6,7 @@ package com.kaislate.veldtplayer.data.library.sync
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.library.db.SongDao
 import com.kaislate.veldtplayer.data.library.db.SongEntity
 import com.kaislate.veldtplayer.data.library.db.VeldtDatabase
@@ -41,6 +42,7 @@ class SubsonicSyncCoordinatorTest {
     private lateinit var status: SyncStatusStore
     private lateinit var queueDir: File
     private lateinit var queue: ScrobbleQueue
+    private lateinit var serverTypes: ServerTypeStore
     private lateinit var coordinator: SubsonicSyncCoordinator
 
     @Before fun setUp() {
@@ -51,7 +53,9 @@ class SubsonicSyncCoordinatorTest {
         runBlocking { status.clearForTest() }
         queueDir = Files.createTempDirectory("sync-coordinator-test").toFile()
         queue = ScrobbleQueue(queueDir)
-        coordinator = SubsonicSyncCoordinator(context, songDao, status, queue)
+        serverTypes = ServerTypeStore(context)
+        runBlocking { serverTypes.clearForTest() }
+        coordinator = SubsonicSyncCoordinator(context, songDao, status, queue, serverTypes)
     }
 
     @After fun tearDown() {
@@ -97,5 +101,15 @@ class SubsonicSyncCoordinatorTest {
             queue.forSource("acct-2"),
         )
         assertEquals("purge must also clear the auth-block", false, queue.isAuthBlocked("acct-1"))
+    }
+
+    /** Server tab (Task B §3): a removed account stops counting toward the tab's label. */
+    @Test fun `purge forgets the source's server type, leaving other sources alone`() = runTest {
+        serverTypes.record("acct-1", "navidrome")
+        serverTypes.record("acct-2", "gonic")
+
+        coordinator.purge("acct-1")
+
+        assertEquals(mapOf("acct-2" to "gonic"), serverTypes.types.first())
     }
 }

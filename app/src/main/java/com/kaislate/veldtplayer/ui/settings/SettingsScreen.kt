@@ -25,6 +25,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -75,6 +76,7 @@ fun SettingsScreen(
     onOpenNotices: () -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenPillAppearance: () -> Unit,
+    onOpenTabs: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     vm: SettingsViewModel = hiltViewModel(),
@@ -131,6 +133,12 @@ fun SettingsScreen(
         )
 
         SectionLabel("Library")
+        SettingsLinkRow(
+            icon = Icons.Filled.Tab,
+            label = "Tabs",
+            caption = "Order, which tabs show, and where Veldt opens",
+            onClick = onOpenTabs,
+        )
         SettingsLinkRow(
             icon = Icons.Filled.VisibilityOff,
             label = "Hidden folders (${hiddenFolders.size})",

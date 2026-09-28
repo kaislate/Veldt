@@ -448,7 +448,7 @@ class PlaybackService : MediaLibraryService() {
             if (label == null) {
                 ImmutableList.of()
             } else {
-                // Media3's icon set has no moon, hence the custom icon. ICON_UNDEFINED's default
+                // Media3's icon set has no bed, hence the custom icon. ICON_UNDEFINED's default
                 // slot is the overflow, which leaves previous/play/next exactly where they were.
                 ImmutableList.of(
                     CommandButton.Builder(CommandButton.ICON_UNDEFINED)

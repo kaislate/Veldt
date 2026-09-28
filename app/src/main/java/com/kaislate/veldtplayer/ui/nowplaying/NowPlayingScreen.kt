@@ -14,7 +14,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,7 +29,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
-import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Hotel
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.OpenInFull
@@ -51,7 +50,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -88,7 +86,6 @@ import com.kaislate.veldtplayer.ui.lyrics.lyricsBackdropText
 import com.kaislate.veldtplayer.ui.lyrics.rememberLyricsGround
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
-import com.kaislate.veldtplayer.ui.motion.sharedSongArt
 import com.kaislate.veldtplayer.ui.theme.DominantColors
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.backdropText
@@ -98,9 +95,6 @@ import com.kaislate.veldtplayer.ui.theme.backdropMarks
 import com.kaislate.veldtplayer.ui.theme.whenEnabled
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 import kotlinx.coroutines.delay
-
-/** How far down the surface must be dragged, in dp, before releasing dismisses it. */
-private const val DISMISS_DRAG_DP = 96f
 
 /** Fraction of the width the cover occupies — air on both sides, not a bleed. */
 private const val ART_WIDTH = 0.82f
@@ -314,32 +308,20 @@ private fun rememberAccessibilityActive(): Boolean {
  * every other player does (spec §6). That behaviour is the point of the screen, not
  * decoration on it.
  *
- * The cover is one end of the track-art morph; the other is the mini-player thumbnail this
- * screen replaced on the way in. Which of the pair is the LIVE end is declared explicitly
- * rather than inferred by a `sharedElement` from an `AnimatedVisibilityScope`, because the
- * other end is chrome with no scope of its own worth borrowing — see `Modifier.sharedSongArt`.
- * [artVisible] is that declaration, and is true exactly while this is the current route.
+ * **It lives in a sheet, not on the back stack** — see [PlayerSheet] and [PlayerSheetState]. The
+ * sheet owns the vertical drag (it wraps this screen), so this screen no longer detects a dismiss
+ * gesture of its own; what it keeps is its content, and two hooks into the sheet's fraction:
  *
- * **A LAMBDA, not a `Boolean`, and the return morph does not run without that.** On a pop,
- * navigation keeps this destination composed for the length of the exit and RE-INVOKES it
- * whenever its own composition invalidates — what never happens is the PARENT re-invoking it
- * with fresh arguments, because the parent's `composable { }` lambda is not re-run for an
- * entry that is leaving. A `Boolean` therefore stays frozen at whatever it was handed on the
- * way in, while the mini-player — chrome in the scaffold's `bottomBar`, which does recompose —
- * has already reclaimed the element. Both ends then claim `visible == true` at once, the match
- * has two live claimants instead of a hand-over, and the cover contends rather than travelling
- * (measured: 807 → 96 → 798 → 807 → 96 in 294ms). Read HERE in composition, the lambda's own
- * snapshot read is what invalidates this screen while it is leaving, so the departing end goes
- * false on the same frame the mini-player's end comes back — the outbound leg exactly mirrored.
+ * - **The cover flies onto the mini-player's thumbnail** as the sheet collapses. Its slot reports
+ *   the expanded rect ([sheetArtSlot]) and the cover itself carries the layer that interpolates
+ *   it onto the thumbnail ([sheetArtFlight]). That replaced a nav-transition shared-element morph
+ *   whose two ends had to be handed over on exactly the same frame, and which, being a fixed
+ *   420 ms transition, could be neither driven by the finger nor interrupted.
+ * - **Everything else fades** almost at once ([sheetContentFade]: gone by 9% of the travel) —
+ *   the backdrop included, so from there on only the cover crosses the live app, and the
+ *   mini-player row fades in near the end where the cover lands. Opening mirrors it.
  *
- * **The documented-looking alternative was tried and is measurably wrong.** Deriving this from
- * this destination's own `AnimatedVisibilityScope.transition.targetState` is snapshot-backed
- * public API and needs no parameter at all — but it does not flip when the pop STARTS, it flips
- * when the exit animation is dispatched, ~184ms later on the reference device. The mini-player
- * re-attaches at frame 0 regardless (it reads the back stack), so the two ends stop being
- * handed over on the same frame and the return leg SNAPS: measured 807 at t+0, 96 at t+161, no
- * frame between. What this pair actually requires is not "a documented signal" but ONE signal
- * read by both ends, and the back stack is the only one that flips at frame 0 for both.
+ * Both are layer-phase reads of the fraction: a drag recomposes nothing here.
  *
  * **Ambient mode.** After [AMBIENT_DELAY_MS] untouched the chrome fades out and leaves the
  * artwork, the wave and the drifting backdrop — the screen stops being a control panel and
@@ -374,21 +356,17 @@ private fun rememberAccessibilityActive(): Boolean {
  *   reach. The fade itself is untouched, so the aesthetic is not spent on it. See
  *   [chromeReachable].
  *
- * **Lyrics and the morph.** The lyrics pane takes the artwork's slot, and only the ArtImage
- * branch carries `sharedSongArt`. That is safe in every direction for one reason: the morph's
- * contract is that exactly one end claims `visible == true` at a time, and the pane claims
- * nothing. Opening now-playing always lands on the artwork (a collapse pops this entry, and
- * with it the saved `showLyrics`), so the outbound leg is unchanged. Collapsing WHILE lyrics
- * are showing finds no now-playing end at all: the mini-player re-attaches at frame 0 with no
- * match, draws where it lives, and the screen leaves by its route transition — a plain exit,
- * not a snap or a contended match. Conjuring the cover back for the length of the pop to give
- * the morph a start was rejected: a freshly composed end has no prior bounds to animate FROM,
- * so it would buy nothing but a flash of artwork under the departing lyrics.
+ * **Lyrics and the cover's flight.** The lyrics pane takes the artwork's slot, and only the
+ * ArtImage branch carries [sheetArtSlot]. With the pane up there is no cover to fly: the pane
+ * fades with the rest of the content, and the mini-player's own thumbnail shows (the slot's
+ * rect is cleared when it leaves composition, which is what tells the thumbnail it is not being
+ * stood in for). Opening the sheet always lands on the artwork anyway: collapsed, the sheet is
+ * not composed at all, and the saved `showLyrics` goes with it.
  */
 @Composable
 fun NowPlayingScreen(
     vm: NowPlayingViewModel,
-    artVisible: () -> Boolean,
+    sheet: PlayerSheetState,
     onCollapse: () -> Unit,
     onOpenLyrics: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -425,11 +403,6 @@ fun NowPlayingScreen(
     // the pane draws it, and only while it is shown: the artwork view is unchanged.
     val lyricsGround = rememberLyricsGround()
 
-    // Accumulated, and acted on at RELEASE. Reacting to a single drag delta would fire
-    // onCollapse once per pointer event past the threshold, popping several entries off the
-    // back stack for one gesture.
-    var draggedY by remember { mutableFloatStateOf(0f) }
-
     var showQueue by remember { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
     // The service's sleep timer (spec §4). A timed one counts down on the elapsed-realtime clock,
@@ -445,10 +418,10 @@ fun NowPlayingScreen(
     val sleepRemaining = sleepRemainingMs(sleep, sleepNow, position, state.durationMs)
         ?.let(::formatSleepRemaining)
     // Lyrics in place of the artwork (spec §7). Saveable, so the pane is still up when the
-    // user comes back from the full-screen lyrics route or from Settings — this entry stays on
-    // the back stack under both. A collapse POPS this entry, so reopening now-playing always
-    // starts on the artwork, which is the end the mini-player morph needs (see "Lyrics and the
-    // morph" in the KDoc).
+    // user comes back from full-screen lyrics — the sheet keeps this screen's saveable state
+    // across that hop (see PlayerSheet). A collapse takes the whole sheet out of composition,
+    // so reopening now-playing always starts on the artwork, which is what the cover's flight
+    // from the mini-player needs (see "Lyrics and the cover's flight" in the KDoc).
     var showLyrics by rememberSaveable { mutableStateOf(false) }
     // The host below also guards on isActive, because this cannot run until after the frame
     // that dropped it. This is the other half: without it the flag would still read "open"
@@ -463,7 +436,7 @@ fun NowPlayingScreen(
         }
     }
     // Resolution runs only while the pane is actually on screen (spec §6). A DisposableEffect
-    // underneath, so leaving composition — a pop, or navigating to the full-screen route —
+    // underneath, so leaving composition — a collapse, or the hop to full-screen lyrics —
     // releases this surface's claim; see LyricsViewers for why it is a claim and not a flag.
     LyricsVisibleWhile(vm, visible = showLyrics && state.isActive)
     // A counter rather than a timestamp: it only ever has to differ from its previous value
@@ -520,8 +493,9 @@ fun NowPlayingScreen(
             // The backdrop fills this box, so this box's coordinates ARE the gradient's.
             .lyricsBackdrop(lyricsGround)
             // Any touch at all wakes the chrome. Initial pass and never consumed: this must
-            // not take the gesture away from the scrub bar, the transport or the drag
-            // detector below, only observe that one happened. See the KDoc.
+            // not take the gesture away from the scrub bar, the transport or the sheet's
+            // drag (on the PlayerSheet box around this one), only observe that one happened.
+            // See the KDoc.
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -551,27 +525,22 @@ fun NowPlayingScreen(
             // disables the transport out from under it, and treating THAT as activity would
             // wake the chrome every eight seconds forever.
             .onFocusChanged { if (it.hasFocus) lastTouchTick++ }
-            .pointerInput(Unit) {
-                val threshold = DISMISS_DRAG_DP.dp.toPx()
-                detectVerticalDragGestures(
-                    onDragStart = { draggedY = 0f },
-                    onDragEnd = {
-                        if (draggedY > threshold) onCollapse()
-                        draggedY = 0f
-                    },
-                    onDragCancel = { draggedY = 0f },
-                ) { _, dragAmount -> draggedY += dragAmount }
-            }
     ) {
         // fillMaxSize under a fillMaxSize Box, i.e. BOUNDED constraints. It has to be: the
         // backdrop's ArtImage draws its loading state with fillMaxSize, which collapses to
         // the minimum constraint under an unbounded parent — the backdrop would measure ~0
         // and then pop to full screen when the bitmap arrived.
+        //
+        // Fades with the rest of the content as the sheet collapses: the backdrop IS the
+        // sheet's surface, so fading it is what lets the app and the mini-player show through
+        // where the sheet is landing.
         ArtBackdrop(
             art = state.art,
             palette = palette,
             reducedMotion = reduced,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .sheetContentFade(sheet),
         )
 
         Column(
@@ -588,19 +557,17 @@ fun NowPlayingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (!state.isActive) {
-                // Reachable: a restored back stack can land on this route with the queue
-                // empty. Saying so beats rendering a blank screen with dead controls.
+                // Reachable for a frame or two: the sheet collapses itself when the queue
+                // empties, but that runs after the frame that emptied it. Saying so beats
+                // rendering a blank screen with dead controls meanwhile.
                 Text(
                     text = "Nothing playing",
                     style = MaterialTheme.typography.headlineSmall,
                     color = text.primary,
                     textAlign = TextAlign.Center,
+                    modifier = Modifier.sheetContentFade(sheet),
                 )
             } else {
-                // Read in COMPOSITION, deliberately: the snapshot read is what invalidates
-                // this screen while it is exiting, so the departing end of the morph can
-                // stop being the live one. See the KDoc.
-                val artIsLiveEnd = artVisible()
                 val lyricsState by vm.lyrics.collectAsStateWithLifecycle()
                 // One slot, two occupants: the pane is exactly the artwork's square, so
                 // swapping them moves nothing else on the screen. `using null` (no size
@@ -626,12 +593,11 @@ fun NowPlayingScreen(
                         // Solved at the title band's modelled ground; the pane's floor draws more
                         // scrim than that, as margin. See lyricsBackdropText.
                         val lyricsText = targetSeed.lyricsBackdropText(palette.bg, isLight)
-                        // No sharedSongArt on this branch, on purpose: the pane is not the
-                        // cover, and giving it the cover's key would morph a block of text into
-                        // the mini-player thumbnail. While lyrics are up this screen therefore
-                        // holds NO end of the track-art morph, and a collapse from here is the
-                        // plain route exit with the mini-player simply reappearing — see
-                        // "Lyrics and the morph" in the KDoc.
+                        // No sheetArtSlot on this branch, on purpose: the pane is not the cover,
+                        // and flying it onto the thumbnail would shrink a block of text into the
+                        // mini-player. It fades with the rest of the content instead, and the
+                        // mini-player keeps its own thumbnail — see "Lyrics and the cover's
+                        // flight" in the KDoc.
                         LyricsContent(
                             state = lyricsState,
                             positionMs = position,
@@ -648,10 +614,11 @@ fun NowPlayingScreen(
                                 }
                             },
                             // Review Focus 1: a vertical drag that starts on the pane stays in
-                            // the pane. It scrolls the lyrics and never reaches the root's
-                            // dismiss detector; see consumeVerticalDrags for the mechanism.
+                            // the pane. It scrolls the lyrics and never reaches the sheet's
+                            // draggable; see consumeVerticalDrags for the mechanism.
                             modifier = Modifier
                                 .fillMaxSize()
+                                .sheetContentFade(sheet)
                                 // The floor takes the artwork's rounded square, so the swap
                                 // reads as the cover giving way to a tinted card of the same
                                 // shape rather than a hard-edged block.
@@ -660,37 +627,44 @@ fun NowPlayingScreen(
                                 .consumeVerticalDrags(),
                         )
                     } else {
-                        ArtImage(
-                            art = state.art,
-                            palette = palette,
-                            initial = state.initial,
-                            // sharedSongArt before clip, so the rounding travels with the shared
-                            // node rather than being re-applied at the destination. The click
-                            // comes after both: it is not part of what morphs.
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .sharedSongArt(state.songId, visible = artIsLiveEnd)
-                                .clip(RoundedCornerShape(ART_CORNER))
-                                // Faded chrome: the tap only wakes, exactly like the collapse
-                                // button — a tap aimed at a screen with no visible controls
-                                // means "come back", not "switch modes". Decided at the DOWN
-                                // (the latch), not at the click: see FadedTap.
-                                .latchFadeAtDown(artTapLatch) { !chromeLiveState.value }
-                                .clickable(
-                                    onClickLabel = if (chromeLive) "Show lyrics" else "Show controls",
-                                ) {
-                                    if (artTapLatch.consume(fadedNow = !chromeLive)) {
-                                        lastTouchTick++
-                                    } else {
-                                        showLyrics = true
-                                    }
-                                },
-                        )
+                        // The slot measures, the cover flies: the expanded rect must be read on
+                        // a node WITHOUT the flight's layer, or it would include the transform
+                        // it is used to compute. See sheetArtSlot.
+                        Box(Modifier.fillMaxSize().sheetArtSlot(sheet)) {
+                            ArtImage(
+                                art = state.art,
+                                palette = palette,
+                                initial = state.initial,
+                                // The flight carries the clip (its rounding has to shrink with
+                                // the cover onto the thumbnail's radius), so there is no separate
+                                // clip here. The click comes after it: a tap lands on the cover
+                                // wherever the cover is drawn.
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .sheetArtFlight(sheet, corner = ART_CORNER)
+                                    // Faded chrome: the tap only wakes, exactly like the collapse
+                                    // button — a tap aimed at a screen with no visible controls
+                                    // means "come back", not "switch modes". Decided at the DOWN
+                                    // (the latch), not at the click: see FadedTap.
+                                    .latchFadeAtDown(artTapLatch) { !chromeLiveState.value }
+                                    .clickable(
+                                        onClickLabel = if (chromeLive) "Show lyrics" else "Show controls",
+                                    ) {
+                                        if (artTapLatch.consume(fadedNow = !chromeLive)) {
+                                            lastTouchTick++
+                                        } else {
+                                            showLyrics = true
+                                        }
+                                    },
+                            )
+                        }
                     }
                 }
 
                 Column(
-                    modifier = Modifier.ambientChrome(chromeAlpha, chromeUsable),
+                    modifier = Modifier
+                        .ambientChrome(chromeAlpha, chromeUsable)
+                        .sheetContentFade(sheet),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
@@ -728,7 +702,9 @@ fun NowPlayingScreen(
                     // WaveScrubBar's KDoc.
                     tapToSeek = chromeLive,
                     onSeek = vm::seekTo,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .sheetContentFade(sheet),
                 )
 
                 Transport(
@@ -741,7 +717,9 @@ fun NowPlayingScreen(
                     onToggle = vm::toggle,
                     onNext = vm::next,
                     onRepeat = vm::cycleRepeat,
-                    modifier = Modifier.ambientChrome(chromeAlpha, chromeUsable),
+                    modifier = Modifier
+                        .ambientChrome(chromeAlpha, chromeUsable)
+                        .sheetContentFade(sheet),
                 )
             }
         }
@@ -780,7 +758,8 @@ fun NowPlayingScreen(
                 .align(Alignment.TopStart)
                 .windowInsetsPadding(WindowInsets.systemBars)
                 .padding(start = 8.dp)
-                .ambientFade(chromeAlpha),
+                .ambientFade(chromeAlpha)
+                .sheetContentFade(sheet),
         ) {
             Icon(
                 Icons.Filled.KeyboardArrowDown,
@@ -808,12 +787,13 @@ fun NowPlayingScreen(
                     .align(Alignment.TopEnd)
                     .windowInsetsPadding(WindowInsets.systemBars)
                     .padding(end = 8.dp)
-                    .ambientChrome(chromeAlpha, chromeUsable),
+                    .ambientChrome(chromeAlpha, chromeUsable)
+                    .sheetContentFade(sheet),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 // The sleep timer (spec §4) joins the corner for the reason the lyrics toggle did:
                 // the transport row is a symmetric object. While a timer runs, the time left sits
-                // beside the moon, in the solved text tone like the title.
+                // beside the bed, in the solved text tone like the title.
                 if (sleepRemaining != null) {
                     Text(
                         text = sleepRemaining,
@@ -828,7 +808,7 @@ fun NowPlayingScreen(
                     enabled = chromeUsable,
                 ) {
                     Icon(
-                        Icons.Filled.Bedtime,
+                        Icons.Filled.Hotel,
                         contentDescription = if (sleepRemaining == null) "Sleep timer"
                         else "Sleep timer, $sleepRemaining left",
                         tint = if (sleep != SleepTimerState.Off) marks.accent else text.primary,

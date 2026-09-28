@@ -66,7 +66,6 @@ fun ArtistsScreen(
     val artists by vm.artists.collectAsStateWithLifecycle()
     val songs by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
-    val reduced = rememberReducedMotion()
     val palette = neutralPalette()
 
     if (artists.isEmpty()) {
@@ -86,6 +85,31 @@ fun ArtistsScreen(
         }
         return
     }
+
+    ArtistList(
+        artists = artists,
+        songs = songs,
+        onOpenArtist = onOpenArtist,
+        contentPadding = contentPadding,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The list itself, without the states around it — shared with the server tab's Artists section.
+ * [songs] supplies the portraits, and should be the list [artists] was derived from; see
+ * [AlbumGrid].
+ */
+@Composable
+internal fun ArtistList(
+    artists: List<Artist>,
+    songs: List<Song>,
+    onOpenArtist: (String) -> Unit,
+    contentPadding: PaddingValues,
+    modifier: Modifier = Modifier,
+) {
+    val reduced = rememberReducedMotion()
+    val palette = neutralPalette()
 
     // An artist has no artwork of its own, so one of their tracks lends its cover. The
     // choice is order-independent (see coverTrack), so the portrait no longer moves when

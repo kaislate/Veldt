@@ -32,6 +32,17 @@ import javax.inject.Singleton
 /** Light, Dark, or whatever the system is doing. Default [SYSTEM]. */
 enum class ThemeMode { LIGHT, DARK, SYSTEM }
 
+/**
+ * The bottom tabs as the user left them: [order] of tab ids, the [hidden] ones, and the [start]
+ * ("Open on") id, null until chosen. Raw and unvalidated — see `ui/nav/TabArrangement` for how it
+ * is read.
+ */
+data class StoredTabs(
+    val order: List<String> = emptyList(),
+    val hidden: Set<String> = emptySet(),
+    val start: String? = null,
+)
+
 private val Context.settingsStore by preferencesDataStore(name = "veldt-settings")
 
 /** The longest name a volume can be given (Step 5 spec §5). */
@@ -451,7 +462,53 @@ class SettingsRepository @Inject constructor(
         context.settingsStore.edit { it[PILL_ANCHOR] = raw }
     }
 
+    // ---- Bottom tabs (player-sheet/server-tab spec, Round 2 → D). Raw ids only: the rules that
+    // read them (unknown ids, a server tab appearing later, the start-tab fallback) live in the UI
+    // layer's `TabArrangement`, as pure functions, because this layer does not know the routes.
+
+    /**
+     * The user's tab arrangement as stored: the order (comma-joined — a tab id is a route and
+     * never holds a comma), the hidden set, and "Open on". All three absent on a fresh install,
+     * which `TabArrangement` reads as the default order, all shown, opening on Songs.
+     */
+    val tabs: Flow<StoredTabs> = context.settingsStore.data.map { prefs ->
+        StoredTabs(
+            order = prefs[TAB_ORDER]?.split(',')?.filter { it.isNotBlank() }.orEmpty(),
+            hidden = prefs[TAB_HIDDEN] ?: emptySet(),
+            start = prefs[START_TAB],
+        )
+    }
+
+    suspend fun setTabOrder(order: List<String>) {
+        context.settingsStore.edit { it[TAB_ORDER] = order.joinToString(",") }
+    }
+
+    /** An empty set removes the preference, as [setFolderHidden] does, so "all shown" leaves
+     *  nothing behind. */
+    suspend fun setHiddenTabs(hidden: Set<String>) {
+        context.settingsStore.edit { prefs ->
+            if (hidden.isEmpty()) prefs.remove(TAB_HIDDEN) else prefs[TAB_HIDDEN] = hidden
+        }
+    }
+
+    suspend fun setStartTab(id: String) {
+        context.settingsStore.edit { it[START_TAB] = id }
+    }
+
+    /** "Reset to default": the default order, every tab shown. "Open on" is a separate choice
+     *  with its own control, and is left alone. */
+    suspend fun resetTabs() {
+        context.settingsStore.edit { prefs ->
+            prefs.remove(TAB_ORDER)
+            prefs.remove(TAB_HIDDEN)
+        }
+    }
+
     private companion object {
+        val TAB_ORDER = stringPreferencesKey("tab_order")
+        val TAB_HIDDEN = stringSetPreferencesKey("tab_hidden")
+        val START_TAB = stringPreferencesKey("start_tab")
+
         val THEME_MODE = stringPreferencesKey("theme_mode")
         val FOLDER_SORT = stringPreferencesKey("folder_sort")
         val FOLDER_SORT_DESC = booleanPreferencesKey("folder_sort_desc")

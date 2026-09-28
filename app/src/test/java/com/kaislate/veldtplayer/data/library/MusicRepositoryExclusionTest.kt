@@ -164,6 +164,25 @@ class MusicRepositoryExclusionTest {
     }
 
     /**
+     * The server tab's library (Task B §5): only the named sources' songs, and an empty set is
+     * nothing rather than everything. Hiding the folder the server song's path parses into leaves
+     * it in place, because the filter reads through [MusicRepository.songs] and inherits its
+     * local-only exclusion rule.
+     */
+    @Test fun `songsFrom returns only the named sources' songs`() = runTest {
+        val repo = repo()
+        settings.setFolderHidden("1234-5678:BACKUP/Downloads", hidden = true)
+        assertEquals(
+            listOf(listOf("Streamed"), emptyList(), listOf("Nowhere", "Old", "Song", "Streamed")),
+            listOf(
+                repo.songsFrom(setOf("navidrome-1")).first().map { it.title },
+                repo.songsFrom(emptySet()).first().map { it.title },
+                repo.songsFrom(setOf("navidrome-1", "local-test")).first().map { it.title }.sorted(),
+            ),
+        )
+    }
+
+    /**
      * The whole claim, one assertion: the drafts leave songs, search, albums, artists and both
      * detail flows — including the subfolder's draft — while `Downloads Old`, the server's song and
      * the unlocated song stay. The folder tab still holds all five local songs and marks the hidden

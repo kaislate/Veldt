@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.kaislate.veldtplayer.data.library.model.Song
 import com.kaislate.veldtplayer.ui.components.SongRow
 import com.kaislate.veldtplayer.ui.motion.rememberReducedMotion
 import com.kaislate.veldtplayer.ui.motion.staggeredEntrance
@@ -34,7 +35,6 @@ fun SongsScreen(
     // WhileSubscribed, and a backgrounded screen must let the upstream stop.
     val songs by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
-    val reduced = rememberReducedMotion()
     // Browse rows use the neutral fallback palette; per-track colour is a now-playing
     // concern (a list themed by 300 different covers would be noise, not craft).
     val palette = neutralPalette()
@@ -77,6 +77,33 @@ fun SongsScreen(
         return
     }
 
+    SongList(
+        songs = songs,
+        onPlay = { index -> vm.play(songs, index) },
+        onLongClick = { song -> pendingAddition = PlaylistAdditions.ofSong(song) },
+        contentPadding = contentPadding,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The song list itself, without the states around it. Shared by the Songs tab and the server
+ * tab's Songs section, so the two cannot drift apart in row, inset or entrance — the server tab
+ * is the same library seen through a filter, and must read as that.
+ *
+ * [onPlay] takes the tapped index into [songs]: the caller owns which list becomes the queue.
+ */
+@Composable
+internal fun SongList(
+    songs: List<Song>,
+    onPlay: (index: Int) -> Unit,
+    onLongClick: (Song) -> Unit,
+    contentPadding: PaddingValues,
+    modifier: Modifier = Modifier,
+) {
+    val reduced = rememberReducedMotion()
+    val palette = neutralPalette()
+
     // The two insets are treated DIFFERENTLY, on purpose.
     //
     // The bottom one becomes contentPadding, so rows scroll beneath the translucent
@@ -106,9 +133,9 @@ fun SongsScreen(
             SongRow(
                 song = song,
                 palette = palette,
-                onClick = { vm.play(songs, index) },
+                onClick = { onPlay(index) },
                 modifier = Modifier.staggeredEntrance(index, reduced),
-                onLongClick = { pendingAddition = PlaylistAdditions.ofSong(song) },
+                onLongClick = { onLongClick(song) },
             )
         }
     }

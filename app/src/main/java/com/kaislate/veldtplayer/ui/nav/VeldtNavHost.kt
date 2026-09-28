@@ -20,8 +20,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavBackStackEntry
@@ -42,25 +48,33 @@ import com.kaislate.veldtplayer.ui.browse.PlaylistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.PlaylistViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
 import com.kaislate.veldtplayer.ui.browse.SearchScreen
+import com.kaislate.veldtplayer.ui.browse.ServerScreen
+import com.kaislate.veldtplayer.ui.browse.ServerViewModel
 import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.components.MiniPlayer
-import com.kaislate.veldtplayer.ui.lyrics.LyricsScreen
 import com.kaislate.veldtplayer.ui.motion.LocalNavAnimatedVisibilityScope
 import com.kaislate.veldtplayer.ui.motion.LocalSharedTransitionScope
-import com.kaislate.veldtplayer.ui.motion.rememberMorphLinger
-import com.kaislate.veldtplayer.ui.motion.rememberSongArtMorph
-import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingScreen
 import com.kaislate.veldtplayer.ui.nowplaying.NowPlayingViewModel
+import com.kaislate.veldtplayer.ui.nowplaying.PlayerSheet
+import com.kaislate.veldtplayer.ui.nowplaying.miniPlayerOfSheet
+import com.kaislate.veldtplayer.ui.nowplaying.miniPlayerThumbOfSheet
+import com.kaislate.veldtplayer.ui.nowplaying.playerSheetHost
+import com.kaislate.veldtplayer.ui.nowplaying.rememberPlayerSheetState
 import com.kaislate.veldtplayer.ui.settings.NoticesScreen
 import com.kaislate.veldtplayer.ui.settings.PillAppearanceScreen
 import com.kaislate.veldtplayer.ui.settings.SettingsScreen
+import com.kaislate.veldtplayer.ui.settings.TabsSettingsScreen
 import com.kaislate.veldtplayer.ui.settings.accounts.AccountsScreen
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
-/** How long an "open at now-playing" request waits for the queue to read as active. */
+/**
+ * How long an "open the player" request — the pill's deep link, or a play started from a list —
+ * waits for the queue to read as active before giving up and leaving the app where it is.
+ */
 private const val OPEN_NOW_PLAYING_WAIT_MS = 3_000L
 
 /**
@@ -73,45 +87,90 @@ private val TAB_ROUTES = setOf(
     Destinations.ARTISTS,
     Destinations.PLAYLISTS,
     Destinations.FOLDERS,
+    Destinations.SERVER,
 )
 
 /**
  * SharedTransitionLayout wraps the WHOLE SCAFFOLD so album art can morph continuously
- * between destinations (spec §7) — and so that the mini-player can take part.
- *
- * It used to sit inside the Scaffold's content slot, which was enough while every end of
- * every morph was a nav destination. The mini-player is chrome: docked as `bottomBar`, it
- * was outside the transition scope entirely and its `sharedElement` would have silently
- * no-opped. Hoisting is the whole fix on the SharedTransitionScope side; the
- * AnimatedVisibilityScope side is handled in [VeldtScaffold], because a mini-player is not a
- * destination and has no `composable { }` receiver to borrow one from.
+ * between destinations (spec §7).
  *
  * Verified on device in Task 8: the API compiles under Compose BOM 2025.07.00, the
  * `AnimatedVisibilityScope` a shared element needs is the `composable { }` receiver
  * itself (`this@composable`), and the element genuinely interpolates its bounds rather
  * than cross-fading. No fallback is needed.
+ *
+ * **Now-playing is not a destination.** It is the [PlayerSheet], drawn over the whole scaffold
+ * as the layout's second child (SharedTransitionLayout stacks its children like a Box). It used
+ * to be a route, which made it a screen you could only be ON or OFF: nothing was composed behind
+ * it, so it could not follow a finger down, be peeked behind, or be caught mid-dismiss. Over a
+ * live scaffold it can. The track cover's hand-over to the mini-player is the sheet's own
+ * fraction-driven flight rather than a shared element, so the sheet does not need this layout's
+ * scope; it sits inside it only because this is the box that holds everything.
  */
 @OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
     val navController = rememberNavController()
-    // Held as State and unwrapped separately, because the STATE OBJECT is passed on to the
-    // now-playing route while the unwrapped value is used here. Both ends of the track-art
-    // morph have to change hands on the SAME frame, and the back stack is the only signal
-    // that flips at frame 0 for chrome and for an exiting destination alike — the
-    // destination's own AnimatedVisibilityScope lags it by ~184ms, which snaps the return
-    // leg. Measured; see NowPlayingScreen's KDoc.
-    val backStackEntryState = navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntryState.value?.destination?.route
-    val items = rememberNavItems()
+    val currentRoute = navController.currentBackStackEntryAsState().value?.destination?.route
+    // Resolved out here, above the permission gate, because the bar it labels is drawn whether or
+    // not audio access was granted — and resolved once, at this level, because the tab's screen
+    // reads the same instance (see ServerViewModel's KDoc).
+    val serverVm: ServerViewModel = hiltViewModel()
+    // The bar's arrangement (Round 2 → D): order, hidden tabs, "Open on" — resolved here for the
+    // same reason as serverVm, and null until settings and the accounts table have both answered.
+    val tabsVm: TabsViewModel = hiltViewModel()
+    val tabs by tabsVm.state.collectAsStateWithLifecycle()
+    val items = rememberNavItems(tabs?.shown.orEmpty(), tabs?.serverLabel)
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // The NavHost's start destination: the "Open on" tab, fixed ONCE per navigation state — not
+    // re-read when the setting changes, because moving a live graph's start re-roots a back stack
+    // the user is standing in. A change applies from the next cold start. Saveable, so rotation
+    // and process restore rebuild the same graph the saved back stack was made for.
+    var startRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    // The tab at the bottom of the back stack — what tab switches pop to. It starts as
+    // [startRoute] and moves only if that tab stops being shown (see the effect below); tracked
+    // rather than read from the graph so that a re-rooted stack still pops to a tab that is in it.
+    var rootTab by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(tabs) {
+        val ready = tabs ?: return@LaunchedEffect
+        if (startRoute == null) {
+            startRoute = ready.start
+            rootTab = ready.start
+        }
+    }
+    // Expanded/collapsed survives rotation; see rememberPlayerSheetState.
+    val sheet = rememberPlayerSheetState()
+    val sheetScope = rememberCoroutineScope()
+
+    // The tab on screen is no longer in the bar: it was hidden in Settings → Tabs, or it is the
+    // server tab and the last server account was removed (Settings is reachable from every tab's
+    // app bar, so both are ordinary paths, not edges). The screen must not outlive its tab, so
+    // go to the start tab — "Open on", or the first shown tab if that is gone too. Only once
+    // `tabs` has answered: a null state would bounce a restored back stack before the accounts
+    // table had said whether a server exists.
+    LaunchedEffect(currentRoute, tabs) {
+        val ready = tabs ?: return@LaunchedEffect
+        val root = rootTab ?: return@LaunchedEffect
+        if (currentRoute in TAB_ROUTES && currentRoute !in ready.shown) {
+            val target = ready.start
+            navController.navigate(target) {
+                // The root itself is the tab going away: pop it too, and the target becomes the
+                // new root. Otherwise the root stays and the target sits above it, as for a tap.
+                popUpTo(root) { inclusive = root == currentRoute }
+                launchSingleTop = true
+            }
+            if (root == currentRoute) rootTab = target
+        }
+    }
 
     PermissionGate(onGranted = { }) { audioGranted, audioBlocked, requestAudio ->
         val vm: BrowseViewModel = hiltViewModel()
-        // Resolved HERE, not inside the now-playing destination. hiltViewModel() inside a
-        // composable { } is scoped to that back-stack entry, so the screen and the
-        // mini-player would hold two instances — two palette extractions, two position
-        // collectors, and two surfaces free to disagree about the same track.
+        // Resolved HERE, and resolved once for the mini-player and the player sheet both — two
+        // instances would be two palette extractions, two position collectors, and two surfaces
+        // free to disagree about the same track. (It mattered more while now-playing was a
+        // destination: hiltViewModel() inside a composable { } is scoped to that back-stack
+        // entry.)
         val npVm: NowPlayingViewModel = hiltViewModel()
         // Resolved HERE for the same reason: the tab and a playlist's page are two back-stack
         // entries, and a per-entry instance would give them separate import reports — so a report
@@ -144,17 +203,38 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
             fVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
         }
 
-        // The pill's "open Veldt at now-playing" (NowPlayingDeepLink via MainActivity). Waits,
-        // briefly, for the queue to read as active: on a cold start the controller connects
-        // asynchronously, and now-playing with nothing loaded is a blank screen. If it never
-        // becomes active the app simply opens where it is.
+        // The server tab's pull-to-refresh outcome — "You're offline…", "Couldn't reach
+        // Navidrome." Same host, collected here for the same reason as the two above.
+        LaunchedEffect(Unit) {
+            serverVm.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+        }
+
+        // The pill's "open Veldt at now-playing" (NowPlayingDeepLink via MainActivity) expands
+        // the player sheet. Waits, briefly, for the queue to read as active: on a cold start the
+        // controller connects asynchronously, and the sheet refuses to open over nothing (it
+        // collapses itself whenever the queue is empty). If it never becomes active the app
+        // simply opens where it is.
         LaunchedEffect(openNowPlayingRequest) {
             if (openNowPlayingRequest <= 0) return@LaunchedEffect
             val active = withTimeoutOrNull(OPEN_NOW_PLAYING_WAIT_MS) {
                 npVm.nowPlaying.first { it.isActive }
             }
-            if (active != null) {
-                navController.navigate(Destinations.NOW_PLAYING) { launchSingleTop = true }
+            if (active != null) sheet.expand()
+        }
+
+        // "Starting playback from a list opens the player" — the owner's "immediately go to the
+        // playing screen (with a very fast animation)". One event per PlaybackConnection.playFrom,
+        // which is the entry point every list tap and Play/Shuffle button goes through and
+        // nothing else (not append, not the car, the widget or the notification — see
+        // playerRequests). The same short wait as the deep link, because the event arrives before
+        // the controller has published the new queue on a cold start; once something is
+        // playing it is already active and this opens at once. `fast` is Motion.sheetLaunch.
+        LaunchedEffect(Unit) {
+            npVm.playerRequests.collect {
+                val active = withTimeoutOrNull(OPEN_NOW_PLAYING_WAIT_MS) {
+                    npVm.nowPlaying.first { it.isActive }
+                }
+                if (active != null) sheetScope.launch { sheet.expand(fast = true) }
             }
         }
 
@@ -162,18 +242,9 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
         // KEEP policy dedupes concurrent scans.
         LaunchedEffect(audioGranted) { if (audioGranted) vm.scan() }
 
-        // Now-playing is a full-bleed surface with its own backdrop: the tab bar and the
-        // mini-player would sit on top of the artwork, and the mini-player would be a second
-        // copy of what fills the screen behind it.
-        //
-        // The full-screen lyrics route counts as now-playing for this: it is the same full-bleed
-        // backdrop, entered only from now-playing and left only back to it, so the tab bar and
-        // the mini-player stay down across the hop. That also keeps the mini-player's morph
-        // linger (keyed on this flag below) from firing on a hop that moves no cover.
-        val onNowPlaying = currentRoute == Destinations.NOW_PLAYING ||
-            currentRoute == Destinations.LYRICS
-
-        SharedTransitionLayout {
+        // The host of both layers — the scaffold and the player sheet over it — and so the
+        // coordinate space the sheet measures the mini-player and its own cover in.
+        SharedTransitionLayout(Modifier.playerSheetHost(sheet)) {
             // Published once, for every surface below — the destinations AND the bottom
             // chrome. See ui/motion/SharedArt.kt for why the scopes travel as
             // CompositionLocals rather than parameters.
@@ -182,28 +253,18 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                     currentRoute = currentRoute,
                     items = items,
                     snackbarHostState = snackbarHostState,
-                    navigationBarVisible = !onNowPlaying,
+                    // Always shown: the expanded player sheet is drawn OVER the bar (and the
+                    // mini-player), so there is nothing to hide it for any more.
                     miniPlayer = {
                         // Every read is INSIDE this slot on purpose. Read at nav-host level they
                         // would invalidate the whole scaffold — including the NavHost — on each
-                        // track change and, for the palette drift, on every frame of it. That
-                        // applies to `linger` too: it flips twice per navigation.
+                        // track change and, for the palette drift, on every frame of it.
                         val npState by npVm.nowPlaying.collectAsStateWithLifecycle()
-                        // Hoisted HERE, above the gate that decides whether the row exists at
-                        // all, because that gate has to ask this very state whether the morph
-                        // has a match. One instance, handed to the modifier and to the latch.
-                        val artMorph = rememberSongArtMorph(npState.songId)
-                        // Composed while it is the visible end, AND for the length of the
-                        // transition that hands the screen over — then dropped. Both halves are
-                        // load-bearing: leaving it composed on the now-playing route is what
-                        // made the return leg SNAP, because an end that never moves has no
-                        // bounds change to animate. See rememberMorphLinger.
-                        val morphing = rememberMorphLinger(onNowPlaying, artMorph)
                         // The remaining two are collected only once something is playing. The
                         // position ticker is WhileSubscribed and polls for as long as anything
                         // is attached, so collecting it unconditionally would have it running
                         // for the app's whole foreground life against an empty queue.
-                        if (npState.isActive && (!onNowPlaying || morphing)) {
+                        if (npState.isActive) {
                             val npSeed by npVm.seed.collectAsStateWithLifecycle()
                             val npPalette = npSeed.colors(isLight = LocalIsLightTheme.current)
                             // Held as State and never unwrapped here: the 250ms position tick is
@@ -217,32 +278,31 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                     val duration = npState.durationMs
                                     if (duration > 0L) npPosition.value.toFloat() / duration else 0f
                                 },
-                                // Still composed on the now-playing route while the morph runs,
-                                // so it hides itself rather than vanishing mid-flight. See
-                                // MiniPlayer's `visible`.
-                                visible = !onNowPlaying,
-                                artMorph = artMorph,
+                                onPrevious = npVm::previous,
                                 onToggle = npVm::toggle,
                                 onNext = npVm::next,
-                                onOpen = {
-                                    // launchSingleTop: a second tap while the screen is opening
-                                    // must not stack a second copy to dismiss twice.
-                                    navController.navigate(Destinations.NOW_PLAYING) {
-                                        launchSingleTop = true
-                                    }
-                                },
+                                // Idempotent: a second tap while the sheet is opening just
+                                // restarts the same settle towards the same end.
+                                onOpen = { sheetScope.launch { sheet.expand() } },
+                                // The sheet's half of the row: its fade, where the sheet rests,
+                                // and dragging it up. See miniPlayerOfSheet.
+                                modifier = Modifier.miniPlayerOfSheet(sheet),
+                                thumbModifier = Modifier.miniPlayerThumbOfSheet(sheet),
                             )
                         }
                     },
                     onSelect = { route ->
                         if (route != currentRoute) {
                             navController.navigate(route) {
-                                popUpTo(Destinations.SONGS) { saveState = true }
+                                // The root tab, not Songs: with "Open on" the stack's bottom is
+                                // whichever tab the app opened on. See rootTab.
+                                popUpTo(rootTab ?: route) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
                             }
                         }
                     },
+                    onReorder = tabsVm::reorderShown,
                     topBar = {
                         if (currentRoute in TAB_ROUTES) {
                             TopAppBar(
@@ -281,14 +341,27 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                             )
                         }
                     },
+                    // While the player sheet covers the app, the app is not there for a screen
+                    // reader either: it stays composed (that is what makes the peek possible),
+                    // so without this TalkBack would walk straight off the player into the
+                    // library rows hidden behind it.
+                    modifier = if (sheet.isExpanded) {
+                        Modifier.clearAndSetSemantics { }
+                    } else {
+                        Modifier
+                    },
                 ) { padding ->
                     // The scaffold's insets are PASSED DOWN rather than applied here. A
                     // Modifier.padding at this level would clip every screen above the
                     // navigation bar; handing each screen its own insets lets a list scroll
                     // beneath the translucent bar instead.
+                    // Nothing until the start tab is known — a frame or two on a cold start, the
+                    // time DataStore and the accounts table take to answer. Starting on Songs and
+                    // hopping would flash the wrong tab and leave Songs under the real one.
+                    val start = startRoute ?: return@VeldtScaffold
                     NavHost(
                         navController = navController,
-                        startDestination = Destinations.SONGS,
+                        startDestination = start,
                     ) {
                         veldtDestination(
                             Destinations.SONGS, audioGranted, audioBlocked, requestAudio, padding,
@@ -339,6 +412,23 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                     navController.navigate(Destinations.folder(key))
                                 },
                                 navController = navController,
+                                contentPadding = padding,
+                            )
+                        }
+                        // Behind the audio gate like the other tabs, though it streams: it is library
+                        // content, and one gate for "may library content be shown" is the rule.
+                        veldtDestination(
+                            Destinations.SERVER, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
+                            ServerScreen(
+                                vm = serverVm,
+                                playlistVm = plVm,
+                                onOpenAlbum = { key ->
+                                    navController.navigate(Destinations.albumDetail(key))
+                                },
+                                onOpenArtist = { key ->
+                                    navController.navigate(Destinations.artistDetail(key))
+                                },
                                 contentPadding = padding,
                             )
                         }
@@ -427,52 +517,6 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                 contentPadding = padding,
                             )
                         }
-                        // No contentPadding: this screen hides the bottom chrome and reads
-                        // the window insets itself, so it never depends on a PaddingValues
-                        // that is mid-animation. See NowPlayingScreen.
-                        veldtDestination(
-                            Destinations.NOW_PLAYING, audioGranted, audioBlocked, requestAudio, padding,
-                        ) {
-                            NowPlayingScreen(
-                                vm = npVm,
-                                // The other end of the same question the mini-player answers
-                                // with `visible`, so exactly one end of the morph is ever the
-                                // live one — including on the frame of a pop, which is why
-                                // this re-reads the back stack instead of closing over
-                                // `onNowPlaying`. See NowPlayingScreen's KDoc.
-                                artVisible = {
-                                    backStackEntryState.value?.destination?.route ==
-                                        Destinations.NOW_PLAYING
-                                },
-                                onCollapse = { navController.popBackStack() },
-                                onOpenLyrics = {
-                                    navController.navigate(Destinations.LYRICS) {
-                                        launchSingleTop = true
-                                    }
-                                },
-                                onOpenSettings = {
-                                    navController.navigate(Destinations.SETTINGS) {
-                                        launchSingleTop = true
-                                    }
-                                },
-                            )
-                        }
-                        // Shares npVm with now-playing and the mini-player — see the note where
-                        // npVm is resolved. Behind the same audio gate as now-playing: it is the
-                        // same surface, one tap further in.
-                        veldtDestination(
-                            Destinations.LYRICS, audioGranted, audioBlocked, requestAudio, padding,
-                        ) {
-                            LyricsScreen(
-                                vm = npVm,
-                                onBack = { navController.popBackStack() },
-                                onOpenSettings = {
-                                    navController.navigate(Destinations.SETTINGS) {
-                                        launchSingleTop = true
-                                    }
-                                },
-                            )
-                        }
                         // Plain `composable`, not `veldtDestination`: settings and the notices
                         // it links to are not library content, so they carry no audio gate.
                         composable(Destinations.SETTINGS) {
@@ -493,6 +537,20 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                         launchSingleTop = true
                                     }
                                 },
+                                onOpenTabs = {
+                                    navController.navigate(Destinations.TABS) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                contentPadding = padding,
+                            )
+                        }
+                        // A page of settings, like pill appearance. Shares the nav host's
+                        // TabsViewModel, so the bar behind it and this list are one state.
+                        composable(Destinations.TABS) {
+                            TabsSettingsScreen(
+                                vm = tabsVm,
+                                onBack = { navController.popBackStack() },
                                 contentPadding = padding,
                             )
                         }
@@ -522,6 +580,18 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                         }
                     }
                 }
+                // Over everything, the scaffold's bars included. Composes nothing while collapsed
+                // at rest; see PlayerSheet.
+                PlayerSheet(
+                    sheet = sheet,
+                    vm = npVm,
+                    snackbarHostState = snackbarHostState,
+                    onOpenSettings = {
+                        navController.navigate(Destinations.SETTINGS) {
+                            launchSingleTop = true
+                        }
+                    },
+                )
             }
         }
     }

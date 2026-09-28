@@ -66,16 +66,33 @@ object LibraryKeys {
     fun albumKey(song: Song): String = albumKey(song.album, song.albumArtist, song.artist)
 
     fun albumKey(album: String, albumArtist: String?, artist: String): String {
-        // tagOrNull, not `?:` — an ALBUM_ARTIST column holding "" or "<unknown>" is not a
-        // tag, and letting it win would file a correctly-tagged record under nobody while
-        // the track artist sat right there.
-        val owner = normalize(DisplayNames.tagOrNull(albumArtist) ?: artist)
+        val owner = normalize(owner(albumArtist, artist))
         // Re-normalized so the compound is itself a fixed point of normalize(): a blank field
         // leaves the separator on an edge, where trim() drops it. Interior ones survive.
         return normalize("$owner$FIELD_SEPARATOR${normalize(album)}").ifBlank { UNKNOWN_ALBUM }
     }
 
-    fun artistKey(song: Song): String = artistKey(song.artist)
+    /**
+     * Whose song this is, for grouping: the album artist when tagged, else the track artist.
+     *
+     * ONE rule for records AND artists (owner decision, round 4). Artists used to group by the
+     * track artist, so a server reporting "Poppy feat. Grimes", "Poppy feat. Diplo" and "Poppy
+     * feat. Fernando Garibay" — each with album artist "Poppy" — listed four Poppys, three of
+     * them owning one song each. Grouping by the album artist folds every feature credit under
+     * the artist whose record it is, and keeps the artist page and the album tiles agreeing on
+     * who owns what. The song's own credit text is untouched: rows and the player still show
+     * "Poppy feat. Grimes".
+     *
+     * `tagOrNull`, not `?:` — an ALBUM_ARTIST column holding "" or "<unknown>" is not a tag, and
+     * letting it win would file a correctly-tagged record under nobody while the track artist
+     * sat right there.
+     */
+    fun owner(albumArtist: String?, artist: String): String = DisplayNames.tagOrNull(albumArtist) ?: artist
+
+    fun owner(song: Song): String = owner(song.albumArtist, song.artist)
+
+    /** The artist a song is listed under — its [owner], not its credit. See [owner]. */
+    fun artistKey(song: Song): String = artistKey(owner(song))
 
     fun artistKey(artist: String): String = normalize(artist).ifBlank { UNKNOWN_ARTIST }
 }

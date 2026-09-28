@@ -41,11 +41,21 @@ object SubsonicCatalogParser {
      */
     fun songs(body: JsonObject, sourceId: String): List<Song> {
         val album = body["album"] as? JsonObject ?: return emptyList()
-        val albumArtist = DisplayNames.tagOrNull(album.stringOrNull("artist"))
+        // The album's own artist is the album artist in Subsonic's model (Navidrome fills it from
+        // the ALBUMARTIST tag — measured, round 4: "Poppy" over "Poppy feat. Grimes" tracks). It
+        // wins over anything per-song so every track of one record gets ONE owner and the record
+        // stays one tile. OpenSubsonic's album `displayArtist` is the next best album-level answer.
+        val albumLevelArtist = DisplayNames.tagOrNull(album.stringOrNull("artist"))
+            ?: DisplayNames.tagOrNull(album.stringOrNull("displayArtist"))
         val songArray = album["song"] as? JsonArray ?: return emptyList()
         return songArray.mapNotNull { element ->
             val songObj = element as? JsonObject ?: return@mapNotNull null
             val id = songObj.stringOrNull("id") ?: return@mapNotNull null
+            // Only when the album says nothing: the song's OpenSubsonic `displayAlbumArtist`. Left
+            // null past that, so LibraryKeys.owner falls back to the track artist as it does for
+            // an untagged local file.
+            val albumArtist = albumLevelArtist
+                ?: DisplayNames.tagOrNull(songObj.stringOrNull("displayAlbumArtist"))
             val durationSec = songObj.intOrNull("duration")
             Song(
                 id = Song.UNSAVED,

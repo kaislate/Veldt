@@ -9,6 +9,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.kaislate.veldtplayer.data.account.AccountRepository
+import com.kaislate.veldtplayer.data.account.ServerTypeStore
 import com.kaislate.veldtplayer.data.account.db.AccountDao
 import com.kaislate.veldtplayer.data.library.SubsonicSources
 import com.kaislate.veldtplayer.data.library.db.SongDao
@@ -22,10 +23,11 @@ import dagger.assisted.AssistedInject
 
 /**
  * One account's catalog sync (N2 Task 3 — spec §5.4). Enqueued only by
- * [SubsonicSync.request] — on account add, on a credential/URL change, and by the Servers
- * screen's Refresh button. There is deliberately no periodic work and no on-app-open sync (owner
- * decision): zero accounts means zero requests, and an existing account only re-syncs when
- * something about it changed or the user asked.
+ * [SubsonicSync.request] — on account add, on a credential/URL change, by the Servers screen's
+ * Refresh button, by the server tab's "Sync now" and pull-to-refresh, and (round 4, owner
+ * decision reversing the original "no on-app-open sync") on app open for an account last synced
+ * over 15 minutes ago — see [SyncOnOpen]. There is still deliberately no periodic work: zero
+ * accounts means zero requests, and nothing syncs while the app is not in use.
  *
  * The order below is the whole contract and is spelled out rather than left to be inferred:
  *
@@ -37,7 +39,11 @@ import dagger.assisted.AssistedInject
  *    tells the user to re-enter it in that case.
  * 3. [SubsonicClient.capabilities] is fetched and cached via [AccountRepository.cacheCapabilities]
  *    BEFORE the catalog call, unconditionally — even a sync that goes on to fail has still learned
- *    what the server can do, and the next attempt should not re-probe for it.
+ *    what the server can do, and the next attempt should not re-probe for it. The same envelope's
+ *    `type` goes to [ServerTypeStore] (it names the server tab) — via [SubsonicClient.serverInfo],
+ *    which is the one request [SubsonicClient.capabilities] makes, so this costs nothing extra —
+ *    and only when the server actually answered: an unreachable server must not erase a type
+ *    learned earlier.
  * 4. [fetchCatalog]. [CatalogResult.Ok] calls [SongDao.replaceSourceIfPresent], which refuses to
  *    write anything for an account row that no longer exists — see that method's KDoc for why a
  *    plain [SongDao.replaceSource] here would be a data-loss bug (fix round 1, Important
@@ -68,6 +74,7 @@ class SubsonicSyncWorker internal constructor(
     private val songDao: SongDao,
     private val status: SyncStatusStore,
     private val flusher: ScrobbleFlusher,
+    private val serverTypes: ServerTypeStore,
     private val now: () -> Long,
 ) : CoroutineWorker(appContext, params) {
 
@@ -81,6 +88,7 @@ class SubsonicSyncWorker internal constructor(
         songDao: SongDao,
         status: SyncStatusStore,
         flusher: ScrobbleFlusher,
+        serverTypes: ServerTypeStore,
     ) : this(
         appContext = appContext,
         params = params,
@@ -91,6 +99,7 @@ class SubsonicSyncWorker internal constructor(
         songDao = songDao,
         status = status,
         flusher = flusher,
+        serverTypes = serverTypes,
         now = { System.currentTimeMillis() },
     )
 
@@ -99,8 +108,14 @@ class SubsonicSyncWorker internal constructor(
         accountDao.get(sourceId) ?: return Result.failure(failureData(FAILURE_GONE))
         val creds = sources.credentials(sourceId) ?: return Result.failure(failureData(FAILURE_AUTH))
 
-        val caps = client.capabilities(creds.baseUrl)
+        val info = client.serverInfo(creds.baseUrl)
+        val caps = info.capabilities
         accounts.cacheCapabilities(sourceId, caps.extensions.keys)
+        // Before the catalog, for the same reason as the capabilities: a sync that fails later
+        // has still learned what the server is. A delete racing this write can leave one orphan
+        // key behind; it is harmless — the tab reads types only for accounts that exist — and
+        // `purge` runs after the row is gone, so the ordinary delete path still clears it.
+        if (info.answered) serverTypes.record(sourceId, info.serverType)
 
         return when (val result = client.fetchCatalog(sourceId, creds, caps)) {
             is CatalogResult.Ok -> {
@@ -156,8 +171,10 @@ class SubsonicSyncWorker internal constructor(
          *  for good rather than retrying — matched by `SubsonicSyncWorkerTest`. */
         private const val MAX_ATTEMPTS = 2
 
-        // Fixed wording only (Global Constraint 6): never a server-supplied string.
-        private const val MESSAGE_BAD_CREDENTIALS = "The server rejected the saved password."
-        private const val MESSAGE_UNREACHABLE = "Could not reach the server."
+        // Fixed wording only (Global Constraint 6): never a server-supplied string. Public so the
+        // server tab's pull-to-refresh can tell the two failures apart from what was recorded
+        // (ServerRefresh) without a second channel for the same fact.
+        const val MESSAGE_BAD_CREDENTIALS = "The server rejected the saved password."
+        const val MESSAGE_UNREACHABLE = "Could not reach the server."
     }
 }

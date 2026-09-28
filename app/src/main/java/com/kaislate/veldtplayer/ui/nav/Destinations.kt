@@ -19,13 +19,15 @@ object Destinations {
     const val ARTISTS = "artists"
     const val PLAYLISTS = "playlists"
     const val FOLDERS = "folders"
+
+    /** The server tab — present only while a server account exists; see `rememberNavItems`. */
+    const val SERVER = "server"
     const val SEARCH = "search"
-    const val NOW_PLAYING = "nowplaying"
-    const val LYRICS = "lyrics"
     const val SETTINGS = "settings"
     const val NOTICES = "notices"
     const val ACCOUNTS = "accounts"
     const val PILL_APPEARANCE = "pill_appearance"
+    const val TABS = "tabs"
 
     const val ARG_KEY = "key"
     const val ALBUM_DETAIL = "album/{$ARG_KEY}"

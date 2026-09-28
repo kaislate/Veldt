@@ -8,13 +8,14 @@ package com.kaislate.veldtplayer.ui.nowplaying
  * [LyricsStateHolder.setVisible] takes.
  *
  * **A set of viewers rather than a bare boolean, because two surfaces overlap in time.** The
- * in-place pane on now-playing and the full-screen `lyrics` route are both composed during the
- * navigation between them, and navigation disposes the LEAVING entry only after the ENTERING one
- * has composed and run its effects. With a single `setVisible(Boolean)` the last writer wins, and
- * the last writer is always the surface that is going away: popping the full-screen route back to
- * a now-playing that still shows its pane would end with the leaving route's `false` — lyrics on
- * screen, state `Hidden`, nothing resolving. Counting viewers makes the answer independent of the
- * order the two effects happen to run in: lyrics are visible while ANY viewer holds them.
+ * in-place pane on now-playing and full-screen lyrics are both composed during the cross-fade
+ * between them (they are two states of the player sheet — see `PlayerSheet`), and the LEAVING
+ * one is disposed only after the ENTERING one has composed and run its effects. With a single
+ * `setVisible(Boolean)` the last writer wins, and the last writer is always the surface that is
+ * going away: backing out of full-screen lyrics to a now-playing that still shows its pane would
+ * end with the leaving surface's `false` — lyrics on screen, state `Hidden`, nothing resolving.
+ * Counting viewers makes the answer independent of the order the two effects happen to run in:
+ * lyrics are visible while ANY viewer holds them.
  *
  * [onChange] fires only on the edges (first viewer in, last viewer out). Main-thread only, like
  * the Compose effects that drive it.

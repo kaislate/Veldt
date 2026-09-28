@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.kaislate.veldtplayer.data.library.scan.MediaStoreWatcher
+import com.kaislate.veldtplayer.data.library.sync.SyncOnOpen
 import com.kaislate.veldtplayer.data.settings.SettingsRepository
 import com.kaislate.veldtplayer.data.settings.ThemeModeMirror
 import com.kaislate.veldtplayer.ui.nav.NowPlayingDeepLink
@@ -61,6 +62,19 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         mediaStoreWatcher.sync()
+    }
+
+    /** Re-syncs server accounts whose catalogue is over 15 minutes old — see [SyncOnOpen]. */
+    @Inject lateinit var syncOnOpen: SyncOnOpen
+
+    /**
+     * onStart, not onResume: "the app came to the foreground" is START, and RESUME also fires on
+     * returning from a dialog or the notification shade, which is not an app open. Not onCreate
+     * either, which a warm return to a live activity never reaches.
+     */
+    override fun onStart() {
+        super.onStart()
+        lifecycleScope.launch { syncOnOpen.run() }
     }
 
     /**

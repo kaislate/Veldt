@@ -102,7 +102,7 @@ class SleepTimerSheetTest {
         compose.onNodeWithText("Pausing at the end of this track (1:05)").assertExists()
     }
 
-    // ---- the time left beside the moon ----
+    // ---- the time left beside the bed ----
 
     @Test fun `remaining time for each state`() {
         assertEquals(null, sleepRemainingMs(SleepTimerState.Off, 0, 0, 0))
