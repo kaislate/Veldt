@@ -5,7 +5,6 @@ package com.kaislate.veldtplayer.ui.browse
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -17,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -73,6 +73,7 @@ fun ServerScreen(
     val albums by vm.albums.collectAsStateWithLifecycle()
     val artists by vm.artists.collectAsStateWithLifecycle()
     val syncing by vm.syncing.collectAsStateWithLifecycle()
+    val refreshing by vm.refreshing.collectAsStateWithLifecycle()
 
     // Held above the lists for the reason SongsScreen holds it there: the sheet must survive its
     // row scrolling away.
@@ -122,14 +123,21 @@ fun ServerScreen(
             }
         }
 
-        Box(Modifier.weight(1f)) {
-            val loaded = songs ?: return@Box
+        // Pull to sync the account(s) shown (round 4). The indicator is the sync's own running
+        // state, not a local "pulled" flag, so it stays up exactly as long as the work does and
+        // also shows a sync started elsewhere — on app open, or from Settings.
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = vm::syncNow,
+            modifier = Modifier.weight(1f),
+        ) {
+            val loaded = songs ?: return@PullToRefreshBox
             if (loaded.isEmpty()) {
                 val name = present.accounts.firstOrNull { it.sourceId == selectedAccount }?.displayName
                     ?: present.accounts.singleOrNull()?.displayName
                     ?: "your servers"
                 ServerEmpty(name = name, syncing = syncing, onSync = vm::syncNow, contentPadding = listPadding)
-                return@Box
+                return@PullToRefreshBox
             }
             when (section) {
                 ServerSection.ALBUMS -> AlbumGrid(

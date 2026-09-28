@@ -23,10 +23,11 @@ import dagger.assisted.AssistedInject
 
 /**
  * One account's catalog sync (N2 Task 3 — spec §5.4). Enqueued only by
- * [SubsonicSync.request] — on account add, on a credential/URL change, and by the Servers
- * screen's Refresh button. There is deliberately no periodic work and no on-app-open sync (owner
- * decision): zero accounts means zero requests, and an existing account only re-syncs when
- * something about it changed or the user asked.
+ * [SubsonicSync.request] — on account add, on a credential/URL change, by the Servers screen's
+ * Refresh button, by the server tab's "Sync now" and pull-to-refresh, and (round 4, owner
+ * decision reversing the original "no on-app-open sync") on app open for an account last synced
+ * over 15 minutes ago — see [SyncOnOpen]. There is still deliberately no periodic work: zero
+ * accounts means zero requests, and nothing syncs while the app is not in use.
  *
  * The order below is the whole contract and is spelled out rather than left to be inferred:
  *

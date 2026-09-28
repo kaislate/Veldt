@@ -146,7 +146,18 @@ class ServerViewModel @Inject constructor(
      * practice right after an account was added, which always requests a sync, so assuming one is
      * coming is right in the case that matters and costs one frame of spinner in the rare other.
      */
-    val syncing: StateFlow<Boolean> = sourceIds
+    val syncing: StateFlow<Boolean> = anySyncRunning()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
+
+    /**
+     * The same question for the pull-to-refresh indicator (round 4), seeded FALSE: an indicator
+     * that spins for a frame every time the tab opens would read as a refresh nobody asked for.
+     * The empty state's seed and this one differ because a wrong guess costs differently.
+     */
+    val refreshing: StateFlow<Boolean> = anySyncRunning()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    private fun anySyncRunning(): Flow<Boolean> = sourceIds
         .flatMapLatest { ids ->
             if (ids.isEmpty()) {
                 flowOf(false)
@@ -154,7 +165,6 @@ class ServerViewModel @Inject constructor(
                 combine(ids.map { sync.status(it) }) { statuses -> statuses.any { it.running } }
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
     fun selectAccount(sourceId: String?) {
         chosenAccount.value = sourceId
@@ -164,7 +174,8 @@ class ServerViewModel @Inject constructor(
         _section.value = section
     }
 
-    /** The empty state's "Sync now": every covered account, each deduped by its own unique work. */
+    /** The empty state's "Sync now" and the tab's pull-to-refresh: every covered account, each
+     *  deduped by its own unique work. */
     fun syncNow() {
         val state = tab.value as? ServerTabState.Present ?: return
         val chosen = selectedAccount.value
