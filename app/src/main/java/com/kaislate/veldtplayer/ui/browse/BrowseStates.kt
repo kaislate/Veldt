@@ -134,17 +134,25 @@ fun AudioAccessRequired(
     )
 }
 
-/** Shown while the first scan is still filling an empty library. */
+/**
+ * Shown while the first scan is still filling an empty library.
+ *
+ * [title] and [body] default to the device scan's wording; the server tab passes its own
+ * ("Syncing with Home…"), because a first sync is the same situation — a library still being
+ * filled — and deserves the same honest spinner rather than an empty-state verdict.
+ */
 @Composable
 fun ScanningState(
     palette: DominantColors,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
+    title: String = "Scanning your library…",
+    body: String = "Veldt is indexing the music on this device. Tracks appear as they're found.",
 ) {
     BrowseMessage(
         palette = palette,
-        title = "Scanning your library…",
-        body = "Veldt is indexing the music on this device. Tracks appear as they're found.",
+        title = title,
+        body = body,
         contentPadding = contentPadding,
         modifier = modifier,
         emblem = {

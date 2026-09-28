@@ -76,7 +76,6 @@ fun AlbumsScreen(
     val albums by vm.albums.collectAsStateWithLifecycle()
     val songs by vm.songs.collectAsStateWithLifecycle()
     val scanning by vm.scanning.collectAsStateWithLifecycle()
-    val reduced = rememberReducedMotion()
     // The neutral fallback palette, as in the songs list: a grid themed by 60 different
     // covers at once would be noise. Per-artwork colour is a now-playing concern.
     val palette = neutralPalette()
@@ -101,6 +100,32 @@ fun AlbumsScreen(
         }
         return
     }
+
+    AlbumGrid(
+        albums = albums,
+        songs = songs,
+        onOpenAlbum = onOpenAlbum,
+        contentPadding = contentPadding,
+        modifier = modifier,
+    )
+}
+
+/**
+ * The grid itself, without the states around it — shared with the server tab's Albums section
+ * for the reason [SongList] is shared. [songs] is the list the covers are chosen from: pass the
+ * same (filtered) list the [albums] were derived from, so a tile never borrows a cover from a
+ * source the view is not showing.
+ */
+@Composable
+internal fun AlbumGrid(
+    albums: List<Album>,
+    songs: List<Song>,
+    onOpenAlbum: (String) -> Unit,
+    contentPadding: PaddingValues,
+    modifier: Modifier = Modifier,
+) {
+    val reduced = rememberReducedMotion()
+    val palette = neutralPalette()
 
     // One representative track per album supplies the cover.
     //
