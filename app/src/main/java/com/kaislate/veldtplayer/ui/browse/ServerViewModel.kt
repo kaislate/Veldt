@@ -55,37 +55,47 @@ sealed interface ServerTabState {
 }
 
 /**
- * The server tab (player-sheet/server-tab spec, Task B): whether it exists, its label, and the
- * library it shows — the songs server accounts contributed, narrowed to one account by the chip
- * row when there are several.
- *
- * Resolved at nav-host level, like the browse and playlist view models, because two surfaces
- * read it: the bottom bar needs [tab] on every destination, and the tab's own screen needs the
- * rest. One instance also means the chosen section and chip survive leaving the tab for an album
- * and coming back.
+ * Whether the server tab exists and what it is called, as one flow for the two view models that
+ * need it: [ServerViewModel] (the tab's content) and `TabsViewModel` (the bar's arrangement and
+ * Settings → Tabs, which lists the server tab by its label). One derivation, so the bar and the
+ * settings page can never name the tab differently.
  *
  * The accounts are read from [AccountDao] directly rather than through `AccountRepository
  * .observe`: that flow decrypts every account's secret per emission to answer `hasSecret`, and
  * the bar needs only ids and names — a Keystore round trip per account for a tab label would be
- * waste on every app start.
+ * waste on every app start. Never emits [ServerTabState.Loading]; that is each collector's seed.
  */
-@OptIn(ExperimentalCoroutinesApi::class)
-@HiltViewModel
-class ServerViewModel @Inject constructor(
-    accountDao: AccountDao,
-    serverTypes: ServerTypeStore,
-    private val repo: MusicRepository,
-    private val sync: SubsonicSync,
-    private val connection: PlaybackConnection,
-) : ViewModel() {
-
-    val tab: StateFlow<ServerTabState> =
+class ServerTabs @Inject constructor(accountDao: AccountDao, serverTypes: ServerTypeStore) {
+    val state: Flow<ServerTabState> =
         combine(accountDao.observeAll(), serverTypes.types) { rows, types ->
             val accounts = rows.map { ServerAccount(it.sourceId, it.displayName) }
             ServerTypeNames.tabLabel(accounts, types)
                 ?.let { ServerTabState.Present(it, accounts) }
                 ?: ServerTabState.Absent
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ServerTabState.Loading)
+        }
+}
+
+/**
+ * The server tab (player-sheet/server-tab spec, Task B): whether it exists, its label, and the
+ * library it shows — the songs server accounts contributed, narrowed to one account by the chip
+ * row when there are several.
+ *
+ * Resolved at nav-host level, like the browse and playlist view models, so there is one instance
+ * for the app's life: the chosen section and chip survive leaving the tab for an album and coming
+ * back. [tab] comes from [ServerTabs]; the bar itself reads the same flow through
+ * `TabsViewModel`, which also applies the user's order and hidden tabs.
+ */
+@OptIn(ExperimentalCoroutinesApi::class)
+@HiltViewModel
+class ServerViewModel @Inject constructor(
+    serverTabs: ServerTabs,
+    private val repo: MusicRepository,
+    private val sync: SubsonicSync,
+    private val connection: PlaybackConnection,
+) : ViewModel() {
+
+    val tab: StateFlow<ServerTabState> = serverTabs.state
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ServerTabState.Loading)
 
     private val chosenAccount = MutableStateFlow<String?>(null)
 

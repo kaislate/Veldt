@@ -20,8 +20,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -46,7 +49,6 @@ import com.kaislate.veldtplayer.ui.browse.PlaylistViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
 import com.kaislate.veldtplayer.ui.browse.SearchScreen
 import com.kaislate.veldtplayer.ui.browse.ServerScreen
-import com.kaislate.veldtplayer.ui.browse.ServerTabState
 import com.kaislate.veldtplayer.ui.browse.ServerViewModel
 import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.components.MiniPlayer
@@ -61,6 +63,7 @@ import com.kaislate.veldtplayer.ui.nowplaying.rememberPlayerSheetState
 import com.kaislate.veldtplayer.ui.settings.NoticesScreen
 import com.kaislate.veldtplayer.ui.settings.PillAppearanceScreen
 import com.kaislate.veldtplayer.ui.settings.SettingsScreen
+import com.kaislate.veldtplayer.ui.settings.TabsSettingsScreen
 import com.kaislate.veldtplayer.ui.settings.accounts.AccountsScreen
 import com.kaislate.veldtplayer.ui.theme.LocalIsLightTheme
 import com.kaislate.veldtplayer.ui.theme.rememberAnimatedPalette
@@ -113,23 +116,51 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
     // not audio access was granted — and resolved once, at this level, because the tab's screen
     // reads the same instance (see ServerViewModel's KDoc).
     val serverVm: ServerViewModel = hiltViewModel()
-    val serverTab by serverVm.tab.collectAsStateWithLifecycle()
-    val items = rememberNavItems((serverTab as? ServerTabState.Present)?.label)
+    // The bar's arrangement (Round 2 → D): order, hidden tabs, "Open on" — resolved here for the
+    // same reason as serverVm, and null until settings and the accounts table have both answered.
+    val tabsVm: TabsViewModel = hiltViewModel()
+    val tabs by tabsVm.state.collectAsStateWithLifecycle()
+    val items = rememberNavItems(tabs?.shown.orEmpty(), tabs?.serverLabel)
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // The NavHost's start destination: the "Open on" tab, fixed ONCE per navigation state — not
+    // re-read when the setting changes, because moving a live graph's start re-roots a back stack
+    // the user is standing in. A change applies from the next cold start. Saveable, so rotation
+    // and process restore rebuild the same graph the saved back stack was made for.
+    var startRoute by rememberSaveable { mutableStateOf<String?>(null) }
+    // The tab at the bottom of the back stack — what tab switches pop to. It starts as
+    // [startRoute] and moves only if that tab stops being shown (see the effect below); tracked
+    // rather than read from the graph so that a re-rooted stack still pops to a tab that is in it.
+    var rootTab by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(tabs) {
+        val ready = tabs ?: return@LaunchedEffect
+        if (startRoute == null) {
+            startRoute = ready.start
+            rootTab = ready.start
+        }
+    }
     // Expanded/collapsed survives rotation; see rememberPlayerSheetState.
     val sheet = rememberPlayerSheetState()
     val sheetScope = rememberCoroutineScope()
 
-    // The last server account was removed while the tab was on the back stack (Settings is
-    // reachable from the tab's own app bar, so this is the ordinary path, not an edge): the tab
-    // is gone from the bar, so the screen must not be either. Absent only — never Loading, which
-    // would bounce a restored back stack before the accounts table had answered.
-    LaunchedEffect(currentRoute, serverTab) {
-        if (currentRoute == Destinations.SERVER && serverTab == ServerTabState.Absent) {
-            navController.navigate(Destinations.SONGS) {
-                popUpTo(Destinations.SONGS)
+    // The tab on screen is no longer in the bar: it was hidden in Settings → Tabs, or it is the
+    // server tab and the last server account was removed (Settings is reachable from every tab's
+    // app bar, so both are ordinary paths, not edges). The screen must not outlive its tab, so
+    // go to the start tab — "Open on", or the first shown tab if that is gone too. Only once
+    // `tabs` has answered: a null state would bounce a restored back stack before the accounts
+    // table had said whether a server exists.
+    LaunchedEffect(currentRoute, tabs) {
+        val ready = tabs ?: return@LaunchedEffect
+        val root = rootTab ?: return@LaunchedEffect
+        if (currentRoute in TAB_ROUTES && currentRoute !in ready.shown) {
+            val target = ready.start
+            navController.navigate(target) {
+                // The root itself is the tab going away: pop it too, and the target becomes the
+                // new root. Otherwise the root stays and the target sits above it, as for a tap.
+                popUpTo(root) { inclusive = root == currentRoute }
                 launchSingleTop = true
             }
+            if (root == currentRoute) rootTab = target
         }
     }
 
@@ -256,12 +287,15 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                     onSelect = { route ->
                         if (route != currentRoute) {
                             navController.navigate(route) {
-                                popUpTo(Destinations.SONGS) { saveState = true }
+                                // The root tab, not Songs: with "Open on" the stack's bottom is
+                                // whichever tab the app opened on. See rootTab.
+                                popUpTo(rootTab ?: route) { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
                             }
                         }
                     },
+                    onReorder = tabsVm::reorderShown,
                     topBar = {
                         if (currentRoute in TAB_ROUTES) {
                             TopAppBar(
@@ -314,9 +348,13 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                     // Modifier.padding at this level would clip every screen above the
                     // navigation bar; handing each screen its own insets lets a list scroll
                     // beneath the translucent bar instead.
+                    // Nothing until the start tab is known — a frame or two on a cold start, the
+                    // time DataStore and the accounts table take to answer. Starting on Songs and
+                    // hopping would flash the wrong tab and leave Songs under the real one.
+                    val start = startRoute ?: return@VeldtScaffold
                     NavHost(
                         navController = navController,
-                        startDestination = Destinations.SONGS,
+                        startDestination = start,
                     ) {
                         veldtDestination(
                             Destinations.SONGS, audioGranted, audioBlocked, requestAudio, padding,
@@ -492,6 +530,20 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                         launchSingleTop = true
                                     }
                                 },
+                                onOpenTabs = {
+                                    navController.navigate(Destinations.TABS) {
+                                        launchSingleTop = true
+                                    }
+                                },
+                                contentPadding = padding,
+                            )
+                        }
+                        // A page of settings, like pill appearance. Shares the nav host's
+                        // TabsViewModel, so the bar behind it and this list are one state.
+                        composable(Destinations.TABS) {
+                            TabsSettingsScreen(
+                                vm = tabsVm,
+                                onBack = { navController.popBackStack() },
                                 contentPadding = padding,
                             )
                         }
