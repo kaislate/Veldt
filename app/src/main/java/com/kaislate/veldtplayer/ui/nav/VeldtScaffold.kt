@@ -4,6 +4,8 @@
 package com.kaislate.veldtplayer.ui.nav
 
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
@@ -22,6 +24,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -183,8 +187,26 @@ private fun ReorderableNavigationBar(
     var slotCenters by remember { mutableStateOf(emptyList<Float>()) }
     var grab by remember { mutableFloatStateOf(0f) }
     var fingerX by remember { mutableFloatStateOf(0f) }
+    // Each tab's own interaction source, and the press it last started that has not yet ended.
+    // Owned here, not left to NavigationBarItem, so a drag's end can finish a press the item never
+    // will — see release().
+    val sources = remember { mutableMapOf<String, MutableInteractionSource>() }
+    val openPresses = remember { mutableMapOf<String, PressInteraction.Press>() }
 
+    /**
+     * Ends a pick-up. **Also cancels any press still open on a tab** — measured on the S21 FE
+     * (fix round 1): after a long-press drag, the dropped tab kept its grey pressed highlight until
+     * another tab was tapped. The item's click handling began a Press at touch-down, and the bar's
+     * gesture then owned the pointer from pick-up to release, so the item never saw a release or
+     * cancel of its own and never ended it. Emitting the Cancel ourselves clears the indication
+     * the way an ordinary cancelled tap does. Only after an actual pick-up ([held] set): a plain
+     * tap never reaches here with anything held, so its ripple is left entirely alone.
+     */
     fun release() {
+        if (held != null) {
+            openPresses.forEach { (route, press) -> sources[route]?.tryEmit(PressInteraction.Cancel(press)) }
+            openPresses.clear()
+        }
         liveOrder = null
         held = null
     }
@@ -243,7 +265,28 @@ private fun ReorderableNavigationBar(
             val item = byRoute[route] ?: return@forEach
             // Keyed, so each tab's ripple and selection state travel with it as slots change hands.
             key(route) {
+                val source = remember { MutableInteractionSource() }
+                DisposableEffect(source) {
+                    sources[route] = source
+                    onDispose {
+                        sources.remove(route)
+                        openPresses.remove(route)
+                    }
+                }
+                // Tracks the one open press per tab that release() may have to cancel.
+                LaunchedEffect(source) {
+                    source.interactions.collect { interaction ->
+                        when (interaction) {
+                            is PressInteraction.Press -> openPresses[route] = interaction
+                            is PressInteraction.Release ->
+                                if (openPresses[route] == interaction.press) openPresses.remove(route)
+                            is PressInteraction.Cancel ->
+                                if (openPresses[route] == interaction.press) openPresses.remove(route)
+                        }
+                    }
+                }
                 NavigationBarItem(
+                    interactionSource = source,
                     selected = currentRoute == item.route,
                     enabled = item.enabled,
                     // Dropped while a tab is held — see the KDoc.
