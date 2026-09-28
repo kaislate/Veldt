@@ -8,6 +8,12 @@
 > folders, settings, OpenSubsonic servers, lyrics, scrobbling and the built-in pill are in.
 > Expect rough edges, and please report them. See [CHANGELOG.md](CHANGELOG.md) for what's in it.
 
+<p align="center">
+  <a href="screenshots/veldt-reel.mp4"><img src="screenshots/veldt-reel.gif" width="300" alt="Veldt in 34 seconds: browsing a Navidrome library, opening now playing, dragging it down to peek behind it, flicking it into the mini-player, and rearranging the bottom tabs"></a>
+  <br>
+  <sub>Veldt 0.9.3 in 34 seconds. <a href="screenshots/veldt-reel.mp4">Watch the full-quality video (MP4, with sound)</a>.</sub>
+</p>
+
 Veldt is the full-player companion to [**Veldt Wisp**](https://github.com/kaislate/veldt-wisp)
 (the standalone One UI-style now-playing pill). Where Veldt Wisp rides *any*
 app's media session, Veldt has its own playback engine and library, and bundles
