@@ -118,6 +118,30 @@ class PlaybackConnection @Inject constructor(
     private val _errors = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val errors: SharedFlow<String> = _errors.asSharedFlow()
 
+    private val _playerRequests = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /**
+     * One event per [playFrom] — "the user just started something from a list; show them the
+     * player". The nav host collects it and expands the now-playing sheet.
+     *
+     * **Emitted by [playFrom] and by nothing else, and that narrowness is the feature.**
+     * [playFrom] is the one entry point every in-app "play this" goes through (a row tap, the
+     * Play/Shuffle buttons on albums, artists, playlists and folders, search). Everything else
+     * that starts or changes playback deliberately does NOT open the player: [addToQueue] (the
+     * user is still building the queue, and yanking the screen away mid-build would be hostile),
+     * [toggle] from the mini-player, [skipToQueueIndex] from the player's own queue sheet (already
+     * on the player), and every path that does not go through this class at all — Android Auto,
+     * the widget, the notification, media buttons, the restored queue at launch. Those drive the
+     * session directly and never reach here.
+     *
+     * No replay, on purpose: a request is an instruction for NOW. A replayed one would re-open
+     * the player on every rotation, every return from the background, for a tap made minutes
+     * ago. `extraBufferCapacity = 1` only lets [MutableSharedFlow.tryEmit] succeed from this
+     * non-suspending main-thread command while a collector is mid-handling the previous one; with
+     * no collector at all the event is simply dropped, which is right for the same reason.
+     */
+    val playerRequests: SharedFlow<Unit> = _playerRequests.asSharedFlow()
+
     private val _sleepTimer = MutableStateFlow<SleepTimerState>(SleepTimerState.Off)
 
     /**
@@ -264,7 +288,11 @@ class PlaybackConnection @Inject constructor(
 
     // ---------- commands ----------
 
-    /** Plays [songs] as the queue, starting at [index] (spec §5, play-in-context). */
+    /**
+     * Plays [songs] as the queue, starting at [index] (spec §5, play-in-context), and asks for
+     * the player to be shown ([playerRequests]) — exactly once per call, and only once the plan
+     * is known to be non-empty, so a call that plays nothing opens nothing.
+     */
     @MainThread
     fun playFrom(songs: List<Song>, index: Int) {
         val plan = QueueBuilder.build(songs, index)
@@ -278,6 +306,9 @@ class PlaybackConnection @Inject constructor(
             c.prepare()
             c.play()
         }
+        // Last, so a collector that runs synchronously (an unconfined one) already sees the new
+        // queue. The player sheet waits for `nowPlaying` to read active before it opens anyway.
+        _playerRequests.tryEmit(Unit)
     }
 
     /**
