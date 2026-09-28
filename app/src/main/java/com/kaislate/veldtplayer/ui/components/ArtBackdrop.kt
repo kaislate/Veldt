@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.ShaderBrush
@@ -297,7 +298,14 @@ fun ArtBackdrop(
     val drift = rememberDrift(reducedMotion)
     val tier = currentTier()
 
-    Box(modifier.fillMaxSize().background(palette.bg)) {
+    // clipToBounds, because the drift overdraws. applyDrift scales the cover 1.15-1.25x and pans
+    // it, so ~10% of the screen height of blurred cover hangs past each edge of this box, with no
+    // `bg` under it and no scrim over it. While the backdrop filled the window that overhang was
+    // off-screen and invisible; inside the now-playing SHEET it is not — dragged down, the sheet's
+    // top edge showed a ~240 px band of raw, unscrimmed cover above the player. Clipping changes
+    // nothing at rest (the overhang was never on screen) and makes the translated sheet look
+    // exactly like the resting one.
+    Box(modifier.fillMaxSize().clipToBounds().background(palette.bg)) {
         when (tier) {
             // Cover first, field over it. The shader is an overlay, not a replacement:
             // the whole fleet is API 33+, so a tier that dropped the art would mean no
