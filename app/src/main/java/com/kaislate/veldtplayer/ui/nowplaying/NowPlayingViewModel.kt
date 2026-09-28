@@ -108,7 +108,7 @@ class NowPlayingViewModel @Inject constructor(
     /** Jump to a position in [queue]. Consumed by the P1.4 queue sheet. */
     fun skipToQueueIndex(index: Int) = connection.skipToQueueIndex(index)
 
-    /** The service's sleep timer (spec §4), for the moon button and its sheet. */
+    /** The service's sleep timer (spec §4), for the bed button and its sheet. */
     val sleepTimer = connection.sleepTimer
     fun setSleepTimer(minutes: Int) = connection.setSleepTimer(minutes)
     fun setSleepTimerEndOfTrack() = connection.setSleepTimerEndOfTrack()

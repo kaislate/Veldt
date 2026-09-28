@@ -29,7 +29,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
-import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Hotel
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.OpenInFull
@@ -793,7 +793,7 @@ fun NowPlayingScreen(
             ) {
                 // The sleep timer (spec §4) joins the corner for the reason the lyrics toggle did:
                 // the transport row is a symmetric object. While a timer runs, the time left sits
-                // beside the moon, in the solved text tone like the title.
+                // beside the bed, in the solved text tone like the title.
                 if (sleepRemaining != null) {
                     Text(
                         text = sleepRemaining,
@@ -808,7 +808,7 @@ fun NowPlayingScreen(
                     enabled = chromeUsable,
                 ) {
                     Icon(
-                        Icons.Filled.Bedtime,
+                        Icons.Filled.Hotel,
                         contentDescription = if (sleepRemaining == null) "Sleep timer"
                         else "Sleep timer, $sleepRemaining left",
                         tint = if (sleep != SleepTimerState.Off) marks.accent else text.primary,
