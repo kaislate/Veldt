@@ -10,19 +10,20 @@
 
 <p><b>Your server</b></p>
 <ul>
-<li>Add an OpenSubsonic server such as Navidrome. Its catalogue joins the same library, with cover art, and streams from it.</li>
+<li>Add an OpenSubsonic server such as Navidrome. Its catalogue joins the same library, with cover art, and streams from it, and gets its own tab named after the server.</li>
 <li>Works on a home network or over Tailscale. Your password is stored encrypted on the phone.</li>
 <li>An optional bitrate limit on mobile data, and plays scrobbled back to the server, even when you were offline.</li>
 </ul>
 
 <p><b>Playing</b></p>
 <ul>
-<li>A now-playing screen coloured by the album art, with text colours chosen to stay readable against it.</li>
+<li>A now-playing screen coloured by the album art, with text colours chosen to stay readable against it. Drag it down with your finger to peek at your library behind it.</li>
 <li>Synced or plain lyrics from <code>.lrc</code> files, the file's tags or your server, shown in place of the artwork or full screen.</li>
 <li>A floating now-playing pill, shared with the Veldt Wisp app, that appears when you leave Veldt while music plays.</li>
 <li>Your queue comes back after a restart, paused where you left it.</li>
 <li>A sleep timer that fades out, and ReplayGain to even out loudness between songs.</li>
 <li>Android Auto and Assistant support, and a home-screen widget tinted from the artwork.</li>
+<li>Reorder or hide the bottom tabs, and choose the one Veldt opens on.</li>
 <li>Light, dark or follow-system theme.</li>
 </ul>
 

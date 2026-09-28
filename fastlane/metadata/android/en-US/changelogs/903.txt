@@ -1,0 +1,1 @@
+Now playing follows your finger: drag it down to peek behind it, and the cover lands on the mini-player. Playing a song opens it. A tab for your server, named after it, with pull to refresh and sync on open. Reorder or hide tabs, and pick the start tab. Artists group by album artist. A previous button on the mini-player, and a bed icon for the sleep timer.

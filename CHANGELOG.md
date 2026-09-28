@@ -3,6 +3,27 @@
 All notable changes to Veldt. Versions follow `major.minor.patch`; the version code is
 `major*10000 + minor*100 + patch`.
 
+## 0.9.3 — 2026-09-28 (public beta)
+
+### Added
+- **Now playing follows your finger.** Drag it down to peek at your library behind it, bring
+  it back up, or let go and it finishes the move at the speed you released it. The cover
+  stays under your thumb and lands on the mini-player. Drag the mini-player up, or tap it,
+  to open it again.
+- **Playing a song opens now playing** straight away.
+- **A tab for your server**, named after it (for example "Navidrome"), with just that
+  server's albums, artists and songs. Pull down to sync; Veldt also syncs when you open it
+  if the last sync is over 15 minutes old, and says so when you're offline.
+- **Arrange the bottom tabs:** reorder or hide them in Settings → Tabs, or long-press a tab
+  and slide it along the bar. "Open on" picks the tab Veldt starts on.
+- **A previous-track button** on the mini-player.
+
+### Changed
+- **Artists are grouped by album artist**, so "Poppy feat. Grimes" on a Poppy album is under
+  Poppy. Songs still show their full credit.
+- The sleep timer's icon is a bed instead of a moon, which read as dark mode.
+- Full-screen lyrics open inside now playing.
+
 ## 0.9.2 — 2026-09-27 (public beta)
 
 ### Added
