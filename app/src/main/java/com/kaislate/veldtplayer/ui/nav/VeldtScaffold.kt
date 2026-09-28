@@ -24,6 +24,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
@@ -62,13 +63,13 @@ fun rememberNavItems(): List<NavItem> = remember {
  * route; an empty slot costs the Scaffold zero top padding, which is exactly what the
  * screens that pass content under the status bar already assume.
  *
- * [miniPlayer] is a slot for a different reason: it is one end of the track-art morph, and its
- * lifetime is therefore the CALLER's to decide, not this bar's. So it sits OUTSIDE the
- * navigation bar's [AnimatedVisibility] and manages its own visibility. Wrapping it was what
- * made the morph work going out and snap coming back: the chrome that was supposed to be an
- * end of the transition was being composed by that same transition. What the caller does with
- * the freedom — composed across the hand-over, absent once it settles — is in
- * `rememberMorphLinger`; this bar only guarantees it never overrides it.
+ * [miniPlayer] is a slot for a different reason: it is where the now-playing sheet rests when
+ * collapsed, and the caller wires it to that sheet (its fade, its drag, where the cover lands —
+ * see `ui/nowplaying/PlayerSheet.kt`). So it sits OUTSIDE the navigation bar's
+ * [AnimatedVisibility] and this bar never decides anything about it.
+ *
+ * [modifier] is for the caller's decisions about the whole scaffold — today, taking it out of the
+ * accessibility tree while the now-playing sheet covers it.
  */
 @Composable
 fun VeldtScaffold(
@@ -79,19 +80,19 @@ fun VeldtScaffold(
     onSelect: (String) -> Unit,
     topBar: @Composable () -> Unit,
     miniPlayer: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
+        modifier = modifier,
         topBar = topBar,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             Column {
                 miniPlayer()
-                // FADE ONLY — no expand/shrink, and that is load-bearing rather than taste.
-                // Shrinking this bar would drag the mini-player above it downward for the
-                // length of the very navigation that starts the morph, so the cover would
-                // fly from a moving origin. Fading holds the height until the animation is
-                // over, by which time the 420ms morph has long finished.
+                // FADE ONLY — no expand/shrink. Shrinking this bar would drag the mini-player
+                // above it downward, and the mini-player is where the now-playing sheet's cover
+                // lands: a collapse would chase a moving target.
                 AnimatedVisibility(
                     visible = navigationBarVisible,
                     enter = fadeIn(Motion.gentle),

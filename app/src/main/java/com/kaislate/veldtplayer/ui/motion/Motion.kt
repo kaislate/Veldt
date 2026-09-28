@@ -39,16 +39,61 @@ object Motion {
         spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMedium)
 
     /**
-     * How long [sharedBounds] takes, in milliseconds — named rather than written inline
-     * because it is the ONE number the morph's plumbing has to agree with and
-     * `FiniteAnimationSpec` exposes no duration to read back.
+     * How long [sharedBounds] takes, in milliseconds. Named because `FiniteAnimationSpec` exposes
+     * no duration to read back, and anything that ever has to wait out a morph needs the number.
      *
-     * `ui/motion/SharedArt.kt` derives its "a transition that never reports itself finished
-     * must not park an invisible end in the tree forever" ceiling from this, so lengthening
-     * the morph can no longer silently leave that ceiling too low to cover it. That is the
-     * entire reason a magnitude lives in the vocabulary next to the spec it feeds.
+     * (It used to feed a linger ceiling in `ui/motion/SharedArt.kt` that kept the mini-player
+     * composed across the now-playing nav transition. Now-playing is a sheet driven by its own
+     * fraction — see [sheetSettle] — so nothing waits on this today.)
      */
     const val SHARED_BOUNDS_MS = 420
+
+    /**
+     * The now-playing sheet settling after a release, a tap on the mini-player, the collapse
+     * chevron or a committed back gesture (`ui/nowplaying/PlayerSheet.kt`).
+     *
+     * **Critically damped** (`dampingRatio = 1`): the sheet lands and stops. A bounce at either
+     * end would read as the screen being loose on its rails, and at the collapsed end it would
+     * push the cover past the mini-player thumbnail it is landing on.
+     *
+     * **A spring, never a tween, because it is started from the finger's release velocity.** A
+     * tween has no notion of initial velocity, so a fast fling would release into an animation
+     * that starts at rest — the visible speed dip on release the owner's report describes. A
+     * spring takes the velocity as its initial condition and carries it on.
+     *
+     * [Spring.StiffnessMedium] (1500) on a unit fraction: ω = √1500 ≈ 38.7 rad/s, so from rest a
+     * full-height travel is 98% done at ~150 ms and inside [SHEET_THRESHOLD] at ~240 ms — the
+     * 150-250 ms band the spec asks for. A shorter hop (a spring-back from a small peek) finishes
+     * proportionally sooner in absolute distance, which is what makes it feel snappy rather than
+     * slow the way the fixed 420 ms nav transition did.
+     */
+    val sheetSettle: SpringSpec<Float> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = Spring.StiffnessMedium,
+        visibilityThreshold = SHEET_THRESHOLD,
+    )
+
+    /**
+     * The now-playing sheet opening because playback was just started from a list — the owner's
+     * "immediately go to the playing screen (with a very fast animation)".
+     *
+     * Same critically damped shape as [sheetSettle], twice the stiffness: ω = √3000 ≈ 54.8 rad/s,
+     * 99% of the travel at ~120 ms and settled at ~170 ms. Fast enough to read as the tap itself
+     * opening the player, slow enough that the cover is still SEEN travelling up from the
+     * mini-player rather than the screen hard-cutting.
+     */
+    val sheetLaunch: SpringSpec<Float> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = 3_000f,
+        visibilityThreshold = SHEET_THRESHOLD,
+    )
+
+    /**
+     * Where the two sheet springs call a unit fraction settled. The default Float threshold
+     * (0.01) is 1% of the travel, ~20 px on a phone — a visible last-frame jump onto the
+     * mini-player. 0.001 is ~2 px.
+     */
+    const val SHEET_THRESHOLD = 0.001f
 
     /**
      * Shared-element art morph: the spec a cover travels between two destinations on.

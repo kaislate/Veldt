@@ -20,8 +20,6 @@ object Destinations {
     const val PLAYLISTS = "playlists"
     const val FOLDERS = "folders"
     const val SEARCH = "search"
-    const val NOW_PLAYING = "nowplaying"
-    const val LYRICS = "lyrics"
     const val SETTINGS = "settings"
     const val NOTICES = "notices"
     const val ACCOUNTS = "accounts"
