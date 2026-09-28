@@ -67,12 +67,18 @@ import kotlinx.coroutines.launch
 internal enum class SheetValue { Expanded, Collapsed }
 
 /**
- * How far down, as a fraction of the travel, a slow release must have carried the sheet for it
- * to carry on to the mini-player rather than spring back up. The spec's "~35-40%": far enough
- * that a peek — a look at the library behind the player, then letting go — always returns, near
- * enough that a deliberate slow pull does not have to go most of the way down.
+ * How far, as a fraction of the travel, a slow drag must carry the sheet AWAY FROM THE REST IT
+ * STARTED AT for the release to carry on to the other one. Far enough that a peek — a look at
+ * the library behind the player, then letting go — always returns; near enough that a
+ * deliberate slow pull does not have to go most of the way.
+ *
+ * **Measured from the starting rest, not from the top.** The first version used one absolute
+ * line at 38% from the top. That is right pulling DOWN from the player and wrong pushing UP from
+ * the mini-player: the same line sits 62% of the way up from the bottom, so opening the player by
+ * dragging the mini-player took two-thirds of the screen (device fix round 1). Relative to where
+ * the drag began, both directions ask for the same 30%.
  */
-internal const val SHEET_COLLAPSE_POSITION = 0.38f
+internal const val SHEET_SWITCH_DISTANCE = 0.3f
 
 /**
  * The release speed, in dp/s, at which the DIRECTION of the flick decides and the position no
@@ -106,10 +112,13 @@ private const val BACK_PEEK = 0.15f
 
 /**
  * Where a released sheet goes, from where it was let go ([offset], px down from expanded), how
- * fast ([velocity], px/s, positive = downward) and how far it can travel ([height], px).
+ * fast ([velocity], px/s, positive = downward), how far it can travel ([height], px) and which
+ * rest the drag started from ([from]).
  *
  * Velocity first: at or beyond [flingVelocity] (px/s, positive) the direction of the flick
- * decides, wherever the sheet is. Otherwise position does, at [SHEET_COLLAPSE_POSITION].
+ * decides, wherever the sheet is. Otherwise distance does: the sheet goes to the other rest once
+ * it has been carried [SHEET_SWITCH_DISTANCE] of the travel away from [from], and back to [from]
+ * short of that.
  *
  * Pure, so the physics that decide every release are pinned by `PlayerSheetSettleTest` rather
  * than by feel on a device.
@@ -123,12 +132,20 @@ internal fun sheetSettleTarget(
     velocity: Float,
     height: Float,
     flingVelocity: Float,
-): SheetValue = when {
-    height <= 0f -> SheetValue.Collapsed
-    velocity >= flingVelocity -> SheetValue.Collapsed
-    velocity <= -flingVelocity -> SheetValue.Expanded
-    offset >= height * SHEET_COLLAPSE_POSITION -> SheetValue.Collapsed
-    else -> SheetValue.Expanded
+    from: SheetValue,
+): SheetValue {
+    if (height <= 0f) return SheetValue.Collapsed
+    if (velocity >= flingVelocity) return SheetValue.Collapsed
+    if (velocity <= -flingVelocity) return SheetValue.Expanded
+    val travelled = when (from) {
+        SheetValue.Expanded -> offset
+        SheetValue.Collapsed -> height - offset
+    }
+    val switch = travelled >= height * SHEET_SWITCH_DISTANCE
+    return when (from) {
+        SheetValue.Expanded -> if (switch) SheetValue.Collapsed else SheetValue.Expanded
+        SheetValue.Collapsed -> if (switch) SheetValue.Expanded else SheetValue.Collapsed
+    }
 }
 
 /** The player content's alpha at sheet [fraction] (0 = expanded, 1 = collapsed). */
@@ -184,6 +201,13 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
     val isExpanded: Boolean get() = target == SheetValue.Expanded
 
     private var dragging by mutableStateOf(false)
+
+    /**
+     * The rest a drag is measured from ([sheetSettleTarget]'s `from`): [target] at the moment the
+     * drag began. That is the rest the sheet was sitting at, or — for a sheet grabbed mid-settle —
+     * the rest it was on its way to, which is where the user last told it to go.
+     */
+    private var dragOrigin = if (initiallyExpanded) SheetValue.Expanded else SheetValue.Collapsed
 
     /** True while a settle is animating — the draggable grabs on DOWN then, not after slop. */
     internal var isSettling by mutableStateOf(false)
@@ -256,6 +280,7 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
     override suspend fun drag(dragPriority: MutatePriority, block: suspend DragScope.() -> Unit) {
         mutex.mutateWith(dragScope, dragPriority) {
             dragging = true
+            dragOrigin = target
             try {
                 block()
             } finally {
@@ -267,7 +292,7 @@ class PlayerSheetState internal constructor(initiallyExpanded: Boolean) : Dragga
     /** A release: decide by [sheetSettleTarget], then spring there from [velocity] (px/s). */
     internal suspend fun settle(velocity: Float) {
         val t = travel
-        val to = sheetSettleTarget(fraction * t, velocity, t, flingVelocityPx)
+        val to = sheetSettleTarget(fraction * t, velocity, t, flingVelocityPx, from = dragOrigin)
         animateTo(to, velocity = if (t > 0f) velocity / t else 0f)
     }
 
