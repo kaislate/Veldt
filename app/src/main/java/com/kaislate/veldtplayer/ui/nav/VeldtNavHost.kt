@@ -241,6 +241,7 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                     val duration = npState.durationMs
                                     if (duration > 0L) npPosition.value.toFloat() / duration else 0f
                                 },
+                                onPrevious = npVm::previous,
                                 onToggle = npVm::toggle,
                                 onNext = npVm::next,
                                 // Idempotent: a second tap while the sheet is opening just
