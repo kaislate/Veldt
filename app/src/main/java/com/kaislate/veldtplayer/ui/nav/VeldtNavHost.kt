@@ -42,6 +42,9 @@ import com.kaislate.veldtplayer.ui.browse.PlaylistDetailScreen
 import com.kaislate.veldtplayer.ui.browse.PlaylistViewModel
 import com.kaislate.veldtplayer.ui.browse.PlaylistsScreen
 import com.kaislate.veldtplayer.ui.browse.SearchScreen
+import com.kaislate.veldtplayer.ui.browse.ServerScreen
+import com.kaislate.veldtplayer.ui.browse.ServerTabState
+import com.kaislate.veldtplayer.ui.browse.ServerViewModel
 import com.kaislate.veldtplayer.ui.browse.SongsScreen
 import com.kaislate.veldtplayer.ui.components.MiniPlayer
 import com.kaislate.veldtplayer.ui.lyrics.LyricsScreen
@@ -73,6 +76,7 @@ private val TAB_ROUTES = setOf(
     Destinations.ARTISTS,
     Destinations.PLAYLISTS,
     Destinations.FOLDERS,
+    Destinations.SERVER,
 )
 
 /**
@@ -103,8 +107,26 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
     // leg. Measured; see NowPlayingScreen's KDoc.
     val backStackEntryState = navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntryState.value?.destination?.route
-    val items = rememberNavItems()
+    // Resolved out here, above the permission gate, because the bar it labels is drawn whether or
+    // not audio access was granted — and resolved once, at this level, because the tab's screen
+    // reads the same instance (see ServerViewModel's KDoc).
+    val serverVm: ServerViewModel = hiltViewModel()
+    val serverTab by serverVm.tab.collectAsStateWithLifecycle()
+    val items = rememberNavItems((serverTab as? ServerTabState.Present)?.label)
     val snackbarHostState = remember { SnackbarHostState() }
+
+    // The last server account was removed while the tab was on the back stack (Settings is
+    // reachable from the tab's own app bar, so this is the ordinary path, not an edge): the tab
+    // is gone from the bar, so the screen must not be either. Absent only — never Loading, which
+    // would bounce a restored back stack before the accounts table had answered.
+    LaunchedEffect(currentRoute, serverTab) {
+        if (currentRoute == Destinations.SERVER && serverTab == ServerTabState.Absent) {
+            navController.navigate(Destinations.SONGS) {
+                popUpTo(Destinations.SONGS)
+                launchSingleTop = true
+            }
+        }
+    }
 
     PermissionGate(onGranted = { }) { audioGranted, audioBlocked, requestAudio ->
         val vm: BrowseViewModel = hiltViewModel()
@@ -339,6 +361,23 @@ fun VeldtNavHost(openNowPlayingRequest: Int = 0) {
                                     navController.navigate(Destinations.folder(key))
                                 },
                                 navController = navController,
+                                contentPadding = padding,
+                            )
+                        }
+                        // Behind the audio gate like the other tabs, though it streams: it is library
+                        // content, and one gate for "may library content be shown" is the rule.
+                        veldtDestination(
+                            Destinations.SERVER, audioGranted, audioBlocked, requestAudio, padding,
+                        ) {
+                            ServerScreen(
+                                vm = serverVm,
+                                playlistVm = plVm,
+                                onOpenAlbum = { key ->
+                                    navController.navigate(Destinations.albumDetail(key))
+                                },
+                                onOpenArtist = { key ->
+                                    navController.navigate(Destinations.artistDetail(key))
+                                },
                                 contentPadding = padding,
                             )
                         }

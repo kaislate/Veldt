@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -25,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import com.kaislate.veldtplayer.ui.motion.Motion
 import com.kaislate.veldtplayer.ui.theme.CHROME_ALPHA
 
@@ -40,18 +42,31 @@ data class NavItem(
  * The Playlists slot was rendered DISABLED through P1.3 so that turning it on in P1.4 changed a
  * flag, not the bar's proportions — the layout never shifted under the user. Task 6 flipped it.
  *
- * **With Folders the bar is FULL.** Five is Material 3's documented maximum and a real ceiling: at
- * 360 dp each item gets ~72 dp and labels begin to truncate. Any further browse dimension needs a
- * user-configurable tab set in Settings, not a sixth slot.
+ * **Five fixed slots, and a sixth that comes and goes.** Five is Material 3's documented maximum,
+ * and it held as the ceiling until the owner asked for server music to be its own tab (player-
+ * sheet/server-tab spec, Task B — an explicit owner decision over a Settings-configurable tab
+ * set). So the sixth slot exists only while [serverLabel] is non-null, i.e. while at least one
+ * server account does: a device-only user keeps the five-item bar exactly as it was. At 360 dp six
+ * items get ~60 dp each, which is why every label is single-line with an ellipsis (see
+ * [VeldtScaffold]) — "Navidrome" must truncate, not wrap into a second line that re-lays the bar.
+ * Any FURTHER dimension still needs a configurable tab set, not a seventh slot.
+ *
+ * [serverLabel] is the server type's name — "Navidrome", "Subsonic", "Servers" — per
+ * `ServerTypeNames.tabLabel`. It is the one input, so the list is rebuilt only when the label
+ * itself changes.
  */
 @Composable
-fun rememberNavItems(): List<NavItem> = remember {
-    listOf(
+fun rememberNavItems(serverLabel: String?): List<NavItem> = remember(serverLabel) {
+    listOfNotNull(
         NavItem(Destinations.SONGS, "Songs", Icons.Filled.MusicNote, enabled = true),
         NavItem(Destinations.ALBUMS, "Albums", Icons.Filled.Album, enabled = true),
         NavItem(Destinations.ARTISTS, "Artists", Icons.Filled.Person, enabled = true),
         NavItem(Destinations.PLAYLISTS, "Playlists", Icons.AutoMirrored.Filled.QueueMusic, enabled = true),
         NavItem(Destinations.FOLDERS, "Folders", Icons.Filled.Folder, enabled = true),
+        // Dns (a server rack) over Cloud: at 24 dp the cloud reads as "online/backup", which is
+        // what a streaming SERVICE is, not a server the user runs. Last, so the five fixed slots
+        // never move when it appears.
+        serverLabel?.let { NavItem(Destinations.SERVER, it, Icons.Filled.Dns, enabled = true) },
     )
 }
 
@@ -113,7 +128,11 @@ fun VeldtScaffold(
                                 // item's accessible name, and naming the icon too makes
                                 // TalkBack announce "Songs, Songs".
                                 icon = { Icon(item.icon, contentDescription = null) },
-                                label = { Text(item.label) },
+                                // Single line, ellipsised: the server slot's label is a server's
+                                // name and a sixth item narrows every slot. See rememberNavItems.
+                                label = {
+                                    Text(item.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                },
                             )
                         }
                     }
